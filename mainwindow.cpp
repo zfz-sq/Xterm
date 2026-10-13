@@ -1,10 +1,12 @@
 #include "mainwindow.h"
 
+#include <QAbstractItemModel>
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDir>
+#include <QEvent>
 #include <QFile>
 #include <QFileDialog>
 #include <QFontMetrics>
@@ -25,6 +27,7 @@
 #include "icons.h"
 #include "serialsession.h"
 #include "sshsession.h"
+#include "sshview.h"
 #include "terminalview.h"
 #include "transport.h"
 #include "ui_mainwindow.h"
@@ -55,20 +58,33 @@ void tuneEditableCombo(QComboBox *combo, int maxVisible = 20)
         list->setUniformItemSizes(true);
 }
 
-void addHistoryEntry(QComboBox *combo, const QString &value)
+// 端口下拉只保留这几项。手输的端口留在编辑框里，不写进列表。
+const QStringList &fixedSshPorts()
 {
-    const QString text = value.trimmed();
-    if (text.isEmpty())
+    static const QStringList ports = {
+        QStringLiteral("22"),
+        QStringLiteral("2222"),
+        QStringLiteral("22022"),
+        QStringLiteral("8022"),
+        QStringLiteral("443"),
+    };
+    return ports;
+}
+
+void pruneCustomPortItems(QComboBox *combo)
+{
+    static bool pruning = false;
+    if (pruning)
         return;
-    for (int i = 0; i < combo->count(); ++i) {
-        if (combo->itemText(i).compare(text, Qt::CaseInsensitive) == 0) {
-            combo->setCurrentIndex(i);
-            return;
-        }
+    pruning = true;
+    const QString typed = combo->currentText();
+    for (int i = combo->count() - 1; i >= 0; --i) {
+        if (!fixedSshPorts().contains(combo->itemText(i)))
+            combo->removeItem(i);
     }
-    combo->insertItem(0, text);
-    while (combo->count() > 15)
-        combo->removeItem(combo->count() - 1); // 只丢最旧的，当前项不动
+    if (combo->currentText() != typed)
+        combo->setEditText(typed);
+    pruning = false;
 }
 } // namespace
 
@@ -127,6 +143,11 @@ void MainWindow::setupIcons()
     ui->settingsBtn->setIconSize(QSize(16, 16));
     ui->sshSettingsBtn->setIcon(themedIcon(QStringLiteral("gear.png")));
     ui->sshSettingsBtn->setIconSize(QSize(16, 16));
+    const bool passwordHidden = ui->passwordEdit->echoMode() == QLineEdit::Password;
+    ui->pwToggleBtn->setIcon(themedIcon(passwordHidden ? QStringLiteral("eye.png")
+                                                       : QStringLiteral("eye_off.png")));
+    ui->pwToggleBtn->setIconSize(QSize(16, 16));
+    ui->pwToggleBtn->setText(QString());
     ui->keyBrowseBtn->setIconSize(QSize(16, 16));
     ui->themeBtn->setIcon(themedIcon(QStringLiteral("sun.png"))); // 实际图标由 applyTheme 设定
 }
@@ -165,20 +186,53 @@ void MainWindow::setupSshInputs()
 {
     m_loading = true;
 
-    tuneEditableCombo(ui->hostCombo, 12);
-    tuneEditableCombo(ui->userCombo, 12);
-
     ui->sshPortCombo->setEditable(true);
+    ui->sshPortCombo->setInsertPolicy(QComboBox::NoInsert);
     tuneEditableCombo(ui->sshPortCombo, 8);
     ui->sshPortCombo->setValidator(new QIntValidator(1, 65535, this));
-    ui->sshPortCombo->addItems({QStringLiteral("22"), QStringLiteral("2222")});
+    ui->sshPortCombo->addItems(fixedSshPorts());
     ui->sshPortCombo->setCurrentText(QStringLiteral("22"));
+    // 样式表给可编辑下拉算的编辑区比箭头靠前一截，5 位数字会被裁掉，中间还空着。
+    // 宽度按「左内边距 + 5 位数字 + 箭头」定死，再把编辑框拉到箭头边上。
+    const QFontMetrics portFm(ui->sshPortCombo->font());
+    ui->sshPortCombo->setFixedWidth(8 + portFm.horizontalAdvance(QStringLiteral("65535")) + 22);
+    ui->sshPortCombo->installEventFilter(this);
+    fitSshPortEdit();
+    ui->sshPortCombo->setToolTip(tr("常用端口直接选。手输的端口只留在框里，不会加进下拉列表"));
+    // 即便插入策略是 NoInsert，也再扫一遍，把任何多出来的项丢掉，编辑框文字保留。
+    connect(ui->sshPortCombo->model(), &QAbstractItemModel::rowsInserted, this, [this] {
+        QTimer::singleShot(0, this, [this] { pruneCustomPortItems(ui->sshPortCombo); });
+    });
 
     for (int sec : {5, 10, 15, 30, 60})
         ui->timeoutCombo->addItem(QString::number(sec));
     ui->timeoutCombo->setCurrentText(QStringLiteral("10"));
 
     m_loading = false;
+}
+
+void MainWindow::fitSshPortEdit()
+{
+    QComboBox *combo = ui->sshPortCombo;
+    QLineEdit *edit = combo->lineEdit();
+    if (!edit || combo->width() < 8)
+        return;
+    constexpr int arrow = 16;
+    constexpr int frame = 1;
+    const QRect next(frame, frame, combo->width() - arrow - frame * 2, combo->height() - frame * 2);
+    if (next.width() > 0 && next.height() > 0 && edit->geometry() != next)
+        edit->setGeometry(next);
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == ui->sshPortCombo
+        && (event->type() == QEvent::Resize || event->type() == QEvent::Show
+            || event->type() == QEvent::StyleChange)) {
+        // 下拉框自己的 resize 会把编辑框缩回去，等它排完再拉满到箭头前。
+        QTimer::singleShot(0, this, [this] { fitSshPortEdit(); });
+    }
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::setupTerminal()
@@ -188,10 +242,8 @@ void MainWindow::setupTerminal()
     m_serialView = new TerminalView(this);
     ui->serialTerminalPageLayout->addWidget(m_serialView);
 
-    m_sshView = new TerminalView(this);
+    m_sshView = new SshView(this);
     ui->sshTerminalPageLayout->addWidget(m_sshView);
-    // SSH 的 tty 一定回显，本地回显关掉；Tab 交给远端 bash，不挂客户端补全引擎。
-    m_sshView->setLocalEcho(false);
 
     // 面板外观由全局主题 QSS（QFrame#terminalPanel）定义
 }
@@ -224,27 +276,36 @@ void MainWindow::connectSignals()
     connect(ui->stopBitsCombo, &QComboBox::currentIndexChanged, this,
             &MainWindow::onConnectionParamChanged);
 
-    connect(ui->hostCombo, &QComboBox::currentTextChanged, this,
-            &MainWindow::onConnectionParamChanged);
+    connect(ui->hostEdit, &QLineEdit::textChanged, this, &MainWindow::onConnectionParamChanged);
+    connect(ui->hostEdit, &QLineEdit::returnPressed, this, &MainWindow::onConnectClicked);
     connect(ui->sshPortCombo, &QComboBox::currentTextChanged, this,
             &MainWindow::onConnectionParamChanged);
-    connect(ui->userCombo, &QComboBox::currentTextChanged, this,
-            &MainWindow::onConnectionParamChanged);
+    connect(ui->userEdit, &QLineEdit::textChanged, this, &MainWindow::onConnectionParamChanged);
+    connect(ui->userEdit, &QLineEdit::returnPressed, this, &MainWindow::onConnectClicked);
     connect(ui->timeoutCombo, &QComboBox::currentTextChanged, this,
             &MainWindow::onConnectionParamChanged);
-    connect(ui->keyEdit, &QLineEdit::textChanged, this, [this] {
+    connect(ui->passwordEdit, &QLineEdit::textChanged, this, [this] {
         if (!m_loading)
             syncCurrentProfile();
     });
-    connect(ui->argsEdit, &QLineEdit::textChanged, this, [this] {
+    // 密码输完直接回车 = 连接，符合最常见操作习惯
+    connect(ui->passwordEdit, &QLineEdit::returnPressed, this, &MainWindow::onConnectClicked);
+    connect(ui->pwToggleBtn, &QToolButton::clicked, this, [this] {
+        const bool hidden = ui->passwordEdit->echoMode() == QLineEdit::Password;
+        ui->passwordEdit->setEchoMode(hidden ? QLineEdit::Normal : QLineEdit::Password);
+        ui->pwToggleBtn->setIcon(themedIcon(hidden ? QStringLiteral("eye_off.png")
+                                                   : QStringLiteral("eye.png")));
+        ui->pwToggleBtn->setToolTip(hidden ? tr("隐藏密码") : tr("显示密码"));
+    });
+    connect(ui->keyEdit, &QLineEdit::textChanged, this, [this] {
         if (!m_loading)
             syncCurrentProfile();
     });
 
     // 终端键盘直通 / 预设按钮
     connect(m_serialView, &TerminalView::sendData, this, &MainWindow::sendRaw);
-    connect(m_sshView, &TerminalView::sendData, this, &MainWindow::sendRaw);
-    connect(m_sshView, &TerminalView::terminalSizeChanged, this,
+    connect(m_sshView, &SshView::sendData, this, &MainWindow::sendRaw);
+    connect(m_sshView, &SshView::terminalSizeChanged, this,
             [this](int cols, int rows) { m_ssh->setPtySize(cols, rows); });
 
     // 主题切换 / 模式切换 / 高级参数收展
@@ -326,7 +387,28 @@ void MainWindow::connectSignals()
         ui->statusbar->showMessage(msg, 8000);
         m_sshView->appendSystemMessage(tr("── %1 ──").arg(msg));
     });
-    connect(m_ssh, &SshSession::received, m_sshView, &TerminalView::receiveData);
+    connect(m_ssh, &SshSession::received, m_sshView, &SshView::receiveData);
+    // 没有可代填的密码时，ssh.exe 会把提示停在终端里等用户。密码输入是
+    // 不回显的（ssh 自己关掉了 echo），不说明的话用户只会觉得"敲了没反应"。
+    connect(m_ssh, &SshSession::hostKeyPromptDetected, this, [this] {
+        const QString tip = tr("首次连接：请核对上面的主机指纹，在终端输入 yes 或 no 后回车");
+        ui->statusbar->showMessage(tip, 20000);
+        m_sshView->appendSystemMessage(tr("── %1 ──").arg(tip));
+        if (m_mode == Mode::Ssh)
+            m_sshView->setFocus();
+    });
+    connect(m_sshView, &SshView::shellTitleChanged, this, [this](const QString &title) {
+        m_shellTitle = title;
+        if (m_mode == Mode::Ssh)
+            updateModeUi();
+    });
+    connect(m_ssh, &SshSession::passwordPromptDetected, this, [this] {
+        const QString tip = tr("需要密码：直接在终端里输入（输入不会显示），输完按回车");
+        ui->statusbar->showMessage(tip, 15000);
+        m_sshView->appendSystemMessage(tr("── %1 ──").arg(tip));
+        if (m_mode == Mode::Ssh)
+            m_sshView->setFocus();
+    });
     connect(m_ssh, &SshSession::stateChanged, this,
             [this](Transport::State) { updateConnectionUi(); updatePersistentStatus(); });
 }
@@ -415,33 +497,25 @@ void MainWindow::onConnectClicked()
         return;
     }
     const SshTarget target = sshTargetFromUi();
-    if (m_ssh->open(target).isEmpty()) {
-        pushSshHistory(target.host, target.user);
+    if (m_ssh->open(target).isEmpty())
         m_sshView->appendSystemMessage(tr("── 正在连接 %1 ──").arg(m_ssh->summary()));
-    }
     updateConnectionUi();
 }
 
 SshTarget MainWindow::sshTargetFromUi() const
 {
     SshTarget t;
-    t.host = ui->hostCombo->currentText().trimmed();
+    t.host = ui->hostEdit->text().trimmed();
     t.port = ui->sshPortCombo->currentText().toInt();
     if (t.port <= 0)
         t.port = 22;
-    t.user = ui->userCombo->currentText().trimmed();
+    t.user = ui->userEdit->text().trimmed();
+    t.password = ui->passwordEdit->text();
     t.privateKey = ui->keyEdit->text().trimmed();
     t.connectTimeoutSec = ui->timeoutCombo->currentText().toInt();
     if (t.connectTimeoutSec <= 0)
         t.connectTimeoutSec = 10;
-    t.extraArgs = ui->argsEdit->text().trimmed();
     return t;
-}
-
-void MainWindow::pushSshHistory(const QString &host, const QString &user)
-{
-    addHistoryEntry(ui->hostCombo, host);
-    addHistoryEntry(ui->userCombo, user);
 }
 
 void MainWindow::onConnectionParamChanged()
@@ -471,9 +545,20 @@ Transport *MainWindow::activeTransport() const
                                   : static_cast<Transport *>(m_ssh);
 }
 
-TerminalView *MainWindow::activeTerminal() const
+void MainWindow::focusActiveTerminal()
 {
-    return m_mode == Mode::Serial ? m_serialView : m_sshView;
+    if (m_mode == Mode::Serial)
+        m_serialView->setFocus();
+    else
+        m_sshView->setFocus();
+}
+
+void MainWindow::appendActiveNote(const QString &text)
+{
+    if (m_mode == Mode::Serial)
+        m_serialView->appendSystemMessage(text);
+    else
+        m_sshView->appendSystemMessage(text);
 }
 
 void MainWindow::setMode(Mode mode, bool persist)
@@ -502,7 +587,7 @@ void MainWindow::setMode(Mode mode, bool persist)
     updateConnectionUi();
     updatePersistentStatus();
     if (changed)
-        activeTerminal()->setFocus();
+        focusActiveTerminal();
 }
 
 void MainWindow::updateModeUi()
@@ -513,7 +598,10 @@ void MainWindow::updateModeUi()
     ui->modeBtn->setText(serial ? tr("SSH") : tr("串口"));
     ui->modeBtn->setToolTip(serial ? tr("切换到 SSH 终端（串口连接与内容保持不断开）")
                                    : tr("切换回串口终端（SSH 连接与内容保持不断开）"));
-    setWindowTitle(serial ? tr("Xterm — 串口终端") : tr("Xterm — SSH 终端"));
+    if (!serial && !m_shellTitle.isEmpty())
+        setWindowTitle(tr("Xterm — %1").arg(m_shellTitle));
+    else
+        setWindowTitle(serial ? tr("Xterm — 串口终端") : tr("Xterm — SSH 终端"));
 }
 
 void MainWindow::updateConnectionUi()
@@ -554,11 +642,11 @@ void MainWindow::updateConnectionUi()
     for (QComboBox *combo : {ui->portCombo, ui->baudCombo, ui->dataBitsCombo,
                              ui->parityCombo, ui->stopBitsCombo})
         combo->setEnabled(serial && idle);
-    for (QComboBox *combo : {ui->hostCombo, ui->sshPortCombo, ui->userCombo,
-                             ui->timeoutCombo})
-        combo->setEnabled(!serial && idle);
+    ui->hostEdit->setEnabled(!serial && idle);
+    ui->userEdit->setEnabled(!serial && idle);
+    ui->sshPortCombo->setEnabled(!serial && idle);
+    ui->timeoutCombo->setEnabled(!serial && idle);
     ui->keyEdit->setEnabled(!serial && idle);
-    ui->argsEdit->setEnabled(!serial && idle);
     ui->keyBrowseBtn->setEnabled(!serial && idle);
 }
 
@@ -579,6 +667,7 @@ void MainWindow::applyTheme()
     ui->themeBtn->setToolTip(dark ? tr("切换到亮色主题") : tr("切换到深色主题"));
     if (m_commandBar)
         m_commandBar->applyTheme();
+    fitSshPortEdit();
 }
 
 QString MainWindow::connectionSummary() const
@@ -661,7 +750,7 @@ void MainWindow::sendRaw(const QByteArray &bytes)
             ? (ssh ? tr("SSH 正在连接中") : tr("串口正在连接中"))
             : (ssh ? tr("SSH 未连接") : tr("串口未连接"));
         ui->statusbar->showMessage(tr("%1，无法发送 —— 请先点“连接”").arg(why), 5000);
-        activeTerminal()->appendSystemMessage(tr("── 未连接，命令未发送 ──"));
+        appendActiveNote(tr("── 未连接，命令未发送 ──"));
         ui->connectBtn->setFocus(); // 焦点移到"连接"按钮，引导用户
         return;
     }
@@ -746,14 +835,13 @@ void MainWindow::applyCurrentProfile()
     }
     // SSH 参数：已连接或正在连的时候不动，避免改动把用户从当前会话上带偏
     if (!m_ssh->isOpen() && m_ssh->state() == Transport::Disconnected) {
-        addHistoryEntry(ui->hostCombo, p.ssh.host);
-        ui->hostCombo->setCurrentText(p.ssh.host);
-        addHistoryEntry(ui->userCombo, p.ssh.user);
-        ui->userCombo->setCurrentText(p.ssh.user);
-        ui->sshPortCombo->setCurrentText(QString::number(p.ssh.port));
+        ui->hostEdit->setText(p.ssh.host);
+        ui->userEdit->setText(p.ssh.user);
+        ui->sshPortCombo->setEditText(QString::number(p.ssh.port > 0 ? p.ssh.port : 22));
+        pruneCustomPortItems(ui->sshPortCombo);
         ui->timeoutCombo->setCurrentText(QString::number(p.ssh.connectTimeoutSec));
+        ui->passwordEdit->setText(p.ssh.password);
         ui->keyEdit->setText(p.ssh.privateKey);
-        ui->argsEdit->setText(p.ssh.extraArgs);
     }
     m_loading = false;
 

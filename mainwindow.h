@@ -11,6 +11,7 @@ class QLabel;
 class QTimer;
 class SerialSession;
 class SshSession;
+class SshView;
 class TerminalView;
 class Transport;
 
@@ -38,11 +39,13 @@ public:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     void setupIcons();
     void setupConnectionCombos();
     void setupSshInputs();
+    void fitSshPortEdit(); // 端口编辑框拉到箭头前，避免数字被裁、中间留白
     void setupTerminal();
     void setupCompletion();
     void connectSignals();
@@ -55,7 +58,6 @@ private:
     Profile currentProfileFromUi() const;
     QString selectedPortName() const;
     SshTarget sshTargetFromUi() const;
-    void pushSshHistory(const QString &host, const QString &user);
 
     void onConnectClicked();
     void onConnectionParamChanged();
@@ -65,7 +67,8 @@ private:
     void sendLine(const QString &line);          // 预设命令按钮用
 
     Transport *activeTransport() const;
-    TerminalView *activeTerminal() const;
+    void focusActiveTerminal();
+    void appendActiveNote(const QString &text);
     void setMode(Mode mode, bool persist = true);
     void updateModeUi();
     void updateConnectionUi();
@@ -79,13 +82,14 @@ private:
     CommandStore *m_store = nullptr;
     CommandBar *m_commandBar = nullptr;
     TerminalView *m_serialView = nullptr;
-    TerminalView *m_sshView = nullptr;
+    SshView *m_sshView = nullptr;
     CompletionEngine *m_completion = nullptr;
     QLabel *m_statusLabel = nullptr;
     QTimer *m_saveTimer = nullptr; // 配置保存防抖（单发，见 scheduleProfileSave）
 
     Mode m_mode = Mode::Serial;
     QString m_currentProfile;
+    QString m_shellTitle;
     bool m_loading = false;
 };
 #endif // MAINWINDOW_H

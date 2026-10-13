@@ -86,6 +86,8 @@ private:
     void setCursorColumn(int col);
     void eraseLine(int mode);
     void eraseDisplay(int mode);
+    void resetScreen();      // RIS（ESC c）整屏复位：clear / reset 的另一条通路
+    void lineFeed();         // LF：终端语义是「下移一行」，不是「插入一行」
     void eraseCharBeforeCursor();
 
     // Tab 补全

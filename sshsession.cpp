@@ -1,7 +1,6 @@
 #include "sshsession.h"
 
 #include <QFileInfo>
-#include <QProcess>
 #include <QStandardPaths>
 
 namespace {
@@ -24,7 +23,7 @@ SshSession::SshSession(QObject *parent)
     : Transport(parent)
 {
     connect(&m_pty, &ConPty::launched, this, &SshSession::onLaunched);
-    connect(&m_pty, &ConPty::outputReceived, this, &Transport::received);
+    connect(&m_pty, &ConPty::outputReceived, this, &SshSession::onOutputReceived);
     connect(&m_pty, &ConPty::finished, this, &SshSession::onFinished);
 }
 
@@ -96,6 +95,10 @@ QString SshSession::open(const SshTarget &target)
     m_target = target;
     m_target.host = target.host.trimmed();
     m_userRequestedClose = false;
+    m_promptTail.clear();
+    m_promptHintSent = false;
+    m_hostKeyHintSent = false;
+    m_autofillLeft = m_target.password.isEmpty() ? 0 : 3;
     m_pty.reset();
 
     setState(Connecting);
@@ -147,6 +150,18 @@ QString SshSession::summary() const
     return s;
 }
 
+QString SshSession::sanitizedArg(const QString &raw)
+{
+    // 粘贴带进来的换行/回车/制表符等控制字符会拼出非法命令行，
+    // CreateProcessW 直接拒绝（Win32 错误 87 = ERROR_INVALID_PARAMETER）。
+    QString out;
+    out.reserve(raw.size());
+    for (const QChar c : raw)
+        if (c.unicode() >= 0x20 && c.unicode() != 0x7f)
+            out += c;
+    return out.trimmed();
+}
+
 QStringList SshSession::buildArguments() const
 {
     QStringList args;
@@ -159,16 +174,78 @@ QStringList SshSession::buildArguments() const
     args << QStringLiteral("-o")
          << QStringLiteral("ServerAliveCountMax=%1").arg(kKeepAliveCountMax);
     args << QStringLiteral("-o") << QStringLiteral("TCPKeepAlive=yes");
-    if (!m_target.privateKey.trimmed().isEmpty())
-        args << QStringLiteral("-i") << m_target.privateKey.trimmed();
-    if (!m_target.extraArgs.trimmed().isEmpty())
-        args << QProcess::splitCommand(m_target.extraArgs.trimmed());
+    // Windows 上 ssh.exe 会先试 GSSAPI/Kerberos，域环境里连接能卡几十秒。
+    // 交互流量走低延迟，避免和批量传输挤在同一档。
+    args << QStringLiteral("-o") << QStringLiteral("GSSAPIAuthentication=no");
+    args << QStringLiteral("-o")
+         << QStringLiteral("PreferredAuthentications=publickey,keyboard-interactive,password");
+    args << QStringLiteral("-o") << QStringLiteral("IPQoS=lowdelay");
+    const QString key = sanitizedArg(m_target.privateKey);
+    if (!key.isEmpty()) {
+        // 指定了密钥就别再把 agent 里每把钥匙都试一遍，否则很容易
+        // “Too many authentication failures” 然后连真正的钥匙都排不上。
+        args << QStringLiteral("-o") << QStringLiteral("IdentitiesOnly=yes");
+        args << QStringLiteral("-i") << key;
+    }
 
     QString destination = m_target.host;
     if (!m_target.user.isEmpty())
         destination = m_target.user + QLatin1Char('@') + m_target.host;
     args << destination;
     return args;
+}
+
+void SshSession::onOutputReceived(const QByteArray &chunk)
+{
+    emit received(chunk);
+    if (m_autofillLeft <= 0 && m_promptHintSent)
+        return; // 既不代填、提醒也发过了，不必再扫每一块输出
+
+    // 只看窗口尾部：提示可能恰好被拆在两个 chunk 交界处。
+    // 先剥 CSI 序列（颜色/光标移动会插进 "password" 中间），再压掉空白做匹配。
+    m_promptTail += chunk;
+    if (m_promptTail.size() > 512)
+        m_promptTail.remove(0, m_promptTail.size() - 512);
+    QByteArray t;
+    t.reserve(m_promptTail.size());
+    for (int i = 0; i < m_promptTail.size(); ++i) {
+        const char c = m_promptTail.at(i);
+        if (c == '\x1b') {
+            if (i + 1 < m_promptTail.size() && m_promptTail.at(i + 1) == '[') {
+                ++i;
+                while (i + 1 < m_promptTail.size()
+                       && !(m_promptTail.at(i + 1) >= '@' && m_promptTail.at(i + 1) <= '~'))
+                    ++i;
+            }
+            continue;
+        }
+        if (!QChar::isSpace(char16_t(uchar(c))))
+            t += c;
+    }
+    const QString squ = QString::fromUtf8(t).toLower();
+    const bool password = squ.contains(QLatin1String("password:"));
+    const bool hostKey = squ.contains(QLatin1String("yes/no"));
+    if (!password && !hostKey)
+        return;
+    m_promptTail.clear();
+    if (hostKey && !password) {
+        // 不代答 yes。自动接受未知主机等于跳过指纹核对。
+        if (!m_hostKeyHintSent) {
+            m_hostKeyHintSent = true;
+            emit hostKeyPromptDetected();
+        }
+        return;
+    }
+    if (m_autofillLeft <= 0) {
+        // 没有可代填的凭据（没配密码，或 3 次机会已用完）：必须把「轮到你了，
+        // 而且密码输入不回显」说出来 —— 否则用户对着一个怎么敲都不显示的提示行，
+        // 只会判定程序卡死。
+        m_promptHintSent = true;
+        emit passwordPromptDetected();
+        return;
+    }
+    --m_autofillLeft; // 最多代填 3 次，防错误密码死循环
+    m_pty.write(m_target.password.toUtf8() + "\r");
 }
 
 void SshSession::onLaunched(const QString &errorText)

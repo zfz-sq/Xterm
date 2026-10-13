@@ -12,6 +12,8 @@
         <file>icons/light/copy.png</file>
         <file>icons/light/grip.png</file>
         <file>icons/light/gear.png</file>
+        <file>icons/light/eye.png</file>
+        <file>icons/light/eye_off.png</file>
         <file>icons/light/trash.png</file>
         <file>icons/light/chevron_right.png</file>
         <file>icons/light/chevron_left.png</file>
@@ -30,6 +32,8 @@
         <file>icons/dark/copy.png</file>
         <file>icons/dark/grip.png</file>
         <file>icons/dark/gear.png</file>
+        <file>icons/dark/eye.png</file>
+        <file>icons/dark/eye_off.png</file>
         <file>icons/dark/trash.png</file>
         <file>icons/dark/chevron_right.png</file>
         <file>icons/dark/chevron_left.png</file>

@@ -218,6 +218,86 @@ int main(int argc, char **argv)
                "SGR 38;2;0;255;0 不被 0 重置");
     }
 
+    // clear 在各家 terminfo/busybox 里写法不同，逐一验证（现场只见到"按了没反应"，
+    // 得先确定是哪一种形式没落地）。
+    { // linux/vt100 terminfo: clear = ESC[H ESC[J（ED mode 0，从光标擦到末尾）
+        TerminalView v;
+        v.receiveData("line1\r\nline2\r\nline3");
+        v.receiveData("\x1b[H\x1b[Jnew");
+        expect(v.toPlainText() == QStringLiteral("new"), "clear 变体 ED(0) 从光标全屏擦除");
+    }
+
+    { // ncurses E3 前缀: ESC[3J ESC[H ESC[2J（3J 是清回滚区，不能把它当非法序列丢掉）
+        TerminalView v;
+        v.receiveData("old\r\nprompt # ");
+        v.receiveData("\x1b[3J\x1b[H\x1b[2Jprompt # ");
+        expect(v.toPlainText() == QStringLiteral("prompt # "), "clear 变体 E3+ED(2)");
+    }
+
+    { // ED(1) 擦除文档头到光标（补全 ED 家族，别静默丢掉）
+        TerminalView v;
+        v.receiveData("junk\r\nkeep me");
+        v.receiveData("\x1b[2;1H\x1b[1J");
+        expect(v.toPlainText() == QStringLiteral("keep me"), "ED(1) 擦除光标以上");
+    }
+
+    { // RIS（ESC c）：BusyBox clear 认定 xterm 时、以及 reset 都用它，语义是整屏复位
+        TerminalView v;
+        v.receiveData("old text\r\nmore");
+        v.receiveData("\x1b" "cfresh");
+        expect(v.toPlainText() == QStringLiteral("fresh"), "RIS ESC c 清屏并复位");
+    }
+
+    { // 备用屏切换序列本身必须被吞掉，不能漏成可见乱码（备用屏语义暂不实现）
+        TerminalView v;
+        v.receiveData("before");
+        v.receiveData("\x1b[?1049hafter");
+        expect(!v.toPlainText().contains(QStringLiteral("1049")),
+               "CSI ?1049h 不吃成可见乱码");
+    }
+
+    { // conhost 对 cls 的真实重绘字节（build/sshdump.bin 抓的，逐行 EL+CR+LF，不擦屏）。
+      // LF 若按「插入一行」实现，就会把 24 个空行插进文档中间，旧内容被顶到下面。
+      TerminalView v;
+      v.receiveData("\x1b[?9001h\x1b[?1004h\x1b[?25l\x1b[2J\x1b[m\x1b[H"
+                    "MARK_OLD_LINE\r\n\x1b]0;C:\\WINDOWS\\SYSTEM32\\cmd.exe\x07"
+                    "\x1b[?25h\x1b[?25l"
+                    "\x1b[H"
+                    "\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n"
+                    "\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n"
+                    "\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n"
+                    "\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n"
+                    "\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n"
+                    "\x1b[4;1H\x1b[3J\x1b[?25l\x1b[HAFTER_CLS\r\n\x1b[?25h");
+      expect(v.toPlainText() == QStringLiteral("AFTER_CLS\n"),
+             "conhost 整屏重绘后只剩新内容，不留空行墙");
+    }
+
+    { // 单独盯 LF 的语义：下面还有行就是「下移」，不能把行拆开
+        TerminalView v;
+        v.receiveData("AAA\r\nBBB\r\nCCC");
+        v.receiveData("\x1b[H\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n"); // 三行原地擦除
+        v.receiveData("\x1b[HNEW");
+        // 第三组 EL+LF 时已在文档末行，只能新起一行（那是屏幕的空行，不是插入的墙）。
+        // 修复前每组 LF 都往文档里多插一个空块，旧内容被整体顶下去。
+        expect(v.toPlainText() == QStringLiteral("NEW\n\n\n"),
+               "LF 在已有行之间下移而非插入空行");
+    }
+
+    { // 同一串字节按 7 字节一片投递：真实到达会被任意位置切断，
+      // 转义序列跨片也必须得到同样的结果
+        static const char kStream[] =
+            "\x1b[2J\x1b[HAAA\r\nBBB\r\nCCC"
+            "\x1b[H\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n"
+            "\x1b[4;1H\x1b[3J\x1b[HNEW\r\n";
+        TerminalView v;
+        const QByteArray raw(kStream);
+        for (int i = 0; i < raw.size(); i += 7)
+            v.receiveData(raw.mid(i, 7));
+        expect(v.toPlainText() == QStringLiteral("NEW\n"),
+               "跨包投递的同一段重绘结果与整包一致");
+    }
+
     printf(g_failures ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", g_failures);
     return g_failures ? 1 : 0;
 }

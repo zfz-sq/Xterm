@@ -83,6 +83,34 @@ QToolButton#settingsBtn:hover {
 QToolButton#settingsBtn:pressed {
     background-color: #E8E8EC;
 }
+
+QLineEdit#passwordEdit {
+    min-height: 30px;
+    max-height: 30px;
+    padding: 0 8px;
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+    border-right: none;
+}
+QToolButton#pwToggleBtn {
+    background-color: #FFFFFF;
+    border: 1px solid #C9C9CD;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    padding: 0;
+    margin: 0;
+    min-width: 30px;
+    max-width: 30px;
+    min-height: 30px;
+    max-height: 30px;
+}
+QToolButton#pwToggleBtn:hover {
+    background-color: #F6F6F8;
+    border-color: #AFAFB5;
+}
+QToolButton#pwToggleBtn:pressed {
+    background-color: #E8E8EC;
+}
 QComboBox {
     combobox-popup: 0;
 }
@@ -98,6 +126,19 @@ QComboBox QLineEdit {
     border: none;
     padding: 0;
     min-height: 0;
+}
+QComboBox#sshPortCombo {
+    padding: 0;
+}
+QComboBox#sshPortCombo QLineEdit {
+    padding: 0 0 0 8px;
+    margin: 0;
+}
+QComboBox#sshPortCombo::drop-down {
+    subcontrol-origin: border;
+    subcontrol-position: center right;
+    width: 16px;
+    border: none;
 }
 
 /* ---------------- 按钮 ---------------- */

@@ -23,6 +23,11 @@
 #define PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE 0x00020016
 #endif
 
+// 光标继承：少一次 conhost 把整屏光标状态重刷进管道。老系统不认这个标志时下面会退回 0。
+#ifndef PSEUDOCONSOLE_INHERIT_CURSOR
+#define PSEUDOCONSOLE_INHERIT_CURSOR 0x1
+#endif
+
 namespace {
 
 // ConPTY 的三个 API 在 Win10 1809 才进 kernel32。老系统上 GetProcAddress
@@ -66,6 +71,8 @@ constexpr int kWriteChunk = 4 * 1024;   // 分批写，单次不会长时间占�
 constexpr DWORD kWriteTimeoutMs = 250;  // 写超时后余量重新入队，保证读不被饿死
 constexpr DWORD kGracefulExitMs = 400;  // 关闭输入后给子进程自我退出的时间
 constexpr DWORD kTerminateWaitMs = 1500;
+constexpr DWORD kChildExitDrainMs = 800; // 子进程退出后收割剩余输出的窗口
+                                          // （conhost 断管可能滞后，不能等它）
 constexpr UINT kTerminateExitCode = 0xE0FF; // 我们强杀时的退出码标记
 
 QString pipeNameFor(const QString &tag)
@@ -250,10 +257,16 @@ private:
     Hpc m_pty = nullptr;
     HANDLE m_childProcess = nullptr;
     bool m_terminatedByUs = false;
+    // 已经告知伪终端的尺寸，用于抑制重复 resize
+    SHORT m_appliedCols = 0;
+    SHORT m_appliedRows = 0;
 };
 
 void PtyTask::run()
 {
+    // 键入和回显都走这条线程。抬高优先级，避免被界面绘制挤到后面。
+    setPriority(QThread::HighPriority);
+
     const QString err = setup();
     if (!err.isEmpty()) {
         emit launched(err);
@@ -275,10 +288,16 @@ void PtyTask::run()
 
     bool readPending = false;
     QString readError;
+    // 子进程退出后 conhost 关闭管道可能滞后很久（实测 ssh.exe 失败退出后
+    // >6s 才断管）。会话结束不能只等管道 EOF：把子进程句柄也挂进等待列表，
+    // 进程一退就开启一个短暂的「收割窗口」把剩余输出读完，然后主动收尾。
+    ULONGLONG drainDeadlineMs = 0;
 
     for (;;) {
         if (stopRequested())
             break;
+        if (drainDeadlineMs && GetTickCount64() >= drainDeadlineMs)
+            break; // 收割窗口结束（正常 EOF 通常远早于这个时刻）
 
         drainWrites();
         applyResize();
@@ -312,8 +331,14 @@ void PtyTask::run()
             }
         }
 
-        HANDLE wakes[4] = { ov.hEvent, m_stopEvent, m_writeEvent, m_resizeEvent };
-        const DWORD r = WaitForMultipleObjects(4, wakes, FALSE, INFINITE);
+        HANDLE wakes[5] = { ov.hEvent, m_stopEvent, m_writeEvent, m_resizeEvent,
+                            m_childProcess };
+        const DWORD nWakes = m_childProcess ? 5 : 4;
+        const DWORD waitMs = drainDeadlineMs
+            ? DWORD(qBound<ULONGLONG>(1, drainDeadlineMs - GetTickCount64(),
+                                      kChildExitDrainMs))
+            : INFINITE;
+        const DWORD r = WaitForMultipleObjects(nWakes, wakes, FALSE, waitMs);
         if (r == WAIT_OBJECT_0) {
             // 读完成
             readPending = false;
@@ -335,6 +360,14 @@ void PtyTask::run()
         }
         if (r == WAIT_OBJECT_0 + 2 || r == WAIT_OBJECT_0 + 3)
             continue; // 有新输入 / 尺寸变化，回循环头处理
+        if (r == WAIT_OBJECT_0 + 4) {
+            // 子进程退出：开启收割窗口。进程句柄保持 signaled，不会重复触发
+            if (!drainDeadlineMs)
+                drainDeadlineMs = GetTickCount64() + kChildExitDrainMs;
+            continue;
+        }
+        if (r == WAIT_TIMEOUT)
+            continue; // 收割窗口计时到点，循环头会 break
         readError = QStringLiteral("等待伪终端失败 (%1)").arg(r);
         break;
     }
@@ -394,13 +427,11 @@ QString PtyTask::setup()
     if (m_hOutputRead == INVALID_HANDLE_VALUE)
         return QStringLiteral("创建输出管道失败 (%1)").arg(::GetLastError());
 
-    if (!ConnectNamedPipe(m_hInputWrite, nullptr)
-        && ::GetLastError() != ERROR_PIPE_CONNECTED)
-        return QStringLiteral("等待管道连接失败 (%1)").arg(::GetLastError());
-    if (!ConnectNamedPipe(m_hOutputRead, nullptr)
-        && ::GetLastError() != ERROR_PIPE_CONNECTED)
-        return QStringLiteral("等待管道连接失败 (%1)").arg(::GetLastError());
-
+    // 不调 ConnectNamedPipe：它是「服务端等客户端来连」的原语，而客户端句柄在
+    // 下面才由本线程创建，先等后开会自等待死锁（IO 线程永远卡在这里，
+    // launched/finished 都发不出去，界面表现为永远「正在连接」、取消后永远
+    // 「断开中」）。单实例、自连自用的管道直接 CreateFileW 打开即完成连接，
+    // 与 ConPTY 官方示例（EchoCon）一致。
     // 交给伪终端的两个客户端句柄用同步方式（conhost 内部按同步读写使用它们）。
     const HANDLE hInClient = CreateFileW(
         reinterpret_cast<LPCWSTR>(inPath.utf16()), GENERIC_READ, 0, &sa,
@@ -419,7 +450,11 @@ QString PtyTask::setup()
     COORD size;
     size.X = SHORT(qBound(20, m_cols.load(), 500));
     size.Y = SHORT(qBound(4, m_rows.load(), 200));
-    const HRESULT hr = api.create(size, hInClient, hOutClient, 0, &m_pty);
+    m_appliedCols = size.X; // 建终端时用的就是这个尺寸，别在循环里再"变一次"
+    m_appliedRows = size.Y;
+    HRESULT hr = api.create(size, hInClient, hOutClient, PSEUDOCONSOLE_INHERIT_CURSOR, &m_pty);
+    if (FAILED(hr))
+        hr = api.create(size, hInClient, hOutClient, 0, &m_pty);
 
     // 必须关闭这两个客户端句柄：conhost 已把它们复制到自己的进程；而我们若留着
     // 写端（hOutClient），本进程的读端永远看不到 EOF，子进程退出也就检测不到。
@@ -461,11 +496,37 @@ QString PtyTask::spawn()
         return QStringLiteral("绑定伪终端失败 (%1)").arg(e);
     }
 
-    STARTUPINFOW startup = {};
-    startup.cb = sizeof(startup);
+    // EXTENDED_STARTUPINFO_PRESENT 要求 cb 为 sizeof(STARTUPINFOEXW)：拷贝整个
+    // STARTUPINFOW 会把 cb 带成普通结构尺寸，CreateProcessW 拒绝（Win32 错误 87）。
     STARTUPINFOEXW si = {};
-    si.StartupInfo = startup;
+    si.StartupInfo.cb = sizeof(si);
     si.lpAttributeList = attrList;
+
+    // 必须显式声明 STARTF_USESTDHANDLES 并把三个标准句柄留 NULL：
+    // 不声明时子进程会沿用「本进程自己的」标准句柄。Xterm 被 PowerShell
+    // 带重定向拉起时 stderr 是文件句柄，ssh.exe 的 Permission denied / 
+    // 认证提示就顺着这个句柄漏进文件，终端里一个字都看不到 —— 用户敲错密码
+    // 只见到又一行 password 提示，没有任何解释，看起来就像"输入没反应"。
+    // 三个字段给 NULL 等于告诉 CreateProcess「别继承，用子进程控制台的那套」，
+    // 而子进程的控制台正是我们的伪终端。
+    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    si.StartupInfo.hStdInput = nullptr;
+    si.StartupInfo.hStdOutput = nullptr;
+    si.StartupInfo.hStdError = nullptr;
+
+    // 向子进程声明终端类型：ssh.exe 把 TERM 原样填进 pty-req 转告远端，远端据此
+    // 选 terminfo。GUI 程序的继承环境里根本没有 TERM，远端只能按 unknown/dumb 办，
+    // 于是 clear / tput 这类靠 terminfo 取能力的命令查不到能力、一个字都不输出，
+    // 看着就像命令没执行。这里覆盖而不是仅在缺失时补：从别的终端启动 Xterm 时
+    // 继承来的 TERM 描述的是那个终端，不是我们。
+    // 选 xterm 而不是 xterm-256color：Buildroot/BusyBox 这类最小系统未必带后者，
+    // 宁可颜色少几档，也不能让 clear 又变成没反应。
+    // 用「改本进程环境 + 保持整体继承」而不是自造环境块：环境块得手拼，容易丢掉
+    // =C: 这类记录各盘符当前目录的隐藏变量，cmd.exe 会认不出换盘后该落在哪个目录。
+    // 仍用 xterm 而不是 xterm-256color：很多嵌入式 rootfs 没有后者的 terminfo，
+    // clear / tput 会直接没输出。本终端自己能画 256 色和真彩色，远端发了就能显示。
+    ::SetEnvironmentVariableW(L"TERM", L"xterm");
+    ::SetEnvironmentVariableW(L"COLORTERM", L"truecolor");
 
     PROCESS_INFORMATION pi = {};
     const BOOL ok = CreateProcessW(nullptr, cmdLine.data(), nullptr, nullptr, TRUE,
@@ -477,6 +538,10 @@ QString PtyTask::spawn()
         const DWORD e = ::GetLastError();
         if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND)
             return QStringLiteral("找不到 %1，请确认系统已安装 OpenSSH 客户端").arg(m_program);
+        if (e == ERROR_INVALID_PARAMETER)
+            return QStringLiteral("启动 %1 失败：命令行参数非法 (Win32 错误 87)，"
+                                  "请检查主机、端口、私钥路径里是否混入了换行或控制字符")
+                .arg(m_program);
         return QStringLiteral("启动 %1 失败 (Win32 错误 %2)").arg(m_program).arg(e);
     }
     m_childProcess = pi.hProcess;
@@ -553,9 +618,19 @@ void PtyTask::applyResize()
     const ConPtyApi &api = conPtyApi();
     if (!api.resize)
         return;
+    const SHORT cols = SHORT(qBound(20, m_cols.load(), 500));
+    const SHORT rows = SHORT(qBound(4, m_rows.load(), 200));
+    // 尺寸没变绝不能调：conhost 每次收到 resize 都重绘整屏（清行 + 重排光标），
+    // 而本函数在每轮循环头都会被叫一次 —— 无条件调用就成了「重绘产生输出 →
+    // 输出唤醒循环 → 再重绘」的自激环路，表现为整屏空白闪动、敲键没反应。
+    // 真实终端模拟器都只在尺寸真的变了才通知伪终端。
+    if (cols == m_appliedCols && rows == m_appliedRows)
+        return;
+    m_appliedCols = cols;
+    m_appliedRows = rows;
     COORD size;
-    size.X = SHORT(qBound(20, m_cols.load(), 500));
-    size.Y = SHORT(qBound(4, m_rows.load(), 200));
+    size.X = cols;
+    size.Y = rows;
     // 只在 IO 线程调：与读写串行，避免 conhost 在输出途中改尺寸
     api.resize(m_pty, size);
 }

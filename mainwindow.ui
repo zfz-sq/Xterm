@@ -192,15 +192,21 @@
             </widget>
            </item>
            <item>
-            <widget class="QComboBox" name="hostCombo">
+            <widget class="QLineEdit" name="hostEdit">
              <property name="minimumWidth">
-              <number>180</number>
+              <number>108</number>
              </property>
-             <property name="editable">
-              <bool>true</bool>
+             <property name="maximumWidth">
+              <number>108</number>
              </property>
-             <property name="insertPolicy">
-              <enum>QComboBox::NoInsert</enum>
+             <property name="sizePolicy">
+              <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+               <horstretch>0</horstretch>
+               <verstretch>0</verstretch>
+              </sizepolicy>
+             </property>
+             <property name="placeholderText">
+              <string>主机名或 IP</string>
              </property>
              <property name="toolTip">
               <string>主机名 / IP，也可以是 ~/.ssh/config 里的别名</string>
@@ -216,11 +222,11 @@
            </item>
            <item>
             <widget class="QComboBox" name="sshPortCombo">
-             <property name="minimumWidth">
-              <number>70</number>
-             </property>
-             <property name="maximumWidth">
-              <number>90</number>
+             <property name="sizePolicy">
+              <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+               <horstretch>0</horstretch>
+               <verstretch>0</verstretch>
+              </sizepolicy>
              </property>
              <property name="editable">
               <bool>true</bool>
@@ -238,22 +244,79 @@
             </widget>
            </item>
            <item>
-            <widget class="QComboBox" name="userCombo">
+            <widget class="QLineEdit" name="userEdit">
              <property name="minimumWidth">
-              <number>110</number>
+              <number>35</number>
              </property>
              <property name="maximumWidth">
-              <number>160</number>
+              <number>51</number>
              </property>
-             <property name="editable">
-              <bool>true</bool>
-             </property>
-             <property name="insertPolicy">
-              <enum>QComboBox::NoInsert</enum>
+             <property name="placeholderText">
+              <string>可留空</string>
              </property>
              <property name="toolTip">
               <string>留空则用 ~/.ssh/config 或当前用户名</string>
              </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QLabel" name="pwLabel">
+             <property name="text">
+              <string>密码</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QWidget" name="passwordGroup">
+             <layout class="QHBoxLayout" name="passwordGroupLayout">
+              <property name="spacing">
+               <number>0</number>
+              </property>
+              <property name="leftMargin">
+               <number>0</number>
+              </property>
+              <property name="topMargin">
+               <number>0</number>
+              </property>
+              <property name="rightMargin">
+               <number>0</number>
+              </property>
+              <property name="bottomMargin">
+               <number>0</number>
+              </property>
+              <item alignment="Qt::AlignVCenter">
+               <widget class="QLineEdit" name="passwordEdit">
+                <property name="minimumWidth">
+                 <number>69</number>
+                </property>
+                <property name="maximumWidth">
+                 <number>104</number>
+                </property>
+                <property name="echoMode">
+                 <enum>QLineEdit::Password</enum>
+                </property>
+                <property name="placeholderText">
+                 <string>自动登录，可留空手输</string>
+                </property>
+                <property name="toolTip">
+                 <string>连接时若终端出现 password 提示，自动帮你填入并回车；不用密钥/agent 时填这里最省事</string>
+                </property>
+               </widget>
+              </item>
+              <item alignment="Qt::AlignVCenter">
+               <widget class="QToolButton" name="pwToggleBtn">
+                <property name="toolTip">
+                 <string>显示密码</string>
+                </property>
+                <property name="toolButtonStyle">
+                 <enum>Qt::ToolButtonIconOnly</enum>
+                </property>
+                <property name="autoRaise">
+                 <bool>false</bool>
+                </property>
+               </widget>
+              </item>
+             </layout>
             </widget>
            </item>
            <item>
@@ -269,7 +332,7 @@
            <item>
             <widget class="QToolButton" name="sshSettingsBtn">
              <property name="toolTip">
-              <string>SSH 高级参数（密钥/超时/选项）</string>
+              <string>SSH 高级参数（私钥/超时）</string>
              </property>
             </widget>
            </item>
@@ -462,20 +525,20 @@
            <item>
             <widget class="QLabel" name="keyLabel">
              <property name="text">
-              <string>私钥</string>
+              <string>私钥(可选)</string>
              </property>
             </widget>
            </item>
            <item>
             <widget class="QLineEdit" name="keyEdit">
              <property name="minimumWidth">
-              <number>220</number>
+              <number>200</number>
              </property>
              <property name="placeholderText">
-              <string>留空则用默认密钥 / 密码交互</string>
+              <string>使用密钥登录时填，密码登录留空</string>
              </property>
              <property name="toolTip">
-              <string>私钥文件路径（-i）。密码始终由终端内的 ssh.exe 提示输入</string>
+              <string>私钥文件路径（ssh -i 参数）。平时留空即可：用上方「密码」自动登录，或在终端里手动输密码</string>
              </property>
             </widget>
            </item>
@@ -505,27 +568,7 @@
               <number>90</number>
              </property>
              <property name="toolTip">
-              <string>连接超时秒数（ConnectTimeout）</string>
-             </property>
-            </widget>
-           </item>
-           <item>
-            <widget class="QLabel" name="argsLabel">
-             <property name="text">
-              <string>附加选项</string>
-             </property>
-            </widget>
-           </item>
-           <item>
-            <widget class="QLineEdit" name="argsEdit">
-             <property name="minimumWidth">
-              <number>160</number>
-             </property>
-             <property name="placeholderText">
-              <string>如 -4 -o Ciphers=aes256-ctr</string>
-             </property>
-             <property name="toolTip">
-              <string>原样追加给 ssh.exe 的参数，按空格分词</string>
+              <string>等多久算连不上（秒）。主机一直没响应就报错收场；网慢/设备休眠时可调大，默认 10 秒够用</string>
              </property>
             </widget>
            </item>

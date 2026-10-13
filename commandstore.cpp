@@ -94,6 +94,7 @@ static QJsonObject profileToJson(const Profile &p)
     s[QStringLiteral("host")] = p.ssh.host;
     s[QStringLiteral("port")] = p.ssh.port;
     s[QStringLiteral("user")] = p.ssh.user;
+    s[QStringLiteral("password")] = p.ssh.password;
     s[QStringLiteral("privateKey")] = p.ssh.privateKey;
     s[QStringLiteral("connectTimeoutSec")] = p.ssh.connectTimeoutSec;
     s[QStringLiteral("extraArgs")] = p.ssh.extraArgs;
@@ -125,6 +126,7 @@ static Profile profileFromJson(const QJsonObject &o)
     p.ssh.host = s.value(QStringLiteral("host")).toString();
     p.ssh.port = s.value(QStringLiteral("port")).toInt(22);
     p.ssh.user = s.value(QStringLiteral("user")).toString();
+    p.ssh.password = s.value(QStringLiteral("password")).toString();
     p.ssh.privateKey = s.value(QStringLiteral("privateKey")).toString();
     p.ssh.connectTimeoutSec = s.value(QStringLiteral("connectTimeoutSec")).toInt(10);
     p.ssh.extraArgs = s.value(QStringLiteral("extraArgs")).toString();

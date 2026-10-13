@@ -40,6 +40,17 @@ SendInput = user32.SendInput
 
 # 64 位下 HWND 必须按 c_void_p 传，否则句柄会被截断成 32 位
 _HW = ctypes.c_void_p
+
+
+class RECT(ctypes.Structure):
+    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+
+class POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
 for _name, _args, _rest in (
     ("GetWindowThreadProcessId", (_HW, ctypes.POINTER(ctypes.c_uint)), None),
     ("IsWindowVisible", (_HW,), ctypes.c_bool),
@@ -50,6 +61,16 @@ for _name, _args, _rest in (
     ("ShowWindow", (_HW, ctypes.c_int), ctypes.c_bool),
     ("BringWindowToTop", (_HW,), ctypes.c_bool),
     ("AttachThreadInput", (ctypes.c_uint, ctypes.c_uint, ctypes.c_bool), ctypes.c_bool),
+    ("GetForegroundWindow", (), _HW),
+    ("SetWindowPos", (_HW, _HW, ctypes.c_int, ctypes.c_int,
+                       ctypes.c_int, ctypes.c_int, ctypes.c_uint), ctypes.c_bool),
+    ("WindowFromPoint", (POINT,), _HW),
+    ("GetAncestor", (_HW, ctypes.c_uint), _HW),
+    ("PostMessageW", (_HW, ctypes.c_uint, ctypes.c_void_p, ctypes.c_ssize_t),
+     ctypes.c_bool),
+    ("SwitchToThisWindow", (_HW, ctypes.c_bool), None),
+    ("VkKeyScanW", (ctypes.c_wchar,), ctypes.c_short),
+    ("MapVirtualKeyW", (ctypes.c_uint, ctypes.c_uint), ctypes.c_uint),
 ):
     _fn = getattr(user32, _name)
     _fn.argtypes = _args
@@ -108,27 +129,28 @@ def windows_of_pid(pid):
 
 
 def foreground(hwnd):
-    """绕过系统的焦点窃取防护：attach 到当前前台线程再 SetForegroundWindow。"""
+    """把 hwnd 变成真正的前台窗口。
+
+    Windows 的焦点窃取防护会拒绝后台进程调 SetForegroundWindow，除非调用方
+    "刚刚有过键盘输入"。所以先注入一次 Alt 按下/抬起伪造键盘活动，再配合
+    AttachThreadInput；仍不行就退回 SwitchToThisWindow（该 API 不受防护限制）。
+    """
+    press_key(VK_MENU)
     ftid = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
     mtid = kernel32_GetCurrentThreadId()
     user32.AttachThreadInput(mtid, ftid, True)
     user32.ShowWindow(hwnd, 5)  # SW_SHOW
     user32.BringWindowToTop(hwnd)
-    user32.SetForegroundWindow(hwnd)
+    ok = user32.SetForegroundWindow(hwnd)
     user32.AttachThreadInput(mtid, ftid, False)
+    if not ok:
+        user32.SwitchToThisWindow(hwnd, True)
+        time.sleep(0.2)
+        user32.SetForegroundWindow(hwnd)
 
 
 def kernel32_GetCurrentThreadId():
     return ctypes.windll.kernel32.GetCurrentThreadId()
-
-
-class RECT(ctypes.Structure):
-    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
-                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
-
-
-class POINT(ctypes.Structure):
-    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
 
 
 def client_rect(hwnd):
@@ -156,6 +178,120 @@ def click(hwnd, x, y):
         time.sleep(0.04)
 
 
+HWND_TOPMOST = -1
+SWP_SHOWWINDOW = 0x0040
+
+
+def place_window(hwnd, x, y, w, h):
+    """把被测窗口钉到固定屏幕位置并置顶。
+
+    截图用 ImageGrab 抓屏幕矩形，任何叠在上面的窗口都会污染画面；更糟的是
+    click 走 ClientToScreen + SetCursorPos，被遮挡时鼠标事件落到遮挡者身上，
+    表现为「点了连接没反应」这类假故障。
+    """
+    user32.SetWindowPos(hwnd, ctypes.c_void_p(HWND_TOPMOST), x, y, w, h,
+                        SWP_SHOWWINDOW)
+    time.sleep(0.4)
+
+
+def top_hwnd_at(hwnd, x, y):
+    """返回该客户区点位置上真正接受鼠标事件的顶层窗口，用于遮挡自检。"""
+    p = POINT(x, y)
+    user32.ClientToScreen(hwnd, ctypes.byref(p))
+    hit = user32.WindowFromPoint(p)
+    if not hit:
+        return None
+    root = user32.GetAncestor(hit, 2)  # GA_ROOTOWNER
+    return root or hit
+
+
+WM_LBUTTONDOWN = 0x0201
+WM_LBUTTONUP = 0x0202
+MK_LBUTTON = 0x0001
+
+
+def post_click(hwnd, x, y):
+    """直接往窗口投 WM_LBUTTONDOWN/UP（客户区坐标）。
+
+    click() 走 SetCursorPos + SendInput，受 DPI 虚拟化影响：Python 进程与
+    Qt 进程的 DPI 感知上下文不同时，ClientToScreen 与截图坐标系会各自缩放，
+    点击落到错误控件上，表现为「点了按钮没反应」的假故障。
+    """
+    lparam = (int(y) << 16) | (int(x) & 0xFFFF)
+    user32.PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam)
+    time.sleep(0.05)
+    user32.PostMessageW(hwnd, WM_LBUTTONUP, 0, lparam)
+    time.sleep(0.05)
+
+
+WM_KEYDOWN = 0x0100
+WM_KEYUP = 0x0101
+WM_CHAR = 0x0102
+
+
+def _key_lparam(scan, up, repeats=1):
+    """KF_* 打包：bit0-15 重复次数，bit16-23 扫描码，bit30 上下文，bit31 抬起位。"""
+    v = (repeats & 0xFFFF) | ((scan & 0xFF) << 16)
+    if up:
+        v |= 0x40000000 | 0x80000000
+    return v
+
+
+def post_key(hwnd, vk, scan=0, ch=None):
+    """往窗口直投一次按键（可选同时投 WM_CHAR）。
+
+    走 SendInput 的键盘注入要求目标窗口真的是前台活动窗口，而自动化脚本
+    常常抢不到前台（系统的焦点窃取防护），按键会打到别的程序上，得出
+    「终端敲了没反应」的假结论。PostMessage 不受激活状态影响。
+    """
+    user32.PostMessageW(hwnd, WM_KEYDOWN, vk, _key_lparam(scan, False))
+    if ch is not None:
+        user32.PostMessageW(hwnd, WM_CHAR, ord(ch), _key_lparam(scan, False))
+    time.sleep(0.02)
+    user32.PostMessageW(hwnd, WM_KEYUP, vk, _key_lparam(scan, True))
+    time.sleep(0.02)
+
+
+def post_text(hwnd, text):
+    """按字符直投按键。
+
+    只投 WM_KEYDOWN/UP，不额外投 WM_CHAR：Qt 会用 vk+scan 自己 ToUnicode
+    还原 event->text()，与真实按键一致。再补一份 WM_CHAR 会让 QPlainTextEdit
+    把它当第二次输入处理，出现重复字符。
+    """
+    for c in text:
+        vk = user32.VkKeyScanW(c)
+        if vk == -1:
+            continue
+        # VkKeyScanW 低字节是 VK，扫描码要另问 MapVirtualKey（Qt 用它做 ToUnicode）
+        post_key(hwnd, vk & 0xFF, user32.MapVirtualKeyW(vk & 0xFF, 0))
+
+
+def pid_of(hwnd):
+    wpid = ctypes.c_uint()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(wpid))
+    return wpid.value
+
+
+def foreground_hwnd():
+    return user32.GetForegroundWindow()
+
+
+def ensure_foreground(hwnd, pid):
+    """确认 hwnd 真的是前台活动窗口，否则键盘注入会打到别的程序上。
+
+    窗口 TOPMOST / 可见 不等于 已激活：只有激活窗口才收键盘。不校验就
+    type_text，会得出「终端敲了没反应」的假结论。
+    """
+    fg = foreground_hwnd()
+    if fg and pid_of(fg) == pid:
+        return True
+    foreground(hwnd)
+    time.sleep(0.4)
+    fg = foreground_hwnd()
+    return bool(fg) and pid_of(fg) == pid
+
+
 def type_text(text):
     for ch in text:
         for up in (False, True):
@@ -164,6 +300,29 @@ def type_text(text):
                         iu=INPUTUNION(ki=KEYBDINPUT(0, ord(ch), flags, 0, None)))
             SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
         time.sleep(0.02)
+
+
+VK_RETURN = 0x0D
+VK_ESCAPE = 0x1B
+VK_MENU = 0x12
+SCAN_RETURN = 0x1C
+
+
+def press_key(vk, scan=0):
+    """按一次虚拟键（按下+抬起）。
+
+    type_text 全程用 KEYEVENTF_UNICODE，'\\n' 只会变成字符事件，
+    Qt 侧 keyPressEvent 的 key() 不是 Key_Return —— 回车必须走虚拟键码。
+    """
+    for flags in (0, KEYEVENTF_KEYUP):
+        inp = INPUT(type=INPUT_KEYBOARD,
+                    iu=INPUTUNION(ki=KEYBDINPUT(vk, scan, flags, 0, None)))
+        SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+        time.sleep(0.02)
+
+
+def press_enter():
+    press_key(VK_RETURN, SCAN_RETURN)
 
 
 def shot(hwnd, name):

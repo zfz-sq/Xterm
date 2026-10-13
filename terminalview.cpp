@@ -563,6 +563,13 @@ void TerminalView::appendSystemMessage(const QString &text)
     flushPending();
     QTextCharFormat fmt;
     fmt.setForeground(m_infoColor);
+    // 远端最后一行常常不带换行（ssh 的 "password:" 提示就是如此），直接插会把
+    // 系统提示拼在那一行后面，看着像被截断的乱码。
+    // 判据是「光标在不在某个 block 开头」——不在开头说明上一行还欠一个换行。
+    // 注意不能用 atBlockEnd()：末行没有换行符时光标恰好就在该 block 末尾，
+    // 那个判据会把这种情况误认为"已经在新一行上"。
+    if (!m_cursor.atBlockStart())
+        m_cursor.insertText(QStringLiteral("\n"), fmt);
     m_cursor.insertText(text, fmt);
     m_cursor.insertText(QStringLiteral("\n"), fmt);
     ensureCursorVisible();
@@ -578,10 +585,7 @@ void TerminalView::feedChar(QChar c)
             m_state = StateEsc;
         } else if (c == QLatin1Char('\n')) {
             flushPending();
-            m_overwrite = false;
-            if (!m_cursor.atBlockEnd())
-                m_cursor.movePosition(QTextCursor::EndOfBlock); // \r\n 不产生空行
-            m_cursor.insertText(QStringLiteral("\n"), m_fmt);
+            lineFeed();
         } else if (c == QLatin1Char('\r')) {
             flushPending();
             m_cursor.movePosition(QTextCursor::StartOfBlock);
@@ -599,7 +603,7 @@ void TerminalView::feedChar(QChar c)
             m_pending += c; // 连续普通文本攒起来批量插入
         } else if (c == QChar(0x0B) || c == QChar(0x0C)) { // VT / FF 当换行
             flushPending();
-            m_cursor.insertText(QStringLiteral("\n"), m_fmt);
+            lineFeed();
         }
         break;
 
@@ -611,6 +615,9 @@ void TerminalView::feedChar(QChar c)
             m_state = StateOsc; // OSC: 吞到 BEL / ST
         } else if (c == QLatin1Char('(') || c == QLatin1Char(')') || c == QLatin1Char('#')) {
             m_state = StateCharset; // 字符集选择: 吞掉下一个字符
+        } else if (c == QLatin1Char('c')) {
+            resetScreen(); // RIS 整屏复位（clear / reset）
+            m_state = StateNormal;
         } else {
             m_state = StateNormal; // 两字符转义（ESC 7 等）忽略
         }
@@ -827,6 +834,26 @@ void TerminalView::setCursorColumn(int col)
     m_cursor.setPosition(b.position() + qMin(qMax(1, col) - 1, qMax(0, b.length() - 1)));
 }
 
+// LF（\n）在终端里是「光标下移一行」，列位置保留并夹到目标行行尾；只有下面确实
+// 没有行了才新起一行（对应真实终端在屏幕底边滚动）。
+// 之前按「插入换行符」实现：conhost 的整屏重绘发的是 ESC[H 之后每行 EL+CR+LF
+// （cls、以及远端 clear 触发重绘时都是这套），于是一整屏空行被插进文档中间，
+// 旧内容被顶到空行下面 —— 用户看到的就是「clear 之后留下一大片空白没清掉」。
+void TerminalView::lineFeed()
+{
+    const QTextBlock next = m_cursor.block().next();
+    if (next.isValid()) {
+        const int col = qMin(m_cursor.positionInBlock(), qMax(0, next.length() - 1));
+        m_cursor.setPosition(next.position() + col);
+        m_overwrite = true; // 落在已有行上：后续字符替换该行内容，与终端一致
+        return;
+    }
+    if (!m_cursor.atBlockEnd())
+        m_cursor.movePosition(QTextCursor::EndOfBlock); // \r\n 不该多出空行
+    m_overwrite = false;
+    m_cursor.insertText(QStringLiteral("\n"), m_fmt);
+}
+
 void TerminalView::eraseLine(int mode)
 {
     flushPending();
@@ -855,8 +882,33 @@ void TerminalView::eraseDisplay(int mode)
         QTextCursor c = m_cursor;
         c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
         c.removeSelectedText();
+    } else if (mode == 1) { // 文档头到光标
+        QTextCursor c = m_cursor;
+        c.movePosition(QTextCursor::Start, QTextCursor::KeepAnchor);
+        c.removeSelectedText();
+        m_cursor = c;
+        m_cursor.clearSelection();
+    } else if (mode == 3) {
+        // 清回滚区。本控件里文档同时兼作回滚区，分不清「屏幕」从哪一行开始，
+        // 只能整体丢弃 —— 和 mode 2 一样。conhost 的 cls 重绘正是「逐行 EL+CR+LF
+        // 刷出一屏空白，再补一个 ESC[3J」。不接住 3J 的话那一屏空白行就留在
+        // 文档里，旧内容被顶在下面，看着像 clear 没清干净。
+        m_cursor.select(QTextCursor::Document);
+        m_cursor.removeSelectedText();
     }
-    // mode 1 少见，忽略
+}
+
+// RIS（ESC c）整屏复位。BusyBox 的 clear 在认出 xterm 时发的是 ESC c 而不是
+// CSI 2J，reset 更是只有这一种写法；不实现的话这两条命令按下去屏幕一动不动。
+void TerminalView::resetScreen()
+{
+    flushPending();
+    m_fmt = QTextCharFormat();
+    m_fmt.setForeground(s_palette->defaultFg); // 回到初始配色，等价于一次 SGR 0
+    m_overwrite = false;
+    m_cursor.select(QTextCursor::Document);
+    m_cursor.removeSelectedText();
+    setCursorRowCol(1, 1);
 }
 
 // ---------------------------------------------------------------- 键盘
