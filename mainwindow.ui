@@ -374,6 +374,19 @@
         </widget>
        </item>
        <item>
+        <widget class="QToolButton" name="filesBtn">
+         <property name="enabled">
+          <bool>false</bool>
+         </property>
+         <property name="toolTip">
+          <string>SFTP 文件管理（需 SSH 连接）</string>
+         </property>
+         <property name="toolButtonStyle">
+          <enum>Qt::ToolButtonIconOnly</enum>
+         </property>
+        </widget>
+       </item>
+       <item>
         <spacer name="connSpacer">
          <property name="orientation">
           <enum>Qt::Horizontal</enum>

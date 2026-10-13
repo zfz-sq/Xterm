@@ -61,6 +61,7 @@ private:
     void onConnectClicked();
     void onConnectionParamChanged();
     void browsePrivateKey();
+    void onFilesClicked();          // 打开 SFTP 文件管理器（SSH 会话的独立第二连接）
 
     void sendRaw(const QByteArray &bytes);       // 唯一发送汇聚点 → 当前链路
     void sendLine(const QString &line);          // 预设命令按钮用
@@ -85,6 +86,7 @@ private:
     CompletionEngine *m_completion = nullptr;
     QLabel *m_statusLabel = nullptr;
     QTimer *m_saveTimer = nullptr; // 配置保存防抖（单发，见 scheduleProfileSave）
+    class FileBrowserDialog *m_fileBrowser = nullptr; // SFTP 双栏窗口，存在期间独立于终端会话
 
     Mode m_mode = Mode::Serial;
     QString m_currentProfile;

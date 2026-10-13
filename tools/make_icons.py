@@ -228,6 +228,18 @@ def draw_toolbar(theme, c):
     img.putalpha(alpha)
     save(img, theme, "moon.png")
 
+    # ---- folder (SFTP 文件浏览器入口) ----
+    img, d = canvas()
+    d.polygon([(44, 76), (104, 76), (124, 96), (212, 96)], fill=neutral)
+    d.polygon([(44, 76), (44, 188), (212, 188), (212, 96)], fill=neutral)
+    save(img, theme, "folder.png")
+
+    # ---- pencil (重命名) ----
+    img, d = canvas()
+    d.polygon([(140, 56), (200, 116), (104, 212), (44, 212), (44, 152)], fill=neutral)
+    d.polygon([(160, 36), (188, 64), (148, 104), (120, 76)], fill=neutral)
+    save(img, theme, "pencil.png")
+
 
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)

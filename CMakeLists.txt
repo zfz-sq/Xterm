@@ -24,6 +24,16 @@ qt_standard_project_setup()
 # qt_standard_project_setup() 不含 AUTORCC，qrc 资源需显式开启
 set(CMAKE_AUTORCC ON)
 
+# vendored libssh2（SFTP 协议栈）：纯 C、静态链接、WinCNG 加密后端（走
+# Windows bcrypt API，免 OpenSSL 依赖）、不启 zlib 压缩。
+# EXCLUDE_FROM_ALL：不随默认目标构建，仅在 Xterm 链接时才缩译。
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(CRYPTO_BACKEND "WinCNG" CACHE STRING "" FORCE)
+set(ENABLE_ZLIB_COMPRESSION OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/libssh2 EXCLUDE_FROM_ALL)
+
 qt_add_executable(Xterm
     WIN32
     MACOSX_BUNDLE
@@ -51,6 +61,12 @@ qt_add_executable(Xterm
     termscreen.h
     screenview.cpp
     screenview.h
+    sftpclient.cpp
+    sftpclient.h
+    filebrowserdialog.cpp
+    filebrowserdialog.h
+    transferdialog.cpp
+    transferdialog.h
     resources/resources.qrc
     ${XTERM_RC_SOURCES}
 )
@@ -59,6 +75,9 @@ target_link_libraries(Xterm
     PRIVATE
         Qt6::Widgets
         Qt6::SerialPort
+        libssh2
+        ws2_32
+        bcrypt
 )
 
 install(TARGETS Xterm

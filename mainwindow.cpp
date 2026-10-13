@@ -24,6 +24,7 @@
 #include <QToolButton>
 
 #include "commandbar.h"
+#include "filebrowserdialog.h"
 #include "icons.h"
 #include "screenview.h"
 #include "serialsession.h"
@@ -153,6 +154,7 @@ void MainWindow::setupIcons()
     ui->pwToggleBtn->setIconSize(QSize(16, 16));
     ui->pwToggleBtn->setText(QString());
     ui->keyBrowseBtn->setIconSize(QSize(16, 16));
+    ui->filesBtn->setIcon(themedIcon(QStringLiteral("folder.png")));
     ui->themeBtn->setIcon(themedIcon(QStringLiteral("sun.png"))); // 实际图标由 applyTheme 设定
 }
 
@@ -438,6 +440,8 @@ void MainWindow::connectSignals()
     });
     connect(m_ssh, &SshSession::stateChanged, this,
             [this](Transport::State) { updateConnectionUi(); updatePersistentStatus(); });
+
+    connect(ui->filesBtn, &QToolButton::clicked, this, &MainWindow::onFilesClicked);
 }
 
 // ---------------------------------------------------------------- 连接栏
@@ -569,6 +573,21 @@ void MainWindow::browsePrivateKey()
         ui->keyEdit->setText(QDir::toNativeSeparators(file));
 }
 
+void MainWindow::onFilesClicked()
+{
+    if (m_fileBrowser) {
+        m_fileBrowser->show();
+        m_fileBrowser->raise();
+        m_fileBrowser->activateWindow();
+        return;
+    }
+    // 用会话实际参数建第二条连接；窗口关闭即断开（终端会话不受影响）
+    m_fileBrowser = new FileBrowserDialog(m_ssh->target(), this);
+    m_fileBrowser->setAttribute(Qt::WA_DeleteOnClose);
+    connect(m_fileBrowser, &QObject::destroyed, this, [this] { m_fileBrowser = nullptr; });
+    m_fileBrowser->show();
+}
+
 // ---------------------------------------------------------------- 模式切换
 
 Transport *MainWindow::activeTransport() const
@@ -682,6 +701,9 @@ void MainWindow::updateConnectionUi()
     ui->timeoutCombo->setEnabled(!serial && idle);
     ui->keyEdit->setEnabled(!serial && idle);
     ui->keyBrowseBtn->setEnabled(!serial && idle);
+
+    // 文件管理器看 SSH 链路（含后台模式），与当前在哪一页无关
+    ui->filesBtn->setEnabled(m_ssh->state() == Transport::Connected);
 }
 
 void MainWindow::applyTheme()
