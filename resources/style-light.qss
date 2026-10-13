@@ -1,0 +1,309 @@
+/* Xterm 亮色主题 —— 与深色版同一结构，仅换色板 */
+
+* {
+    color: #24292E;
+    selection-background-color: #CDE8FF;
+    selection-color: #1F1F1F;
+}
+
+QMainWindow, QWidget#centralwidget {
+    background-color: #F3F3F3;
+}
+
+/* ---------------- 面板容器 ---------------- */
+
+QFrame#connectionBar, QFrame#advancedBar, QFrame#terminalPanel {
+    background-color: #FFFFFF;
+    border: 1px solid #DCDCDE;
+    border-radius: 6px;
+}
+
+QLabel {
+    background: transparent;
+    color: #5A5A5E;
+}
+
+/* ---------------- 输入类控件 ---------------- */
+
+QComboBox, QLineEdit {
+    background-color: #FFFFFF;
+    border: 1px solid #C9C9CD;
+    border-radius: 4px;
+    padding: 3px 8px;
+    min-height: 20px;
+}
+QComboBox:hover, QLineEdit:hover {
+    background-color: #F6F6F8;
+    border-color: #AFAFB5;
+}
+QComboBox:focus, QLineEdit:focus {
+    border-color: #007ACC;
+    background-color: #FFFFFF;
+}
+QComboBox:disabled, QLineEdit:disabled {
+    color: #9A9A9E;
+    background-color: #F0F0F2;
+    border-color: #DCDCDE;
+}
+QComboBox::drop-down {
+    subcontrol-origin: border;
+    subcontrol-position: center right;
+    border: none;
+    width: 20px;
+}
+QComboBox::down-arrow {
+    image: url(:/icons/light/down.png);
+    width: 12px;
+    height: 12px;
+}
+QComboBox#baudCombo {
+    min-height: 30px;
+    max-height: 30px;
+    padding: 0 2px 0 8px;
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+    border-right: none;
+}
+QToolButton#settingsBtn {
+    background-color: #FFFFFF;
+    border: 1px solid #C9C9CD;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    padding: 0;
+    margin: 0;
+    min-width: 30px;
+    max-width: 30px;
+    min-height: 30px;
+    max-height: 30px;
+}
+QToolButton#settingsBtn:hover {
+    background-color: #F6F6F8;
+    border-color: #AFAFB5;
+}
+QToolButton#settingsBtn:pressed {
+    background-color: #E8E8EC;
+}
+QComboBox {
+    combobox-popup: 0;
+}
+QComboBox QAbstractItemView {
+    background-color: #FFFFFF;
+    border: 1px solid #C9C9CD;
+    selection-background-color: #D6E9FF;
+    selection-color: #1F1F1F;
+    outline: none;
+}
+QComboBox QLineEdit {
+    background: transparent;
+    border: none;
+    padding: 0;
+    min-height: 0;
+}
+
+/* ---------------- 按钮 ---------------- */
+
+QPushButton {
+    background-color: #FFFFFF;
+    border: 1px solid #C9C9CD;
+    border-radius: 4px;
+    padding: 5px 14px;
+    min-height: 18px;
+}
+QPushButton:hover {
+    background-color: #F0F0F3;
+    border-color: #A8A8AE;
+}
+QPushButton:pressed {
+    background-color: #E8E8EC;
+}
+QPushButton:disabled {
+    color: #9A9A9E;
+    background-color: #F2F2F4;
+    border-color: #DCDCDE;
+}
+
+QPushButton#connectBtn {
+    background-color: #2EA043;
+    border: 1px solid #2C9A40;
+    color: #FFFFFF;
+    font-weight: 600;
+}
+QPushButton#connectBtn:hover {
+    background-color: #33B349;
+    border-color: #36B84D;
+}
+QPushButton#connectBtn:pressed {
+    background-color: #28913C;
+}
+QPushButton#connectBtn:disabled {
+    background-color: #B9D8C0;
+    border-color: #B9D8C0;
+    color: #F0F6F1;
+}
+
+QPushButton#connectBtn[connected="true"] {
+    background-color: transparent;
+    border: 1px solid #E0A2A2;
+    color: #D0453B;
+}
+QPushButton#connectBtn[connected="true"]:hover {
+    background-color: #FBEDED;
+    border-color: #E07B7B;
+}
+QPushButton#connectBtn[connected="true"]:pressed {
+    background-color: #F5E2E2;
+}
+
+QToolButton {
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 3px;
+}
+QToolButton:hover {
+    background-color: #ECECEF;
+    border-color: #C9C9CD;
+}
+QToolButton:pressed {
+    background-color: #E2E2E6;
+}
+QToolButton:checked {
+    background-color: #CDE4FB;
+    border-color: #7FB6E8;
+}
+QToolButton:disabled {
+    color: #B0B0B4;
+}
+
+/* 模式切换：当前在哪个终端的主入口，带文字，做出实体按钮感 */
+QToolButton#modeBtn {
+    background-color: #FFFFFF;
+    border: 1px solid #C9C9CD;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-weight: 600;
+}
+QToolButton#modeBtn:hover {
+    background-color: #F0F0F3;
+    border-color: #A8A8AE;
+}
+QToolButton#modeBtn:pressed {
+    background-color: #E8E8EC;
+}
+
+/* 私钥浏览：与 QLineEdit 同一口径，读作输入框的附属按钮 */
+QToolButton#keyBrowseBtn {
+    background-color: #FFFFFF;
+    border: 1px solid #C9C9CD;
+    border-radius: 4px;
+    padding: 0;
+    min-width: 28px;
+    max-width: 28px;
+    min-height: 28px;
+    max-height: 28px;
+}
+QToolButton#keyBrowseBtn:hover {
+    background-color: #F0F0F3;
+    border-color: #A8A8AE;
+}
+QToolButton#keyBrowseBtn:pressed {
+    background-color: #E8E8EC;
+}
+QToolButton#keyBrowseBtn:disabled {
+    background-color: #F2F2F4;
+    border-color: #DCDCDE;
+    color: #B0B0B4;
+}
+
+/* 模式页容器：让面板底色透出来，切页时不出现色块 */
+QStackedWidget {
+    background: transparent;
+    border: none;
+}
+
+/* ---------------- 列表 ---------------- */
+
+QListWidget {
+    background-color: #FBFBFC;
+    alternate-background-color: #F3F3F5;
+    border: 1px solid #DCDCDE;
+    border-radius: 4px;
+    outline: none;
+}
+QListWidget::item {
+    padding: 2px;
+    border-radius: 3px;
+}
+QListWidget::item:hover {
+    background-color: #F0F0F3;
+}
+QListWidget::item:selected {
+    background-color: #D6E9FF;
+    color: #1F1F1F;
+}
+
+/* ---------------- 滚动区与滚动条 ---------------- */
+
+QScrollArea {
+    background: transparent;
+    border: none;
+}
+QScrollArea > QWidget > QWidget {
+    background: transparent;
+}
+
+QScrollBar:vertical {
+    background: transparent;
+    width: 10px;
+    margin: 2px;
+}
+QScrollBar::handle:vertical {
+    background: #C6C6CB;
+    border-radius: 4px;
+    min-height: 28px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #A9A9B0;
+}
+QScrollBar:horizontal {
+    background: transparent;
+    height: 10px;
+    margin: 2px;
+}
+QScrollBar::handle:horizontal {
+    background: #C6C6CB;
+    border-radius: 4px;
+    min-width: 28px;
+}
+QScrollBar::handle:horizontal:hover {
+    background: #A9A9B0;
+}
+QScrollBar::add-line, QScrollBar::sub-line {
+    width: 0;
+    height: 0;
+}
+QScrollBar::add-page, QScrollBar::sub-page {
+    background: transparent;
+}
+
+/* ---------------- 状态栏 ---------------- */
+
+QStatusBar {
+    background-color: #F3F3F3;
+    border-top: 1px solid #007ACC;
+    color: #6A6A6E;
+}
+QStatusBar QLabel {
+    color: #6A6A6E;
+    padding: 0 2px;
+}
+
+/* ---------------- 提示气泡 ---------------- */
+
+QToolTip {
+    background-color: #FFFFFF;
+    color: #24292E;
+    border: 1px solid #C9C9CD;
+    padding: 5px 8px;
+    border-radius: 3px;
+}

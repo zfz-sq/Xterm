@@ -1,0 +1,43 @@
+<RCC>
+    <qresource prefix="/">
+        <file>icons/app.png</file>
+        <file>icons/light/refresh.png</file>
+        <file>icons/light/connect.png</file>
+        <file>icons/light/disconnect.png</file>
+        <file>icons/light/send.png</file>
+        <file>icons/light/add.png</file>
+        <file>icons/light/remove.png</file>
+        <file>icons/light/up.png</file>
+        <file>icons/light/down.png</file>
+        <file>icons/light/copy.png</file>
+        <file>icons/light/grip.png</file>
+        <file>icons/light/gear.png</file>
+        <file>icons/light/trash.png</file>
+        <file>icons/light/chevron_right.png</file>
+        <file>icons/light/chevron_left.png</file>
+        <file>icons/light/sun.png</file>
+        <file>icons/light/moon.png</file>
+        <file>icons/light/ssh.png</file>
+        <file>icons/light/serial.png</file>
+        <file>icons/dark/refresh.png</file>
+        <file>icons/dark/connect.png</file>
+        <file>icons/dark/disconnect.png</file>
+        <file>icons/dark/send.png</file>
+        <file>icons/dark/add.png</file>
+        <file>icons/dark/remove.png</file>
+        <file>icons/dark/up.png</file>
+        <file>icons/dark/down.png</file>
+        <file>icons/dark/copy.png</file>
+        <file>icons/dark/grip.png</file>
+        <file>icons/dark/gear.png</file>
+        <file>icons/dark/trash.png</file>
+        <file>icons/dark/chevron_right.png</file>
+        <file>icons/dark/chevron_left.png</file>
+        <file>icons/dark/sun.png</file>
+        <file>icons/dark/moon.png</file>
+        <file>icons/dark/ssh.png</file>
+        <file>icons/dark/serial.png</file>
+        <file>style-dark.qss</file>
+        <file>style-light.qss</file>
+    </qresource>
+</RCC>

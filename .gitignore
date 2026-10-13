@@ -1,0 +1,25 @@
+# Build outputs
+build/
+cmake-build-*/
+out/
+
+# IDE local config
+.qtcreator/
+.workbuddy/
+*.user
+*.user*
+
+# Qt generated / runtime
+moc_*.cpp
+qrc_*.cpp
+ui_*.cpp
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exe
+*.dll
+
+# OS / editor
+Thumbs.db
+Desktop.ini
