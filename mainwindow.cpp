@@ -25,10 +25,9 @@
 
 #include "commandbar.h"
 #include "icons.h"
+#include "screenview.h"
 #include "serialsession.h"
 #include "sshsession.h"
-#include "sshview.h"
-#include "terminalview.h"
 #include "transport.h"
 #include "ui_mainwindow.h"
 
@@ -123,6 +122,11 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_store->load();
     applyTheme();
+    // 恢复上次保存的终端字号（全局，两页一致）
+    if (const int savedPt = m_store->fontSize(); savedPt > 0) {
+        m_serialView->setFontSize(savedPt);
+        m_sshView->setFontSize(savedPt);
+    }
     ui->advancedBar->hide(); // 高级参数默认收起
     refreshPorts();
     reloadProfiles(m_store->lastProfile());
@@ -178,6 +182,11 @@ void MainWindow::setupConnectionCombos()
     ui->stopBitsCombo->addItem(QStringLiteral("1"), 1.0);
     ui->stopBitsCombo->addItem(QStringLiteral("1.5"), 1.5);
     ui->stopBitsCombo->addItem(QStringLiteral("2"), 2.0);
+
+    ui->flowCombo->addItem(tr("无"), QStringLiteral("none"));
+    ui->flowCombo->addItem(tr("硬件 RTS/CTS"), QStringLiteral("hardware"));
+    ui->dtrCheck->setChecked(true); // 默认与 Windows 打开串口后的电平一致，不改变现有行为
+    ui->rtsCheck->setChecked(true);
 
     m_loading = false;
 }
@@ -239,10 +248,11 @@ void MainWindow::setupTerminal()
 {
     // 两个终端各占一页：各自的缓冲区、ANSI 状态、滚动位置都留在原地，
     // 切模式只是换一页显示，另一侧继续收发，内容不丢、连接不断。
-    m_serialView = new TerminalView(this);
+    // 两页都是格子屏幕模型：串口设备的 top/vim 和 SSH 一样能还原。
+    m_serialView = new ScreenView(this);
     ui->serialTerminalPageLayout->addWidget(m_serialView);
 
-    m_sshView = new SshView(this);
+    m_sshView = new ScreenView(this);
     ui->sshTerminalPageLayout->addWidget(m_sshView);
 
     // 面板外观由全局主题 QSS（QFrame#terminalPanel）定义
@@ -275,6 +285,10 @@ void MainWindow::connectSignals()
             &MainWindow::onConnectionParamChanged);
     connect(ui->stopBitsCombo, &QComboBox::currentIndexChanged, this,
             &MainWindow::onConnectionParamChanged);
+    connect(ui->flowCombo, &QComboBox::currentIndexChanged, this,
+            &MainWindow::onConnectionParamChanged);
+    connect(ui->dtrCheck, &QCheckBox::toggled, this, &MainWindow::onConnectionParamChanged);
+    connect(ui->rtsCheck, &QCheckBox::toggled, this, &MainWindow::onConnectionParamChanged);
 
     connect(ui->hostEdit, &QLineEdit::textChanged, this, &MainWindow::onConnectionParamChanged);
     connect(ui->hostEdit, &QLineEdit::returnPressed, this, &MainWindow::onConnectClicked);
@@ -303,10 +317,23 @@ void MainWindow::connectSignals()
     });
 
     // 终端键盘直通 / 预设按钮
-    connect(m_serialView, &TerminalView::sendData, this, &MainWindow::sendRaw);
-    connect(m_sshView, &SshView::sendData, this, &MainWindow::sendRaw);
-    connect(m_sshView, &SshView::terminalSizeChanged, this,
+    connect(m_serialView, &ScreenView::sendData, this, &MainWindow::sendRaw);
+    connect(m_sshView, &ScreenView::sendData, this, &MainWindow::sendRaw);
+    connect(m_sshView, &ScreenView::terminalSizeChanged, this,
             [this](int cols, int rows) { m_ssh->setPtySize(cols, rows); });
+
+    // 字号全局联动：任一页改字号两页同步并持久化。
+    // setFontSize 字号相同则不发信号，联动不会回环。
+    connect(m_serialView, &ScreenView::fontSizeChanged, this, [this](int pt) {
+        m_sshView->setFontSize(pt);
+        m_store->setFontSize(pt);
+        m_store->save();
+    });
+    connect(m_sshView, &ScreenView::fontSizeChanged, this, [this](int pt) {
+        m_serialView->setFontSize(pt);
+        m_store->setFontSize(pt);
+        m_store->save();
+    });
 
     // 主题切换 / 模式切换 / 高级参数收展
     connect(ui->themeBtn, &QToolButton::clicked, this, [this] {
@@ -359,7 +386,7 @@ void MainWindow::connectSignals()
         ui->statusbar->showMessage(msg, 8000);
         m_serialView->appendSystemMessage(tr("── %1 ──").arg(msg));
     });
-    connect(m_serial, &SerialSession::received, m_serialView, &TerminalView::receiveData);
+    connect(m_serial, &SerialSession::received, m_serialView, &ScreenView::receiveData);
     connect(m_serial, &SerialSession::stateChanged, this,
             [this](Transport::State) { updateConnectionUi(); updatePersistentStatus(); });
 
@@ -387,7 +414,7 @@ void MainWindow::connectSignals()
         ui->statusbar->showMessage(msg, 8000);
         m_sshView->appendSystemMessage(tr("── %1 ──").arg(msg));
     });
-    connect(m_ssh, &SshSession::received, m_sshView, &SshView::receiveData);
+    connect(m_ssh, &SshSession::received, m_sshView, &ScreenView::receiveData);
     // 没有可代填的密码时，ssh.exe 会把提示停在终端里等用户。密码输入是
     // 不回显的（ssh 自己关掉了 echo），不说明的话用户只会觉得"敲了没反应"。
     connect(m_ssh, &SshSession::hostKeyPromptDetected, this, [this] {
@@ -397,7 +424,7 @@ void MainWindow::connectSignals()
         if (m_mode == Mode::Ssh)
             m_sshView->setFocus();
     });
-    connect(m_sshView, &SshView::shellTitleChanged, this, [this](const QString &title) {
+    connect(m_sshView, &ScreenView::shellTitleChanged, this, [this](const QString &title) {
         m_shellTitle = title;
         if (m_mode == Mode::Ssh)
             updateModeUi();
@@ -477,9 +504,14 @@ void MainWindow::onConnectClicked()
         const QSerialPort::StopBits stopBits = (sb > 1.9)   ? QSerialPort::TwoStop
                                                : (sb > 1.4) ? QSerialPort::OneAndHalfStop
                                                             : QSerialPort::OneStop;
+        const QSerialPort::FlowControl flow =
+            (ui->flowCombo->currentData().toString() == QStringLiteral("hardware"))
+                ? QSerialPort::HardwareControl
+                : QSerialPort::NoFlowControl;
 
         // 失败原因由 errorOccurred 统一上报（状态栏 + 终端），这里不再重复提示
-        m_serial->open(port, baud, dataBits, parity, stopBits);
+        m_serial->open(port, baud, dataBits, parity, stopBits, flow,
+                       ui->dtrCheck->isChecked(), ui->rtsCheck->isChecked());
         updateConnectionUi();
         return;
     }
@@ -640,8 +672,10 @@ void MainWindow::updateConnectionUi()
     const bool idle = !open && !busy;
     ui->refreshPortBtn->setEnabled(serial && idle);
     for (QComboBox *combo : {ui->portCombo, ui->baudCombo, ui->dataBitsCombo,
-                             ui->parityCombo, ui->stopBitsCombo})
+                             ui->parityCombo, ui->stopBitsCombo, ui->flowCombo})
         combo->setEnabled(serial && idle);
+    ui->dtrCheck->setEnabled(serial && idle);
+    ui->rtsCheck->setEnabled(serial && idle);
     ui->hostEdit->setEnabled(!serial && idle);
     ui->userEdit->setEnabled(!serial && idle);
     ui->sshPortCombo->setEnabled(!serial && idle);
@@ -775,6 +809,9 @@ Profile MainWindow::currentProfileFromUi() const
     p.connection.dataBits = ui->dataBitsCombo->currentData().toInt();
     p.connection.parity = ui->parityCombo->currentData().toString();
     p.connection.stopBits = ui->stopBitsCombo->currentData().toDouble();
+    p.connection.flowControl = ui->flowCombo->currentData().toString();
+    p.connection.dtr = ui->dtrCheck->isChecked();
+    p.connection.rts = ui->rtsCheck->isChecked();
     p.ssh = sshTargetFromUi();
     p.commands = m_commandBar->commands();
     return p;
@@ -832,6 +869,11 @@ void MainWindow::applyCurrentProfile()
         for (int i = 0; i < ui->stopBitsCombo->count(); ++i)
             if (qFuzzyCompare(ui->stopBitsCombo->itemData(i).toDouble(), p.connection.stopBits))
                 ui->stopBitsCombo->setCurrentIndex(i);
+        for (int i = 0; i < ui->flowCombo->count(); ++i)
+            if (ui->flowCombo->itemData(i).toString() == p.connection.flowControl)
+                ui->flowCombo->setCurrentIndex(i);
+        ui->dtrCheck->setChecked(p.connection.dtr);
+        ui->rtsCheck->setChecked(p.connection.rts);
     }
     // SSH 参数：已连接或正在连的时候不动，避免改动把用户从当前会话上带偏
     if (!m_ssh->isOpen() && m_ssh->state() == Transport::Disconnected) {

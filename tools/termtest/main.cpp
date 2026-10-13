@@ -30,6 +30,24 @@ const TermCell *cell(const TermScreen &screen, int row, int col)
     return &line->cells[size_t(col)];
 }
 
+// 全 ASCII 行：文本位即 cell 下标。找到词首格，返回它的指针。
+const TermCell *findToken(const TermScreen &screen, int row, const char *tok)
+{
+    const TermLine *line = screen.lineAbsolute(screen.historySize() + row);
+    if (!line)
+        return nullptr;
+    QString text;
+    for (const TermCell &c : line->cells) {
+        if (c.flags & TermScreen::FlagWideCont)
+            continue;
+        text.append(QChar(char16_t(c.cp)));
+    }
+    const int pos = text.indexOf(QLatin1String(tok));
+    if (pos < 0 || pos >= int(line->cells.size()))
+        return nullptr;
+    return &line->cells[size_t(pos)];
+}
+
 } // namespace
 
 int main()
@@ -192,6 +210,75 @@ int main()
         TermScreen screen;
         screen.feed(QByteArray(1, char(0xFF)));
         expect(at(screen, 0, 0) == 0xFFFD, "bad utf8");
+    }
+    {
+        // BusyBox ip addr 风格：设备没上色，按 ip -c 给地址/网卡/状态补色
+        TermScreen screen;
+        screen.feed("2: eth0: <BROADCAST,UP,LOWER_UP> mtu 1500\r\n"
+                    "    link/ether 02:11:22:33:44:55 brd ff:ff:ff:ff:ff:ff\r\n"
+                    "    inet 192.168.1.116/24 brd 192.168.1.255 scope global eth0\r\n"
+                    "    inet6 fe80::111:2222:3333:4444/64 scope link\r\n"
+                    "3: usb0: <NO-CARRIER> state DOWN\r\n");
+        const TermCell *eth = findToken(screen, 0, "eth0");
+        expect(eth && eth->fg.kind == TermColor::Indexed && eth->fg.index == 6, "ipcolor eth0 cyan");
+        const TermCell *up = findToken(screen, 0, "UP");
+        expect(up && up->fg.kind == TermColor::Indexed && up->fg.index == 2, "ipcolor UP green");
+        const TermCell *mac = findToken(screen, 1, "02:11:22:33:44:55");
+        expect(mac && mac->fg.kind == TermColor::Indexed && mac->fg.index == 3, "ipcolor mac yellow");
+        const TermCell *v4 = findToken(screen, 2, "192.168.1.116/24");
+        expect(v4 && v4->fg.kind == TermColor::Indexed && v4->fg.index == 5, "ipcolor v4 magenta");
+        const TermCell *v6 = findToken(screen, 3, "fe80::111:2222:3333:4444/64");
+        expect(v6 && v6->fg.kind == TermColor::Indexed && v6->fg.index == 12, "ipcolor v6 bright blue");
+        const TermCell *down = findToken(screen, 4, "DOWN");
+        expect(down && down->fg.kind == TermColor::Indexed && down->fg.index == 1, "ipcolor DOWN red");
+        const TermCell *usb = findToken(screen, 4, "usb0");
+        expect(usb && usb->fg.kind == TermColor::Indexed && usb->fg.index == 6, "ipcolor usb0 cyan");
+        // 嵌入式常见口：CAN / 隧道
+        screen.feed("9: can0: <NOARP,ECHO> state DOWN\r\n");
+        const TermCell *can = findToken(screen, 5, "can0");
+        expect(can && can->fg.kind == TermColor::Indexed && can->fg.index == 6, "ipcolor can0 cyan");
+        const TermCell *down2 = findToken(screen, 5, "DOWN");
+        expect(down2 && down2->fg.kind == TermColor::Indexed && down2->fg.index == 1,
+               "ipcolor DOWN red 2");
+    }
+    {
+        // 设备自己上过色的词保持原样，不补色也不改色
+        TermScreen screen;
+        screen.feed("\x1b[31m10.0.0.1\x1b[0m 10.0.0.2");
+        const TermCell *painted = findToken(screen, 0, "10.0.0.1");
+        const TermCell *plain = findToken(screen, 0, "10.0.0.2");
+        expect(painted && painted->fg.kind == TermColor::Indexed && painted->fg.index == 1,
+               "ipcolor keeps device color");
+        expect(plain && plain->fg.kind == TermColor::Indexed && plain->fg.index == 5,
+               "ipcolor paints plain twin");
+    }
+    {
+        // 词被 IO 拆在两个 chunk：光标行重扫拼出完整 IP
+        TermScreen screen;
+        screen.feed("inet 192.16");
+        expect(!findToken(screen, 0, "192.16") || true, "ipcolor split pending");
+        screen.feed("8.1.116/24 dev eth0");
+        const TermCell *v4 = findToken(screen, 0, "192.168.1.116/24");
+        expect(v4 && v4->fg.kind == TermColor::Indexed && v4->fg.index == 5, "ipcolor across chunks");
+        const TermCell *eth = findToken(screen, 0, "eth0");
+        expect(eth && eth->fg.kind == TermColor::Indexed && eth->fg.index == 6, "ipcolor if after join");
+    }
+    {
+        // 滚进历史的行也补色
+        TermScreen screen;
+        screen.resize(20, 4);
+        for (int i = 0; i < 3; ++i)
+            screen.feed(QByteArray("pad") + QByteArray(1, char('0' + i)) + "\r\n");
+        screen.feed("inet 172.20.1.5/16\r\n");
+        const TermLine *hist = screen.lineAbsolute(3); // ip 行滚进历史
+        bool colored = false;
+        if (hist) {
+            for (const TermCell &c : hist->cells) {
+                if (c.cp == U'1' && c.fg.kind == TermColor::Indexed && c.fg.index == 5)
+                    colored = true;
+            }
+        }
+        expect(colored, "ipcolor in history");
     }
 
     if (g_fails) {

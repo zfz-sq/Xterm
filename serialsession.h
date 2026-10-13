@@ -24,7 +24,9 @@ public:
 
     QString open(const QString &portName, qint32 baudRate,
                  QSerialPort::DataBits dataBits, QSerialPort::Parity parity,
-                 QSerialPort::StopBits stopBits);
+                 QSerialPort::StopBits stopBits,
+                 QSerialPort::FlowControl flowControl = QSerialPort::NoFlowControl,
+                 bool dtr = true, bool rts = true);
     void close() override;
 
     QString send(const QByteArray &data) override;

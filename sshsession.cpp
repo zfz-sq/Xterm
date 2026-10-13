@@ -259,6 +259,10 @@ void SshSession::onLaunched(const QString &errorText)
         return;
     }
     emitOpened();
+    // 视口尺寸可能在连接建立前就已更新（先 resize 后连接的竞态里，
+    // setPtySize 只存了值没能下发）。连接一就绪就补发一次；尺寸没变时
+    // ConPTY 侧有守卫，不会引发多余重绘。
+    m_pty.resize(m_cols, m_rows);
 }
 
 void SshSession::onFinished(int exitCode, bool terminatedByUs)

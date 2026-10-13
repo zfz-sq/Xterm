@@ -9,7 +9,8 @@ SerialSession::SerialSession(QObject *parent)
 
 QString SerialSession::open(const QString &portName, qint32 baudRate,
                             QSerialPort::DataBits dataBits, QSerialPort::Parity parity,
-                            QSerialPort::StopBits stopBits)
+                            QSerialPort::StopBits stopBits,
+                            QSerialPort::FlowControl flowControl, bool dtr, bool rts)
 {
     if (m_port.isOpen())
         m_port.close();
@@ -20,13 +21,18 @@ QString SerialSession::open(const QString &portName, qint32 baudRate,
     m_port.setDataBits(dataBits);
     m_port.setParity(parity);
     m_port.setStopBits(stopBits);
-    m_port.setFlowControl(QSerialPort::NoFlowControl);
+    m_port.setFlowControl(flowControl);
 
     if (!m_port.open(QIODevice::ReadWrite)) {
         const QString err = tr("打开 %1 失败：%2").arg(portName, m_port.errorString());
         emitError(err);
         return err;
     }
+    // DTR/RTS 只能在打开后压电平。Windows 默认把两根线都拉高，
+    // ESP32/Arduino 这类 DTR/RTS 接复位电路的板子会被无端复位，
+    // 所以电平交给配置决定；硬件流控下 RTS 由驱动接管，设置会被忽略。
+    m_port.setDataTerminalReady(dtr);
+    m_port.setRequestToSend(rts);
     emitOpened();
     return QString();
 }

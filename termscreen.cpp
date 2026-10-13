@@ -1,5 +1,7 @@
 #include "termscreen.h"
 
+#include <QRegularExpression>
+#include <QVector>
 #include <QtGlobal>
 
 #include <utility>
@@ -94,6 +96,72 @@ void set256(TermColor &dst, int index)
     const int b = index % 6;
     auto level = [](int v) { return v == 0 ? 0 : 55 + v * 40; };
     dst.rgb = qRgb(level(r), level(g), level(b));
+}
+
+bool isIpv4Dotted(const QString &text)
+{
+    const QStringList parts = text.split(QLatin1Char('.'));
+    if (parts.size() != 4)
+        return false;
+    for (const QString &part : parts) {
+        if (part.isEmpty() || part.size() > 3)
+            return false;
+        bool ok = false;
+        const int v = part.toInt(&ok);
+        if (!ok || v < 0 || v > 255)
+            return false;
+    }
+    return true;
+}
+
+// 校验去掉 zone/前缀后的地址。压缩形式必须含一处 "::"，且有效组数不超过 7。
+bool isIpv6Address(QString token)
+{
+    const int slash = token.indexOf(QLatin1Char('/'));
+    if (slash >= 0) {
+        bool ok = false;
+        const int prefix = token.mid(slash + 1).toInt(&ok);
+        if (!ok || prefix < 0 || prefix > 128)
+            return false;
+        token = token.left(slash);
+    }
+    const int zone = token.indexOf(QLatin1Char('%'));
+    if (zone >= 0) {
+        if (zone == 0 || zone + 1 >= token.size())
+            return false;
+        token = token.left(zone);
+    }
+    if (token.count(QStringLiteral("::")) > 1 || token.contains(QStringLiteral(":::")))
+        return false;
+    if (token.startsWith(QLatin1Char(':')) && !token.startsWith(QStringLiteral("::")))
+        return false;
+    if (token.endsWith(QLatin1Char(':')) && !token.endsWith(QStringLiteral("::")))
+        return false;
+
+    const bool compressed = token.contains(QStringLiteral("::"));
+    const QStringList parts = token.split(QLatin1Char(':'));
+    int groups = 0;
+    for (int i = 0; i < parts.size(); ++i) {
+        const QString &part = parts.at(i);
+        if (part.isEmpty())
+            continue;
+        if (part.contains(QLatin1Char('.'))) {
+            if (i != parts.size() - 1 || !isIpv4Dotted(part))
+                return false;
+            groups += 2; // IPv4 映射地址占两个组
+            continue;
+        }
+        if (part.size() > 4)
+            return false;
+        for (const QChar c : part) {
+            if (!c.isDigit() && (c.toLower() < QLatin1Char('a') || c.toLower() > QLatin1Char('f')))
+                return false;
+        }
+        ++groups;
+    }
+    if (!compressed)
+        return groups == 8;
+    return groups <= 7;
 }
 
 } // namespace
@@ -288,6 +356,7 @@ int TermScreen::resize(int cols, int rows)
 
 int TermScreen::finishFeed()
 {
+    paintTouchedLines();
     if (m_histCleared) {
         m_histCleared = false;
         return -1;
@@ -302,7 +371,176 @@ int TermScreen::trim()
         m_hist.pop_front();
         ++dropped;
     }
+    if (dropped > 0)
+        m_unscannedHist = qMax(0, m_unscannedHist - dropped); // 头部丢弃后下标前移
     return dropped;
+}
+
+void TermScreen::touchRow(int row)
+{
+    if (m_touchMin < 0 || row < m_touchMin)
+        m_touchMin = row;
+    if (row > m_touchMax)
+        m_touchMax = row;
+}
+
+void TermScreen::touchAll()
+{
+    m_touchMin = 0;
+    m_touchMax = m_rows - 1;
+}
+
+void TermScreen::paintTouchedLines()
+{
+    if (!m_alt) {
+        // 刚滚进历史的行内容已定稿（进历史后不会再改），补一次色；幂等，重扫无副作用
+        while (m_unscannedHist < int(m_hist.size()))
+            paintIpTokens(m_hist[size_t(m_unscannedHist++)]);
+        // 光标行总是重扫：词可能被 IO 拆在两个 chunk 里分批拼出来
+        touchRow(m_row);
+        if (m_touchMin >= 0) {
+            const int top = qMax(0, m_touchMin);
+            const int bottom = qMin(m_rows - 1, m_touchMax);
+            for (int r = top; r <= bottom; ++r)
+                paintIpTokens(m_lines[size_t(r)]);
+        }
+    }
+    m_touchMin = -1;
+    m_touchMax = -1;
+}
+
+// 设备若已用 ANSI 上色则保持原样；否则按 Ubuntu ip -c 给地址、网卡和链路状态补色。
+// 颜色存调色板下标，主题切换由 resolve() 解析，不用重写格子。
+void TermScreen::paintIpTokens(TermLine &line)
+{
+    if (line.cells.empty())
+        return;
+    QString text;
+    text.reserve(int(line.cells.size()));
+    QVector<int> cellAt; // 文本位 → cell 下标（宽字符占 1 格多文本位，都指向首格）
+    cellAt.reserve(int(line.cells.size()) + 1);
+    for (size_t i = 0; i < line.cells.size(); ++i) {
+        const TermCell &cell = line.cells[i];
+        if (cell.flags & FlagWideCont)
+            continue;
+        if (cell.cp < 0x10000) {
+            cellAt.append(int(i));
+            text.append(QChar(char16_t(cell.cp)));
+        } else {
+            char32_t cp = cell.cp;
+            const QString ch = QString::fromUcs4(&cp, 1);
+            for (int k = 0; k < ch.size(); ++k)
+                cellAt.append(int(i));
+            text += ch;
+        }
+    }
+    if (text.isEmpty() || text.size() > 8192)
+        return;
+    cellAt.append(int(line.cells.size())); // 尾哨兵
+
+    struct TokenStyle
+    {
+        TermColor fg;
+        quint8 attr = 0;
+    };
+    const bool dark = m_dark; // 暗色主题下蓝/黄对比不够，提亮加粗才看得清
+    auto style = [dark](int ansi, bool bright, bool bold) {
+        TokenStyle s;
+        s.fg.kind = TermColor::Indexed;
+        s.fg.index = quint8(bright ? ansi + 8 : ansi);
+        s.attr = bold ? AttrBold : quint8(0);
+        return s;
+    };
+    const TokenStyle ipv4Style = style(5, false, dark); // 洋红
+    const TokenStyle ipv6Style = style(4, dark, dark);  // 蓝，暗色主题提亮加粗才看得清
+    const TokenStyle macStyle = style(3, false, dark);  // 黄
+    const TokenStyle ifStyle = style(6, false, dark);   // 青
+    const TokenStyle upStyle = style(2, false, dark);   // 绿
+    const TokenStyle downStyle = style(1, false, dark); // 红
+
+    static const QRegularExpression ipv6Re(
+        QStringLiteral("(?<![0-9A-Fa-f:.])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}"
+                       "(?:%[0-9A-Za-z._~-]+)?(?:/(?:12[0-8]|1[01][0-9]|[1-9]?[0-9]))?"
+                       "(?![0-9A-Fa-f:.])"));
+    static const QRegularExpression ipv4Re(
+        QStringLiteral("(?<![\\d.])(?:(?:25[0-5]|2[0-4]\\d|1\\d\\d|0?\\d\\d?)\\.){3}"
+                       "(?:25[0-5]|2[0-4]\\d|1\\d\\d|0?\\d\\d?)(?:/(?:3[0-2]|[12]?\\d))?(?![\\d.])"));
+    static const QRegularExpression macRe(
+        QStringLiteral("(?<![0-9A-Fa-f:])(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}"
+                       "(?![0-9A-Fa-f:])"));
+    static const QRegularExpression ifRe(
+        QStringLiteral("(?<![A-Za-z0-9])(?:"
+                       "enp\\d+s\\d+(?:f\\d+)?|wlp\\d+s\\d+|wlx[0-9A-Fa-f]+|"
+                       "ens\\d+|eno\\d+|eth\\d+|wlan\\d+|usb\\d+|bond\\d+|"
+                       "virbr\\d+|veth[0-9A-Fa-f]+|docker\\d*|br\\d+|tun\\d+|tap\\d+|"
+                       "wg\\d+|can\\d+|tunl\\d+|sit\\d+|ip6tnl\\d+|lo"
+                       ")(?![A-Za-z0-9])"));
+    static const QRegularExpression stateRe(
+        QStringLiteral("(?<![A-Za-z0-9_])(LOWER_UP|UP|DOWN)(?![A-Za-z0-9_])"));
+
+    QVector<char> taken(text.size(), 0);
+    auto take = [&taken](int start, int len) {
+        for (int i = start; i < start + len && i < taken.size(); ++i) {
+            if (taken[i])
+                return false;
+        }
+        for (int i = start; i < start + len && i < taken.size(); ++i)
+            taken[i] = 1;
+        return true;
+    };
+    // 区间里只要有一格不是「素」的（设备上过色/系统提示），整段都不动
+    auto paint = [&](int start, int len, const TokenStyle &s) {
+        const int c0 = cellAt[start];
+        const int c1 = cellAt[start + len];
+        for (int c = c0; c < c1; ++c) {
+            const TermCell &cell = line.cells[size_t(c)];
+            if (cell.fg.kind != TermColor::Default || cell.bg.kind != TermColor::Default
+                || cell.attr)
+                return;
+        }
+        for (int c = c0; c < c1; ++c) {
+            TermCell &cell = line.cells[size_t(c)];
+            cell.fg = s.fg;
+            cell.attr = s.attr;
+        }
+    };
+
+    auto matches = ipv6Re.globalMatch(text);
+    while (matches.hasNext()) {
+        const QRegularExpressionMatch m = matches.next();
+        if (!isIpv6Address(m.captured()) || !take(m.capturedStart(), m.capturedLength()))
+            continue;
+        paint(m.capturedStart(), m.capturedLength(), ipv6Style);
+    }
+    matches = ipv4Re.globalMatch(text);
+    while (matches.hasNext()) {
+        const QRegularExpressionMatch m = matches.next();
+        if (!take(m.capturedStart(), m.capturedLength()))
+            continue;
+        paint(m.capturedStart(), m.capturedLength(), ipv4Style);
+    }
+    matches = macRe.globalMatch(text);
+    while (matches.hasNext()) {
+        const QRegularExpressionMatch m = matches.next();
+        if (!take(m.capturedStart(), m.capturedLength()))
+            continue;
+        paint(m.capturedStart(), m.capturedLength(), macStyle);
+    }
+    matches = ifRe.globalMatch(text);
+    while (matches.hasNext()) {
+        const QRegularExpressionMatch m = matches.next();
+        if (!take(m.capturedStart(), m.capturedLength()))
+            continue;
+        paint(m.capturedStart(), m.capturedLength(), ifStyle);
+    }
+    matches = stateRe.globalMatch(text);
+    while (matches.hasNext()) {
+        const QRegularExpressionMatch m = matches.next();
+        if (!take(m.capturedStart(), m.capturedLength()))
+            continue;
+        const bool down = m.captured(1) == QLatin1String("DOWN");
+        paint(m.capturedStart(), m.capturedLength(), down ? downStyle : upStyle);
+    }
 }
 
 void TermScreen::refit(std::vector<TermLine> &buf, bool toHistory)
@@ -624,6 +862,7 @@ void TermScreen::handleCsi(char finalByte)
         } else if (mode == 3) {
             m_hist.clear();
             m_histCleared = true;
+            m_unscannedHist = 0;
         } else {
             eraseCells(m_row, col, m_cols);
             for (int r = m_row + 1; r < m_rows; ++r)
@@ -888,6 +1127,7 @@ void TermScreen::scrollUp(int n)
 {
     if (m_rows <= 0 || m_scrollBottom < m_scrollTop)
         return;
+    touchAll();
     n = qBound(1, n, m_scrollBottom - m_scrollTop + 1);
     const bool toHist = !m_alt && m_scrollTop == 0 && m_scrollBottom == m_rows - 1;
     for (int i = 0; i < n; ++i) {
@@ -904,6 +1144,7 @@ void TermScreen::scrollDown(int n)
 {
     if (m_rows <= 0 || m_scrollBottom < m_scrollTop)
         return;
+    touchAll();
     n = qBound(1, n, m_scrollBottom - m_scrollTop + 1);
     for (int i = 0; i < n; ++i) {
         for (int r = m_scrollBottom; r > m_scrollTop; --r)
@@ -916,6 +1157,7 @@ void TermScreen::insertLines(int n)
 {
     if (m_row < m_scrollTop || m_row > m_scrollBottom)
         return;
+    touchAll();
     n = qBound(1, n, m_scrollBottom - m_row + 1);
     for (int i = 0; i < n; ++i) {
         for (int r = m_scrollBottom; r > m_row; --r)
@@ -929,6 +1171,7 @@ void TermScreen::deleteLines(int n)
 {
     if (m_row < m_scrollTop || m_row > m_scrollBottom)
         return;
+    touchAll();
     n = qBound(1, n, m_scrollBottom - m_row + 1);
     for (int i = 0; i < n; ++i) {
         for (int r = m_row; r < m_scrollBottom; ++r)
@@ -942,6 +1185,7 @@ void TermScreen::insertChars(int n)
 {
     if (m_row < 0 || m_row >= m_rows)
         return;
+    touchRow(m_row);
     n = qBound(1, n, m_cols);
     const int col = qMin(m_col, m_cols - 1);
     auto &cells = m_lines[size_t(m_row)].cells;
@@ -959,6 +1203,7 @@ void TermScreen::deleteChars(int n)
 {
     if (m_row < 0 || m_row >= m_rows)
         return;
+    touchRow(m_row);
     n = qBound(1, n, m_cols);
     const int col = qMin(m_col, m_cols - 1);
     auto &cells = m_lines[size_t(m_row)].cells;
@@ -976,6 +1221,7 @@ void TermScreen::eraseCells(int row, int c0, int c1)
 {
     if (row < 0 || row >= m_rows)
         return;
+    touchRow(row);
     auto &cells = m_lines[size_t(row)].cells;
     if (int(cells.size()) < m_cols)
         cells.resize(size_t(m_cols), blankCell());
@@ -993,6 +1239,7 @@ void TermScreen::writeAt(int row, int col, char32_t cp, int width)
 {
     if (row < 0 || row >= m_rows || col < 0 || col >= m_cols)
         return;
+    touchRow(row);
     auto &cells = m_lines[size_t(row)].cells;
     if (int(cells.size()) < m_cols)
         cells.resize(size_t(m_cols), blankCell());
@@ -1054,6 +1301,8 @@ void TermScreen::enterAlt()
 {
     if (m_alt)
         return;
+    m_touchMin = -1; // 备用屏内容不补色，脏标记别带进主屏
+    m_touchMax = -1;
     m_primary = std::move(m_lines);
     m_saveRow = m_row;
     m_saveCol = qMin(m_col, qMax(0, m_cols - 1));
@@ -1070,6 +1319,8 @@ void TermScreen::leaveAlt()
 {
     if (!m_alt)
         return;
+    m_touchMin = -1;
+    m_touchMax = -1;
     if (!m_primary.empty())
         m_lines = std::move(m_primary);
     m_primary.clear();
@@ -1087,6 +1338,9 @@ void TermScreen::reset()
 {
     m_hist.clear();
     m_histCleared = true;
+    m_unscannedHist = 0;
+    m_touchMin = -1;
+    m_touchMax = -1;
     m_primary.clear();
     m_alt = false;
     m_lines.assign(size_t(m_rows), blankLine());

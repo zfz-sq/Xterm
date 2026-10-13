@@ -1,14 +1,15 @@
-// 离屏回归测试: TerminalView 的 Tab 客户端补全 + CompletionEngine
+// 离屏回归测试: ScreenView 的 Tab 客户端补全 + CompletionEngine
 // 构建运行: cmake -S tools/completiontest -B build/completiontest && cmake --build build/completiontest
+//
+// ScreenView 不代画补全内容，显示交给设备回显。测试里用「理想 tty」模拟回显：
+// 可打印字符原样回灌，DEL(0x7f) 回灌 "\b \b"，\r 回灌 "\r\n"，其余（\t/ESC）丢弃。
+// 断言两层：发给设备的字节序列 + 模拟回显落地后的后续 Tab 行为。
 #include <QApplication>
 #include <QKeyEvent>
-#include <QTextBlock>
-#include <QTextCursor>
-#include <QTextDocument>
 #include <cstdio>
 
 #include "../../completionengine.h"
-#include "../../terminalview.h"
+#include "../../screenview.h"
 
 static int g_failures = 0;
 
@@ -19,34 +20,82 @@ static void expect(bool cond, const char *what)
         ++g_failures;
 }
 
-// 用 sendEvent 把真实 QKeyEvent 投递给 TerminalView（模拟键盘）
-static void typeChar(TerminalView &v, QChar c)
+static QByteArray hexOf(const QByteArray &d)
 {
-    QKeyEvent ev(QEvent::KeyPress, Qt::Key_unknown, Qt::NoModifier, QString(c));
-    QApplication::sendEvent(&v, &ev);
+    QByteArray out;
+    for (char c : d) {
+        if (!out.isEmpty())
+            out += ' ';
+        out += QByteArray::number(static_cast<unsigned char>(c), 16).rightJustified(2, '0');
+    }
+    return out;
 }
 
-// 把 Tab 投递给 TerminalView 的真 keyPressEvent
-static void pressTabKey(TerminalView &v)
+// 键盘 + 理想回显模拟台
+class Rig
 {
-    QKeyEvent ev(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier, QStringLiteral("\t"));
-    QApplication::sendEvent(&v, &ev);
-}
+public:
+    ScreenView view;
+    CompletionEngine engine;
+    QByteArray captured;
+    bool autoEcho = true; // 关掉后补全字节不落地，模拟串口/网络延迟；
+                          // 普通输入字符的回显不受影响（人速打字永远等得到回显）
 
-static void typeChars(TerminalView &v, const QString &s)
-{
-    for (QChar c : s)
-        typeChar(v, c);
-}
+    Rig()
+    {
+        view.setCompletionEngine(&engine);
+        QObject::connect(&view, &ScreenView::sendData, &view, [this](const QByteArray &d) {
+            captured += d;
+            if (echoNext)
+                view.receiveData(simulateEcho(d));
+        });
+        view.resize(80 * 10, 24 * 20);
+        view.receiveData(QByteArrayLiteral("root# "));
+    }
 
-static QString lineAtCursor(TerminalView &v)
-{
-    // 客户端补全按当前 m_cursor.block() 的最后一行进行，
-    // 因此以行内容末尾作为比较。
-    QTextCursor c = v.textCursor();
-    c.movePosition(QTextCursor::End);
-    return c.block().text();
-}
+    // tty ECHO 的行为：字符回显、DEL 擦除（\b 空格 \b）、CR 回显成 CRLF
+    static QByteArray simulateEcho(const QByteArray &out)
+    {
+        QByteArray echo;
+        for (char c : out) {
+            const unsigned char u = static_cast<unsigned char>(c);
+            if (u == 0x7f)
+                echo += QByteArrayLiteral("\b \b");
+            else if (u >= 0x20 && u < 0x7f)
+                echo += c;
+            else if (c == '\r')
+                echo += QByteArrayLiteral("\r\n");
+        }
+        return echo;
+    }
+
+    void typeText(const QString &s)
+    {
+        for (QChar c : s)
+            pressChar(c);
+    }
+
+    void pressChar(QChar c)
+    {
+        captured.clear();
+        echoNext = true;
+        QKeyEvent ev(QEvent::KeyPress, Qt::Key_unknown, Qt::NoModifier, QString(c));
+        QApplication::sendEvent(&view, &ev);
+    }
+
+    void pressTab()
+    {
+        captured.clear();
+        echoNext = autoEcho;
+        QKeyEvent ev(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier, QStringLiteral("\t"));
+        QApplication::sendEvent(&view, &ev);
+    }
+
+    QByteArray drain() { QByteArray d = captured; captured.clear(); return d; }
+
+private:
+    bool echoNext = true;
+};
 
 int main(int argc, char **argv)
 {
@@ -64,7 +113,6 @@ int main(int argc, char **argv)
                "complete('') 包含用户命令 + 内置");
 
         QStringList prefix = e.complete(QStringLiteral("l"));
-        // 应包含 ls / less / locate / ln / login / lsblk ...
         expect(prefix.contains(QStringLiteral("ls")), "complete('l') 包含 ls");
         expect(prefix.contains(QStringLiteral("less")), "complete('l') 包含 less");
         expect(!prefix.contains(QStringLiteral("help")), "complete('l') 不含 help");
@@ -84,98 +132,114 @@ int main(int argc, char **argv)
                "LCP 最小公共部分");
         items = {QStringLiteral("ls"), QStringLiteral("ls")};
         expect(CompletionEngine::longestCommonPrefix(items) == QStringLiteral("ls"),
-           "LCP 唯一项");
+               "LCP 唯一项");
         expect(CompletionEngine::longestCommonPrefix({}).isEmpty(), "LCP 空集");
     }
 
-    // -------- TerminalView Tab 流程: 无匹配
+    // -------- Tab 流程: 无匹配直通设备
     {
-        TerminalView v;
-        v.setLocalEcho(true);
-        CompletionEngine e;
-        e.setUserCommands({QStringLiteral("ls"), QStringLiteral("reboot")});
-        v.setCompletionEngine(&e);
-
-        // 模拟输入 "xxx"
-        typeChar(v, QChar('x'));
-        typeChar(v, QChar('x'));
-        typeChar(v, QChar('x'));
-
-        pressTabKey(v);
-        expect(lineAtCursor(v) == QStringLiteral("xxx"), "无匹配 Tab 不改动输入");
+        Rig rig;
+        rig.engine.setUserCommands({QStringLiteral("ls"), QStringLiteral("reboot")});
+        rig.typeText(QStringLiteral("xxx"));
+        rig.pressTab();
+        expect(rig.drain() == QByteArray(1, '\t'), "无匹配 Tab 直通发 \\t");
     }
 
-    // -------- TerminalView Tab 流程: 唯一匹配
+    // -------- Tab 流程: 唯一匹配
     {
-        TerminalView v;
-        v.setLocalEcho(true);
-        CompletionEngine e;
-        // 构造一个只有 reboot 能匹配 "reb" 的场景
-        QStringList user = {QStringLiteral("reboot")};
-        e.setUserCommands(user);
-        v.setCompletionEngine(&e);
-
-        typeChar(v, QChar('r'));
-        typeChar(v, QChar('e'));
-        typeChar(v, QChar('b'));
-
-        pressTabKey(v);
-        expect(lineAtCursor(v) == QStringLiteral("reboot"),
-               "唯一匹配: 'reb' → 'reboot'");
+        Rig rig;
+        rig.engine.setUserCommands({QStringLiteral("reboot")});
+        rig.typeText(QStringLiteral("reb"));
+        rig.pressTab();
+        expect(rig.drain() == "oot", "唯一匹配: 'reb' 发出差量 'oot'");
+        // 回显已落地，再 Tab 重新取词: "reboot" 已是完整候选，无差量可发
+        rig.pressTab();
+        expect(rig.drain().isEmpty(), "补齐后再 Tab 无差量（不直发也不乱发）");
     }
 
-    // -------- TerminalView Tab 流程: 多匹配 LCP 扩展
+    // -------- Tab 流程: 多匹配 LCP 扩展 + Cycle
     {
-        TerminalView v;
-        v.setLocalEcho(true);
-        CompletionEngine e;
-        // 只放一个会冲突的用户命令 + 让内置来填剩余
-        e.setUserCommands({QStringLiteral("localcmd")});
-        v.setCompletionEngine(&e);
+        Rig rig;
+        rig.engine.setUserCommands({QStringLiteral("localcmd")});
 
-        // 输入 l  -> 内置里以 l 开头的候选 (less / ln / locate / login / ls / lsblk ...)
-        // LCP = "l", 等于 prefix, 推进到 cycle[0] = "less"
-        typeChar(v, QChar('l'));
-        pressTabKey(v);
-        QString line = lineAtCursor(v);
-        expect(line == QStringLiteral("less"),
-               "多匹配首次 Tab 后到 cycle[0] (sorted builtin)");
+        rig.typeText(QStringLiteral("l"));
+        rig.pressTab();
+        // 候选 sorted: less localcmd ln locate login logout ls lsblk ...
+        // LCP == "l"，立即推进 cycle[0] = less: DEL('l') + "less"
+        expect(rig.drain() == QByteArray(1, '\x7f') + "less",
+               "多匹配首次 Tab: DEL + cycle[0] 'less'");
 
-        // 再按 Tab：cycle 到下一个，应该是 ln / locate / login / ls / lsblk 之一
-        pressTabKey(v);
-        QString after2 = lineAtCursor(v);
-        expect(after2 == QStringLiteral("ln") || after2 == QStringLiteral("locate")
-                   || after2 == QStringLiteral("login") || after2 == QStringLiteral("logout")
-                   || after2 == QStringLiteral("ls") || after2 == QStringLiteral("lsblk"),
-               "再次 Tab 推到 cycle[1]");
+        rig.pressTab();
+        QByteArray second = rig.drain();
+        expect(second == QByteArray(4, '\x7f') + "ln"
+                   || second == QByteArray(4, '\x7f') + "localcmd"
+                   || second == QByteArray(4, '\x7f') + "locate"
+                   || second == QByteArray(4, '\x7f') + "login"
+                   || second == QByteArray(4, '\x7f') + "logout"
+                   || second == QByteArray(4, '\x7f') + "ls"
+                   || second == QByteArray(4, '\x7f') + "lsblk",
+               "再次 Tab: DEL*4 + cycle[1]");
 
-        // 再 Tab 多次，行内容应当一直在 cycle 内（不会变回 "l"，会经过所有候选再 wrap 回 "l"）
-        for (int i = 0; i < 20; ++i)
-            pressTabKey(v);
-        QString afterMany = lineAtCursor(v);
-        expect(afterMany == QStringLiteral("l")
-                   || afterMany == QStringLiteral("less")
-                   || afterMany == QStringLiteral("ln") || afterMany == QStringLiteral("locate")
-                   || afterMany == QStringLiteral("login") || afterMany == QStringLiteral("logout")
-                   || afterMany == QStringLiteral("ls") || afterMany == QStringLiteral("lsblk"),
-               "多次 Tab 后行内容在 cycle 内");
+        // 一路 Tab 下去每帧都是「DEL×旧词长 + 新候选词」，且新词在候选集合内
+        static const char *const kCands[] = { "", "l", "less", "localcmd", "ln",
+                                              "locate", "login", "logout", "ls", "lsblk" };
+        auto inCands = [](const QByteArray &word) {
+            for (const char *c : kCands)
+                if (word == c)
+                    return true;
+            return false;
+        };
+        bool inCycle = true;
+        for (int i = 0; i < 20; ++i) {
+            rig.pressTab();
+            QByteArray d = rig.drain();
+            const int dels = int(d.count('\x7f'));
+            const QByteArray word = d.mid(dels);
+            if (dels < 1 || dels > 8 || !inCands(word) || (word.isEmpty() && dels > 0)) {
+                inCycle = false;
+                printf("  异常帧: %s\n", hexOf(d).constData());
+                break;
+            }
+        }
+        expect(inCycle, "多次 Tab 始终在 cycle 内替换");
     }
 
-    // -------- 退格 / 回车打断 Cycle
+    // -------- 回显延迟窗口: 补全字节已发出、回显未落地时再 Tab
     {
-        TerminalView v;
-        v.setLocalEcho(true);
-        CompletionEngine e;
-        e.setUserCommands({QStringLiteral("ls"), QStringLiteral("ln")});
-        v.setCompletionEngine(&e);
+        Rig rig;
+        rig.engine.setUserCommands({QStringLiteral("localcmd")});
+        rig.autoEcho = false;
 
-        typeChar(v, QChar('l'));
-        pressTabKey(v); // 进入 cycle[0]
-        typeChar(v, QChar(' ')); // 空格应触发 resetCompletionCycle
+        rig.typeText(QStringLiteral("l"));
+        rig.pressTab(); // 发出 DEL + "less"，屏上还停在 "l"
+        expect(rig.drain() == QByteArray(1, '\x7f') + "less", "延迟模式首次 Tab");
 
-        // 接下来输入 "h" 应当不参与上一轮 cycle
-        typeChar(v, QChar('h'));
-        expect(lineAtCursor(v).endsWith(QStringLiteral("h")), "非 Tab 键打断 cycle");
+        rig.pressTab(); // 屏上词尾 == cycleEnd - pending，应按未变推进
+        QByteArray d = rig.drain();
+        expect(d == QByteArray(4, '\x7f') + "ln"
+                   || d == QByteArray(4, '\x7f') + "localcmd"
+                   || d == QByteArray(4, '\x7f') + "locate"
+                   || d == QByteArray(4, '\x7f') + "login"
+                   || d == QByteArray(4, '\x7f') + "logout"
+                   || d == QByteArray(4, '\x7f') + "ls"
+                   || d == QByteArray(4, '\x7f') + "lsblk",
+               "回显未落地再 Tab 仍按 cycle 推进");
+
+        // 把两轮回显按到达顺序落地，屏上终态应是第二个候选词
+        rig.view.receiveData(Rig::simulateEcho(QByteArray(1, '\x7f') + "less"));
+        rig.view.receiveData(Rig::simulateEcho(d));
+    }
+
+    // -------- 非 Tab 键打断 Cycle
+    {
+        Rig rig;
+        rig.engine.setUserCommands({QStringLiteral("ls"), QStringLiteral("ln")});
+        rig.typeText(QStringLiteral("l"));
+        rig.pressTab(); // 进入 cycle
+        rig.pressChar(QLatin1Char('h')); // 继续打字应打断
+        expect(rig.drain() == QByteArray(1, 'h'), "打字打断 cycle（字符直发）");
+        rig.pressTab();
+        expect(rig.drain() == QByteArray(1, '\t'), "打断后重新取词，无匹配直通");
     }
 
     printf(g_failures ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", g_failures);

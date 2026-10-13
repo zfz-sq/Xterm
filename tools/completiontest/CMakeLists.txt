@@ -12,8 +12,10 @@ qt_add_executable(completiontest
     main.cpp
     ../../completionengine.cpp
     ../../completionengine.h
-    ../../terminalview.cpp
-    ../../terminalview.h
+    ../../termscreen.cpp
+    ../../termscreen.h
+    ../../screenview.cpp
+    ../../screenview.h
 )
 # 控制台子系统，否则 printf 输出看不到
 set_target_properties(completiontest PROPERTIES WIN32_EXECUTABLE OFF)

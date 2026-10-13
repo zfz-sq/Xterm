@@ -11,8 +11,7 @@ class QLabel;
 class QTimer;
 class SerialSession;
 class SshSession;
-class SshView;
-class TerminalView;
+class ScreenView;
 class Transport;
 
 QT_BEGIN_NAMESPACE
@@ -81,8 +80,8 @@ private:
     SshSession *m_ssh = nullptr;
     CommandStore *m_store = nullptr;
     CommandBar *m_commandBar = nullptr;
-    TerminalView *m_serialView = nullptr;
-    SshView *m_sshView = nullptr;
+    ScreenView *m_serialView = nullptr;
+    ScreenView *m_sshView = nullptr;
     CompletionEngine *m_completion = nullptr;
     QLabel *m_statusLabel = nullptr;
     QTimer *m_saveTimer = nullptr; // 配置保存防抖（单发，见 scheduleProfileSave）

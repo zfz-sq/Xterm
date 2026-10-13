@@ -125,6 +125,11 @@ private:
     void refit(std::vector<TermLine> &buf, bool toHistory);
     int trim();
     int finishFeed();
+    // 本次 feed 触到的行收尾时补一次「ip -c」风格的网络词着色
+    void touchRow(int row);
+    void touchAll();
+    void paintTouchedLines();
+    void paintIpTokens(TermLine &line);
     void replyBytes(const QByteArray &data);
     void finishOsc();
     QColor resolve(const TermColor &color, bool foreground) const;
@@ -150,6 +155,9 @@ private:
     bool m_dark = true;
     bool m_histCleared = false;
     bool m_used = false; // 还没写过内容时，改尺寸不要把空行推进滚动历史
+    int m_touchMin = -1;       // 本次 feed 触到的屏幕行范围（收尾补色用），-1 表示无
+    int m_touchMax = -1;
+    int m_unscannedHist = 0;   // 滚动历史里还没补过色的首行下标
 
     Pen m_pen;
     int m_scRow = 0;

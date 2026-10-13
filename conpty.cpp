@@ -131,29 +131,67 @@ QString buildCommandLine(const QString &program, const QStringList &args)
     return line;
 }
 
-// conhost 在伪终端建立后会发一次 Primary Device Attributes 查询（ESC [ ? c /
-// ESC [ c），等不到回应会有约 1 秒的启动延迟，个别程序（vim 等）还会卡住。
-// 真正的终端模拟器都会回答这一句，这里按 VT102 身份回应。
-QByteArray deviceAttributeReply(const QByteArray &chunk)
+// conhost 在伪终端建立后会发设备查询，等不到回应则整个渲染管线停摆：
+//   ESC[6n   光标位置查询（DSR-CPR）。用了 PSEUDOCONSOLE_INHERIT_CURSOR 后必发，
+//            实测不回则 conhost 一个字都不再输出——连 ssh 的报错都被扣住，
+//            外观就是「终端零响应」。回复 ESC[<row>;<col>R。
+//   ESC[?c / ESC[c   Primary DA，回 VT102 身份 ESC[?1;2c。
+//   ESC[>c   Secondary DA，回 xterm 身份 ESC[>0;95;0c。
+//   ESC[?u   kitty 键盘协议查询，回「不支持」。
+// 查询序列可能被 IO 拆在两个 chunk 交界，所以扫描要带上上一块的未完前缀（m_daCarry），
+// 只保留尚未终结的转义前缀做拼接，完整的序列不会进 carry，也就不会被应答两次。
+// 应答的同时把查询从转发流里删掉：下游 TermScreen 看不到 6n 就不会二次回 CPR，
+// 避免第二份 ESC[1;1R 被 conhost 当键盘输入转进子进程、落到远端 shell 里成垃圾。
+QByteArray deviceAttributeReply(const QByteArray &scan, int *queryStart, int *queryLen)
 {
-    for (int i = 0; i + 1 < chunk.size(); ++i) {
-        if (chunk.at(i) != '\x1b' || chunk.at(i + 1) != '[')
+    for (int i = 0; i + 3 < scan.size(); ++i) {
+        if (scan.at(i) != '\x1b' || scan.at(i + 1) != '[')
             continue;
-        const int n = chunk.size() - i - 2; // "[ " 之后还剩几个字节
-        if (n < 1)
-            continue;
-        if (chunk.at(i + 2) == QLatin1Char('?').toLatin1()) {
-            if (n >= 2 && chunk.at(i + 3) == 'c')
-                return QByteArrayLiteral("\x1b[?1;2c"); // Primary DA
-            if (n >= 2 && chunk.at(i + 3) == 'u')
-                return QByteArrayLiteral("\x1b[?0u");   // kitty 键盘协议查询
-        } else if (chunk.at(i + 2) == 'c') {
-            return QByteArrayLiteral("\x1b[?1;2c");     // ESC [ c
-        } else if (n >= 2 && chunk.at(i + 2) == '>' && chunk.at(i + 3) == 'c') {
-            return QByteArrayLiteral("\x1b[>0;95;0c");  // Secondary DA
+        const char p0 = scan.at(i + 2);
+        if (p0 == '?') {
+            if (i + 4 > scan.size())
+                continue; // 还没到齐，留在 carry 里等下一块
+            const char p1 = scan.at(i + 3);
+            if (p1 == 'c' || p1 == 'u') {
+                *queryStart = i;
+                *queryLen = 4;
+                return p1 == 'c' ? QByteArrayLiteral("\x1b[?1;2c")
+                                 : QByteArrayLiteral("\x1b[?0u");
+            }
+        } else if (p0 == '>') {
+            if (i + 4 > scan.size())
+                continue;
+            if (scan.at(i + 3) == 'c') {
+                *queryStart = i;
+                *queryLen = 4;
+                return QByteArrayLiteral("\x1b[>0;95;0c");
+            }
+        } else if (p0 == 'c') {
+            *queryStart = i;
+            *queryLen = 3;
+            return QByteArrayLiteral("\x1b[?1;2c");
+        } else if (p0 == '6') {
+            if (i + 4 > scan.size())
+                continue;
+            if (scan.at(i + 3) == 'n') {
+                *queryStart = i;
+                *queryLen = 4;
+                // 建立时光标必在原点；这也是 conhost INHERIT_CURSOR 期望的答案
+                return QByteArrayLiteral("\x1b[1;1R");
+            }
         }
     }
     return QByteArray();
+}
+
+// 块尾的未完转义前缀（ESC 起头但还没终结符）。查询序列最长 4 字节，
+// 前缀最多 3 字节，这里留 4 字节余量。
+QByteArray danglingEscapePrefix(const QByteArray &scan)
+{
+    const int esc = scan.lastIndexOf('\x1b');
+    if (esc < 0 || scan.size() - esc >= 4)
+        return QByteArray(); // 尾部没有 ESC，或前缀已超过任何查询的长度
+    return scan.mid(esc);
 }
 
 } // namespace
@@ -260,6 +298,8 @@ private:
     // 已经告知伪终端的尺寸，用于抑制重复 resize
     SHORT m_appliedCols = 0;
     SHORT m_appliedRows = 0;
+    // 上一块尾部未完的转义前缀，拼接进下一块一起扫设备查询
+    QByteArray m_daCarry;
 };
 
 void PtyTask::run()
@@ -390,11 +430,20 @@ void PtyTask::run()
 
 void PtyTask::emitOutput(const QByteArray &chunk)
 {
-    // 先回答 conhost 的设备查询，再原样上报，顺序与真实终端一致
-    const QByteArray reply = deviceAttributeReply(chunk);
-    if (!reply.isEmpty())
-        enqueueWrite(reply);
-    emit outputReceived(chunk);
+    // 先回答 conhost 的设备查询，再把查询序列从转发流里删掉，顺序与真实终端一致。
+    // 扫描窗口 = 上一块的未完前缀 + 当前块，跨块撕裂的查询也能对上。
+    QByteArray scan = m_daCarry + chunk;
+    int start = -1;
+    int len = 0;
+    const QByteArray reply = deviceAttributeReply(scan, &start, &len);
+    if (start >= 0 && len > 0) {
+        scan.remove(start, len);
+        if (!reply.isEmpty())
+            enqueueWrite(reply);
+    }
+    // 尾部还没终结的转义前缀留给下一块拼接；刚被消费掉的查询不会在这里出现
+    m_daCarry = danglingEscapePrefix(scan);
+    emit outputReceived(scan);
 }
 
 QString PtyTask::setup()

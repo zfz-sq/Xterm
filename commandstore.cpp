@@ -89,6 +89,9 @@ static QJsonObject profileToJson(const Profile &p)
     c[QStringLiteral("dataBits")] = p.connection.dataBits;
     c[QStringLiteral("parity")] = p.connection.parity;
     c[QStringLiteral("stopBits")] = p.connection.stopBits;
+    c[QStringLiteral("flowControl")] = p.connection.flowControl;
+    c[QStringLiteral("dtr")] = p.connection.dtr;
+    c[QStringLiteral("rts")] = p.connection.rts;
 
     QJsonObject s;
     s[QStringLiteral("host")] = p.ssh.host;
@@ -121,6 +124,12 @@ static Profile profileFromJson(const QJsonObject &o)
     p.connection.dataBits = c.value(QStringLiteral("dataBits")).toInt(8);
     p.connection.parity = c.value(QStringLiteral("parity")).toString(QStringLiteral("none"));
     p.connection.stopBits = c.value(QStringLiteral("stopBits")).toDouble(1.0);
+    p.connection.flowControl =
+        (c.value(QStringLiteral("flowControl")).toString() == QStringLiteral("hardware"))
+            ? QStringLiteral("hardware")
+            : QStringLiteral("none");
+    p.connection.dtr = c.value(QStringLiteral("dtr")).toBool(true);
+    p.connection.rts = c.value(QStringLiteral("rts")).toBool(true);
 
     const QJsonObject s = o.value(QStringLiteral("ssh")).toObject();
     p.ssh.host = s.value(QStringLiteral("host")).toString();
@@ -181,6 +190,7 @@ bool CommandStore::load()
     const QString mode = root.value(QStringLiteral("mode")).toString();
     m_mode = (mode == QStringLiteral("ssh")) ? QStringLiteral("ssh")
                                              : QStringLiteral("serial");
+    m_fontSize = qBound(0, root.value(QStringLiteral("fontSize")).toInt(0), 72);
     return true;
 }
 
@@ -198,6 +208,7 @@ bool CommandStore::save() const
         { QStringLiteral("lastProfile"), m_lastProfile },
         { QStringLiteral("theme"), m_theme },
         { QStringLiteral("mode"), m_mode },
+        { QStringLiteral("fontSize"), m_fontSize },
         { QStringLiteral("profiles"), arr },
     };
 

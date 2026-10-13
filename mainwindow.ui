@@ -484,6 +484,40 @@
             <widget class="QComboBox" name="stopBitsCombo"/>
            </item>
            <item>
+            <widget class="QLabel" name="flowLabel">
+             <property name="text">
+              <string>流控</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QComboBox" name="flowCombo">
+             <property name="toolTip">
+              <string>硬件流控需要设备侧接好 RTS/CTS 线</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QCheckBox" name="dtrCheck">
+             <property name="toolTip">
+              <string>打开串口后的 DTR 电平。DTR 接复位电路的板子（ESP32/Arduino）取消勾选可避免连接时复位</string>
+             </property>
+             <property name="text">
+              <string>DTR</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QCheckBox" name="rtsCheck">
+             <property name="toolTip">
+              <string>打开串口后的 RTS 电平（硬件流控时由驱动接管，此项无效）</string>
+             </property>
+             <property name="text">
+              <string>RTS</string>
+             </property>
+            </widget>
+           </item>
+           <item>
             <spacer name="advSpacer">
              <property name="orientation">
               <enum>Qt::Horizontal</enum>

@@ -1,4 +1,4 @@
-#include "sshview.h"
+#include "screenview.h"
 
 #include <QClipboard>
 #include <QFocusEvent>
@@ -20,6 +20,8 @@
 
 #include <utility>
 
+#include "completionengine.h"
+
 namespace {
 
 bool wordChar(char32_t cp)
@@ -35,7 +37,7 @@ bool wordChar(char32_t cp)
 
 } // namespace
 
-SshView::SshView(QWidget *parent)
+ScreenView::ScreenView(QWidget *parent)
     : QWidget(parent)
 {
     setFocusPolicy(Qt::StrongFocus);
@@ -73,11 +75,11 @@ SshView::SshView(QWidget *parent)
 
     m_sizeTimer = new QTimer(this);
     m_sizeTimer->setSingleShot(true);
-    connect(m_sizeTimer, &QTimer::timeout, this, &SshView::emitPtySize);
+    connect(m_sizeTimer, &QTimer::timeout, this, &ScreenView::emitPtySize);
 
     m_pump = new QTimer(this);
     m_pump->setSingleShot(true);
-    connect(m_pump, &QTimer::timeout, this, &SshView::pumpRx);
+    connect(m_pump, &QTimer::timeout, this, &ScreenView::pumpRx);
 
     m_syncHold = new QTimer(this);
     m_syncHold->setSingleShot(true);
@@ -99,7 +101,7 @@ SshView::SshView(QWidget *parent)
     m_find->installEventFilter(this);
 }
 
-void SshView::applyTheme(bool dark)
+void ScreenView::applyTheme(bool dark)
 {
     m_screen.setDark(dark);
     if (m_find) {
@@ -114,7 +116,7 @@ void SshView::applyTheme(bool dark)
     update();
 }
 
-void SshView::receiveData(const QByteArray &data)
+void ScreenView::receiveData(const QByteArray &data)
 {
     if (data.isEmpty())
         return;
@@ -131,13 +133,13 @@ void SshView::receiveData(const QByteArray &data)
         m_pump->start(0);
 }
 
-void SshView::appendSystemMessage(const QString &text)
+void ScreenView::appendSystemMessage(const QString &text)
 {
     flushRx();
     afterOutput(m_screen.appendNote(text));
 }
 
-void SshView::pumpRx()
+void ScreenView::pumpRx()
 {
     const int avail = m_rx.size() - m_rxUsed;
     if (avail <= 0) {
@@ -159,7 +161,7 @@ void SshView::pumpRx()
         m_pump->start(0);
 }
 
-void SshView::flushRx()
+void ScreenView::flushRx()
 {
     if (m_pump->isActive())
         m_pump->stop();
@@ -174,7 +176,7 @@ void SshView::flushRx()
     afterOutput(m_screen.feed(rest));
 }
 
-void SshView::recalcMetrics()
+void ScreenView::recalcMetrics()
 {
     const QFontMetrics fm(m_font);
     m_cellW = qMax(1, fm.horizontalAdvance(QLatin1Char('M')));
@@ -182,7 +184,7 @@ void SshView::recalcMetrics()
     m_ascent = fm.ascent();
 }
 
-void SshView::updateGrid()
+void ScreenView::updateGrid()
 {
     if (!m_bar || width() < m_cellW || height() < m_cellH)
         return;
@@ -200,7 +202,7 @@ void SshView::updateGrid()
     m_sizeTimer->start(40);
 }
 
-void SshView::emitPtySize()
+void ScreenView::emitPtySize()
 {
     const int cols = m_screen.cols();
     const int rows = m_screen.rows();
@@ -211,7 +213,7 @@ void SshView::emitPtySize()
     emit terminalSizeChanged(cols, rows);
 }
 
-void SshView::afterOutput(int dropped)
+void ScreenView::afterOutput(int dropped)
 {
     const bool alt = m_screen.altScreen();
     if (alt != m_wasAlt)
@@ -239,19 +241,17 @@ void SshView::afterOutput(int dropped)
         m_bell = true;
         m_bellTimer->start(140);
     }
-    // 同步更新期间先攒着，帧结束或超时再画，避免 htop 闪半帧。
-    if (m_screen.syncing()) {
-        if (!m_syncHold->isActive())
-            m_syncHold->start(80);
-        return;
-    }
-    if (m_syncHold->isActive())
-        m_syncHold->stop();
-    syncBar();
-    update();
+    // 输出是成块到达的（top 一轮刷新就是 3 块），逐块立绘会把半帧画出来。
+    // 统一走短合并窗：8ms 内到达的块合成一次重绘（对键入回显的延迟不可感）；
+    // 同步更新（BSA 2026）期间窗口放宽到 80ms 等帧尾，结束后回落 8ms 立即收帧。
+    const int holdMs = m_screen.syncing() ? 80 : 8;
+    if (!m_syncHold->isActive())
+        m_syncHold->start(holdMs);
+    else if (m_syncHold->remainingTime() > holdMs)
+        m_syncHold->start(holdMs); // 窗内后续块不重置计时，只收紧不放宽
 }
 
-void SshView::syncBar()
+void ScreenView::syncBar()
 {
     const int max = m_screen.altScreen() ? 0 : m_screen.historySize();
     m_barLock = true;
@@ -262,7 +262,7 @@ void SshView::syncBar()
     m_barLock = false;
 }
 
-void SshView::scrollLocal(int deltaRows)
+void ScreenView::scrollLocal(int deltaRows)
 {
     if (m_screen.altScreen())
         return;
@@ -273,9 +273,9 @@ void SshView::scrollLocal(int deltaRows)
     update();
 }
 
-void SshView::zoom(int steps)
+void ScreenView::setFontSize(int pt)
 {
-    const int next = qBound(8, m_font.pointSize() + steps, 36);
+    const int next = qBound(8, pt, 36);
     if (next == m_font.pointSize())
         return;
     m_font.setPointSize(next);
@@ -285,9 +285,15 @@ void SshView::zoom(int steps)
     recalcMetrics();
     updateGrid();
     update();
+    emit fontSizeChanged(next);
 }
 
-void SshView::pasteClipboard()
+void ScreenView::zoom(int steps)
+{
+    setFontSize(m_font.pointSize() + steps);
+}
+
+void ScreenView::pasteClipboard()
 {
     QString text = QGuiApplication::clipboard()->text();
     if (text.isEmpty())
@@ -306,14 +312,14 @@ void SshView::pasteClipboard()
     emit sendData(bytes);
 }
 
-void SshView::copySelection()
+void ScreenView::copySelection()
 {
     const QString out = selectedText();
     if (!out.isEmpty())
         QGuiApplication::clipboard()->setText(out);
 }
 
-QString SshView::selectedText() const
+QString ScreenView::selectedText() const
 {
     int r0 = 0, c0 = 0, r1 = 0, c1 = 0;
     if (!selectionBounds(r0, c0, r1, c1))
@@ -348,14 +354,14 @@ QString SshView::selectedText() const
     return out;
 }
 
-void SshView::clearSelection()
+void ScreenView::clearSelection()
 {
     m_anchor = Pos();
     m_focus = Pos();
     m_selecting = false;
 }
 
-void SshView::nudgeSelection(int deltaAbs)
+void ScreenView::nudgeSelection(int deltaAbs)
 {
     if (!m_anchor.valid)
         return;
@@ -365,7 +371,7 @@ void SshView::nudgeSelection(int deltaAbs)
         clearSelection();
 }
 
-bool SshView::selectionBounds(int &r0, int &c0, int &r1, int &c1) const
+bool ScreenView::selectionBounds(int &r0, int &c0, int &r1, int &c1) const
 {
     if (!m_anchor.valid || !m_focus.valid)
         return false;
@@ -382,7 +388,7 @@ bool SshView::selectionBounds(int &r0, int &c0, int &r1, int &c1) const
     return true;
 }
 
-bool SshView::cellSelected(int abs, int col) const
+bool ScreenView::cellSelected(int abs, int col) const
 {
     int r0 = 0, c0 = 0, r1 = 0, c1 = 0;
     if (!selectionBounds(r0, c0, r1, c1))
@@ -396,7 +402,7 @@ bool SshView::cellSelected(int abs, int col) const
     return true;
 }
 
-SshView::Pos SshView::cellAt(QPoint pt) const
+ScreenView::Pos ScreenView::cellAt(QPoint pt) const
 {
     Pos pos;
     if (m_cellW <= 0 || m_cellH <= 0)
@@ -411,21 +417,21 @@ SshView::Pos SshView::cellAt(QPoint pt) const
     return pos;
 }
 
-TermCell SshView::cellOrBlank(const TermLine *line, int col) const
+TermCell ScreenView::cellOrBlank(const TermLine *line, int col) const
 {
     if (!line || col < 0 || col >= int(line->cells.size()))
         return TermCell();
     return line->cells[size_t(col)];
 }
 
-QByteArray SshView::arrowKey(char letter) const
+QByteArray ScreenView::arrowKey(char letter) const
 {
     QByteArray seq = m_screen.appCursorKeys() ? QByteArray("\x1bO") : QByteArray("\x1b[");
     seq.append(letter);
     return seq;
 }
 
-void SshView::paintEvent(QPaintEvent *)
+void ScreenView::paintEvent(QPaintEvent *)
 {
     QPainter painter(this);
     const QColor bg0 = m_screen.defaultBackground();
@@ -526,7 +532,7 @@ void SshView::paintEvent(QPaintEvent *)
     }
 }
 
-void SshView::paintCursor(QPainter &painter)
+void ScreenView::paintCursor(QPainter &painter)
 {
     if (m_screen.cursorHidden())
         return;
@@ -560,24 +566,28 @@ void SshView::paintCursor(QPainter &painter)
     }
 }
 
-void SshView::resizeEvent(QResizeEvent *)
+void ScreenView::resizeEvent(QResizeEvent *)
 {
     updateGrid();
     placeFind();
 }
 
-void SshView::showEvent(QShowEvent *)
+void ScreenView::showEvent(QShowEvent *)
 {
     updateGrid();
 }
 
-void SshView::keyPressEvent(QKeyEvent *event)
+void ScreenView::keyPressEvent(QKeyEvent *event)
 {
     const Qt::KeyboardModifiers mods = event->modifiers();
     const int key = event->key();
     const bool ctrl = mods & Qt::ControlModifier;
     const bool alt = mods & Qt::AltModifier;
     const bool shift = mods & Qt::ShiftModifier;
+
+    // Tab 之外任何键都打断补全 Cycle（继续打字、回车、方向键……）
+    if (key != Qt::Key_Tab)
+        resetCompletionCycle();
 
     if (key == Qt::Key_Control || key == Qt::Key_Shift || key == Qt::Key_Alt
         || key == Qt::Key_Meta) {
@@ -659,6 +669,11 @@ void SshView::keyPressEvent(QKeyEvent *event)
         seq = QByteArray(1, '\x7f');
         break;
     case Qt::Key_Tab:
+        if (m_completion && !m_screen.altScreen() && !ctrl && !alt) {
+            handleTabCompletion();
+            event->accept();
+            return;
+        }
         seq = QByteArray(1, '\t');
         break;
     case Qt::Key_Backtab:
@@ -757,7 +772,174 @@ void SshView::keyPressEvent(QKeyEvent *event)
     event->ignore();
 }
 
-void SshView::mousePressEvent(QMouseEvent *event)
+// ---------------------------------------------------------------- Tab 补全
+//
+// 嵌入式设备的 shell（BusyBox ash 等）常没编 Tab 补全，按下 Tab 只会响一声
+// 或没动静，所以补全在客户端做：读主屏光标所在的输入行，取光标前的词去匹配，
+// 把差量字符发给设备，由设备回显落到屏幕上。客户端不代画：设备回显开着时
+// 不会出现双份，关着时（打字本就不可见）行为也自洽。备用屏里跑的是全屏
+// 程序，Tab 是它的键，一律直通。
+
+void ScreenView::setCompletionEngine(CompletionEngine *engine)
+{
+    m_completion = engine;
+}
+
+QString ScreenView::screenText() const
+{
+    // 主屏视口从滚动历史之后算起，备用屏行号就是屏幕行
+    const int base = m_screen.altScreen() ? 0 : m_screen.historySize();
+    QStringList lines;
+    for (int r = 0; r < m_screen.rows(); ++r) {
+        const TermLine *line = m_screen.lineAbsolute(base + r);
+        QString text;
+        if (line) {
+            for (const TermCell &cell : line->cells) {
+                if (cell.flags & TermScreen::FlagWideCont)
+                    continue;
+                char32_t cp = cell.cp;
+                text.append(QString::fromUcs4(&cp, 1));
+            }
+        }
+        while (text.size() > 1 && text.endsWith(QLatin1Char(' ')))
+            text.chop(1);
+        lines << text;
+    }
+    while (!lines.isEmpty() && lines.last().isEmpty())
+        lines.removeLast();
+    return lines.join(QLatin1Char('\n'));
+}
+
+void ScreenView::resetCompletionCycle()
+{
+    m_cycle.clear();
+    m_cycleStart = -1;
+    m_cycleEnd = -1;
+    m_cyclePending = 0;
+    m_cycleState = -1;
+    m_cycleOriginal.clear();
+}
+
+QString ScreenView::inputLineText(int *cursorColOut) const
+{
+    if (m_screen.altScreen())
+        return QString();
+    const TermLine *line = m_screen.lineAbsolute(m_screen.historySize() + m_screen.cursorRow());
+    if (!line)
+        return QString();
+    const int col = m_screen.cursorCol();
+    QString text;
+    text.reserve(int(line->cells.size()));
+    for (const TermCell &cell : line->cells) {
+        if (cell.flags & TermScreen::FlagWideCont)
+            continue; // 宽字符的右半格，不算独立字符
+        if (text.size() >= col)
+            break; // 光标列之后的内容不属于输入前缀
+        char32_t cp = cell.cp;
+        text.append(QString::fromUcs4(&cp, 1));
+    }
+    if (cursorColOut)
+        *cursorColOut = qMin(col, text.size());
+    return text;
+}
+
+void ScreenView::handleTabCompletion()
+{
+    if (!m_completion || m_screen.altScreen()) {
+        emit sendData(QByteArray(1, '\t'));
+        return;
+    }
+
+    // 先把攒着的设备输出落地，不然补全尾巴的回显还堵在缓冲里，取到的行是旧的
+    flushRx();
+
+    int cursorCol = 0;
+    const QString lineText = inputLineText(&cursorCol);
+    int wordStart = cursorCol;
+    while (wordStart > 0 && !lineText.at(wordStart - 1).isSpace())
+        --wordStart;
+
+    // Cycle 中词首没变、词尾落在 [设备侧词尾 - 待回显量, 设备侧词尾] 内 →
+    // 算边界没变，推进下一项。串口/网络有延迟，屏上词尾可能还差 m_cyclePending
+    // 个字符没回显到；设备侧行缓冲是完整的，替换时 DEL 会一次删够。
+    if (!m_cycle.isEmpty() && wordStart == m_cycleStart
+        && cursorCol <= m_cycleEnd && cursorCol >= m_cycleEnd - m_cyclePending) {
+        advanceCompletionCycle();
+        return;
+    }
+
+    // 全新补全
+    const QString prefix = lineText.mid(wordStart, cursorCol - wordStart);
+    m_cycle = m_completion->complete(prefix);
+    m_cycleStart = wordStart;
+    m_cycleOriginal = prefix;
+    m_cycleState = -1;
+    m_cyclePending = 0;
+
+    if (m_cycle.isEmpty()) {
+        m_cycleEnd = cursorCol;
+        // 客户端没有候选时把 Tab 直通给设备，别把服务端补全也一并拦了
+        emit sendData(QByteArray(1, '\t'));
+        return;
+    }
+    if (m_cycle.size() == 1) {
+        // 唯一匹配：直接补齐（一次到位，不进 Cycle）
+        const QString &only = m_cycle.first();
+        const QString tail = only.mid(prefix.size());
+        if (!tail.isEmpty()) {
+            m_cyclePending = tail.size();
+            emit sendData(tail.toUtf8());
+        }
+        m_cycleEnd = wordStart + only.size();
+        m_cycle.clear();
+        return;
+    }
+
+    // 多匹配：先补到最长公共前缀
+    const QString lcp = CompletionEngine::longestCommonPrefix(m_cycle);
+    if (lcp.size() > prefix.size()) {
+        const QString tail = lcp.mid(prefix.size());
+        m_cyclePending = tail.size();
+        emit sendData(tail.toUtf8());
+        m_cycleEnd = wordStart + lcp.size();
+        m_cycleOriginal = lcp; // LCP 成为新的回绕基准
+        return;
+    }
+    // LCP == prefix，立即推进到 cycle[0]
+    m_cycleEnd = wordStart + prefix.size();
+    advanceCompletionCycle();
+}
+
+void ScreenView::advanceCompletionCycle()
+{
+    const int n = m_cycle.size();
+    if (n == 0)
+        return;
+
+    // state: -1 (原始) → 0 (cycle[0]) → 1 → ... → n-1 → 回到 -1 (原始)
+    int nextState;
+    if (m_cycleState < 0)
+        nextState = 0;
+    else if (m_cycleState + 1 >= n)
+        nextState = -1;
+    else
+        nextState = m_cycleState + 1;
+
+    const QString target = (nextState < 0) ? m_cycleOriginal : m_cycle.at(nextState);
+    // 设备侧行缓冲长度含待回显部分，按它整体替换：DEL 删够旧词，再发新词。
+    // 回显流在设备输出队列里是有序的，屏上中间态可能乱一阵，终态必正确。
+    const int oldLen = m_cycleEnd - m_cycleStart;
+    const int seenOld = qMax(0, oldLen - m_cyclePending); // 屏上已见旧词长
+    if (oldLen > 0)
+        emit sendData(QByteArray(oldLen, '\x7f'));
+    if (!target.isEmpty())
+        emit sendData(target.toUtf8());
+    m_cycleEnd = m_cycleStart + target.size();
+    m_cyclePending = qAbs(target.size() - seenOld);
+    m_cycleState = nextState;
+}
+
+void ScreenView::mousePressEvent(QMouseEvent *event)
 {
     setFocus();
     if (event->button() == Qt::LeftButton && m_lastDoubleMs > 0
@@ -788,7 +970,7 @@ void SshView::mousePressEvent(QMouseEvent *event)
     update();
 }
 
-void SshView::mouseMoveEvent(QMouseEvent *event)
+void ScreenView::mouseMoveEvent(QMouseEvent *event)
 {
     if (!m_selecting || !(event->buttons() & Qt::LeftButton))
         return;
@@ -799,7 +981,7 @@ void SshView::mouseMoveEvent(QMouseEvent *event)
     update();
 }
 
-void SshView::mouseReleaseEvent(QMouseEvent *event)
+void ScreenView::mouseReleaseEvent(QMouseEvent *event)
 {
     if (event->button() != Qt::LeftButton)
         return;
@@ -808,7 +990,7 @@ void SshView::mouseReleaseEvent(QMouseEvent *event)
         copySelection();
 }
 
-void SshView::mouseDoubleClickEvent(QMouseEvent *event)
+void ScreenView::mouseDoubleClickEvent(QMouseEvent *event)
 {
     if (event->button() != Qt::LeftButton)
         return;
@@ -837,7 +1019,7 @@ void SshView::mouseDoubleClickEvent(QMouseEvent *event)
     update();
 }
 
-void SshView::wheelEvent(QWheelEvent *event)
+void ScreenView::wheelEvent(QWheelEvent *event)
 {
     const int dy = event->angleDelta().y();
     if (dy == 0) {
@@ -862,26 +1044,26 @@ void SshView::wheelEvent(QWheelEvent *event)
     event->accept();
 }
 
-void SshView::focusInEvent(QFocusEvent *event)
+void ScreenView::focusInEvent(QFocusEvent *event)
 {
     QWidget::focusInEvent(event);
     update();
 }
 
-void SshView::focusOutEvent(QFocusEvent *event)
+void ScreenView::focusOutEvent(QFocusEvent *event)
 {
     QWidget::focusOutEvent(event);
     update();
 }
 
-void SshView::inputMethodEvent(QInputMethodEvent *event)
+void ScreenView::inputMethodEvent(QInputMethodEvent *event)
 {
     if (!event->commitString().isEmpty())
         emit sendData(event->commitString().toUtf8());
     event->accept();
 }
 
-QVariant SshView::inputMethodQuery(Qt::InputMethodQuery query) const
+QVariant ScreenView::inputMethodQuery(Qt::InputMethodQuery query) const
 {
     if (query == Qt::ImEnabled)
         return true;
@@ -896,7 +1078,7 @@ QVariant SshView::inputMethodQuery(Qt::InputMethodQuery query) const
     return QWidget::inputMethodQuery(query);
 }
 
-void SshView::placeFind()
+void ScreenView::placeFind()
 {
     if (!m_find || m_find->isHidden() || !m_bar)
         return;
@@ -905,7 +1087,7 @@ void SshView::placeFind()
     m_find->raise();
 }
 
-void SshView::openFind()
+void ScreenView::openFind()
 {
     const QString sel = selectedText();
     if (!sel.isEmpty() && !sel.contains(QLatin1Char('\n')) && sel.size() <= 200)
@@ -918,7 +1100,7 @@ void SshView::openFind()
         runFind(true);
 }
 
-void SshView::closeFind()
+void ScreenView::closeFind()
 {
     m_find->hide();
     m_hitAbs = -1;
@@ -926,7 +1108,7 @@ void SshView::closeFind()
     update();
 }
 
-bool SshView::eventFilter(QObject *watched, QEvent *event)
+bool ScreenView::eventFilter(QObject *watched, QEvent *event)
 {
     if (watched == m_find && event->type() == QEvent::KeyPress) {
         auto *key = static_cast<QKeyEvent *>(event);
@@ -946,7 +1128,7 @@ bool SshView::eventFilter(QObject *watched, QEvent *event)
     return QWidget::eventFilter(watched, event);
 }
 
-void SshView::selectLine(int absRow)
+void ScreenView::selectLine(int absRow)
 {
     const TermLine *line = m_screen.lineAbsolute(absRow);
     int end = 0;
@@ -965,7 +1147,7 @@ void SshView::selectLine(int absRow)
     update();
 }
 
-bool SshView::runFind(bool forward)
+bool ScreenView::runFind(bool forward)
 {
     const QString query = m_find ? m_find->text() : QString();
     if (query.isEmpty()) {

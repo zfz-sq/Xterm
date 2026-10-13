@@ -47,12 +47,10 @@ qt_add_executable(Xterm
     commandstore.h
     completionengine.cpp
     completionengine.h
-    terminalview.cpp
-    terminalview.h
     termscreen.cpp
     termscreen.h
-    sshview.cpp
-    sshview.h
+    screenview.cpp
+    screenview.h
     resources/resources.qrc
     ${XTERM_RC_SOURCES}
 )

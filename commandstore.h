@@ -22,6 +22,9 @@ struct ConnectionConfig
     int dataBits = 8;
     QString parity = QStringLiteral("none"); // none / even / odd
     double stopBits = 1.0;                   // 1 / 1.5 / 2
+    QString flowControl = QStringLiteral("none"); // none / hardware（RTS/CTS）
+    bool dtr = true; // 打开串口后的 DTR 电平（false 适合 DTR 接复位电路的板子）
+    bool rts = true;
 };
 
 struct Profile
@@ -63,6 +66,10 @@ public:
     bool isDarkTheme() const { return m_theme != QStringLiteral("light"); }
     void setDarkTheme(bool dark) { m_theme = dark ? QStringLiteral("dark") : QStringLiteral("light"); }
 
+    // 终端字号（pt，0 = 未设置，用系统默认）。全局设置，两页共用
+    int fontSize() const { return m_fontSize; }
+    void setFontSize(int pt) { m_fontSize = pt; }
+
     // 上次使用的工作模式: "serial" / "ssh"
     QString mode() const { return m_mode; }
     void setMode(const QString &mode)
@@ -78,6 +85,7 @@ private:
     QString m_lastProfile;
     QString m_theme = QStringLiteral("dark");
     QString m_mode = QStringLiteral("serial");
+    int m_fontSize = 0;
 };
 
 #endif // COMMANDSTORE_H
