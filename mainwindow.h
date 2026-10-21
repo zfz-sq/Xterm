@@ -6,6 +6,7 @@
 
 #include "commandstore.h"
 #include "completionengine.h"
+#include "ssh/sshtypes.h"
 
 class AgentBridge;
 class HostStats;
@@ -86,6 +87,8 @@ private:
     QString sshStatsStatusText() const;
     void clearHostStats();
     bool confirmHostKeyChange(const QString &host, const QString &stored, const QString &current);
+    void promptHostKeyDecision(const SshHostKeyChange &change);
+    void promptAuthAnswers(SshRequestId requestId, const QList<SshAuthPrompt> &prompts);
     void applyTheme();
 
     Ui::MainWindow *ui;

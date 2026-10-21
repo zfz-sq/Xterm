@@ -79,8 +79,6 @@ qt_add_executable(Xterm
     serialsession.cpp
     serialsession.h
     transport.h
-    conpty.cpp
-    conpty.h
     sshtarget.h
     sshsession.cpp
     sshsession.h
@@ -135,6 +133,8 @@ target_link_libraries(Xterm
 )
 
 xterm_deploy_ssh_runtime(Xterm)
+
+add_subdirectory(tools/sshtest)
 
 if(BUILD_TESTING)
     add_subdirectory(tests)

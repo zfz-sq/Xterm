@@ -14,6 +14,7 @@
 #include <QEvent>
 #include <QFile>
 #include <QFileDialog>
+#include <QFormLayout>
 #include <QFontMetrics>
 #include <QGuiApplication>
 #include <QIcon>
@@ -439,6 +440,10 @@ void MainWindow::connectSignals()
     // ---- SSH 链路 ----
     connect(m_ssh, &SshSession::opened, this, [this] {
         m_sshView->appendSystemMessage(tr("── 已连接 %1 ──").arg(m_ssh->summary()));
+        if (m_ssh->recordedUnknownHostKey()) {
+            m_sshView->appendSystemMessage(
+                tr("── 已记录主机 %1 的新密钥 ──").arg(m_ssh->target().host));
+        }
         clearHostStats();
         m_hostStats->start(m_ssh->target());
         updateConnectionUi();
@@ -465,26 +470,14 @@ void MainWindow::connectSignals()
         m_sshView->appendSystemMessage(tr("── %1 ──").arg(msg));
     });
     connect(m_ssh, &SshSession::received, m_sshView, &ScreenView::receiveData);
-    // 没有可代填的密码时，ssh.exe 会把提示停在终端里等用户。密码输入是
-    // 不回显的（ssh 自己关掉了 echo），不说明的话用户只会觉得"敲了没反应"。
-    connect(m_ssh, &SshSession::hostKeyPromptDetected, this, [this] {
-        const QString tip = tr("首次连接：请核对上面的主机指纹，在终端输入 yes 或 no 后回车");
-        ui->statusbar->showMessage(tip, 20000);
-        m_sshView->appendSystemMessage(tr("── %1 ──").arg(tip));
-        if (m_mode == Mode::Ssh)
-            m_sshView->setFocus();
-    });
+    connect(m_ssh, &SshSession::hostKeyDecisionRequired, this,
+            &MainWindow::promptHostKeyDecision);
+    connect(m_ssh, &SshSession::authAnswersRequired, this,
+            &MainWindow::promptAuthAnswers);
     connect(m_sshView, &ScreenView::shellTitleChanged, this, [this](const QString &title) {
         m_shellTitle = title;
         if (m_mode == Mode::Ssh)
             updateModeUi();
-    });
-    connect(m_ssh, &SshSession::passwordPromptDetected, this, [this] {
-        const QString tip = tr("需要密码：直接在终端里输入（输入不会显示），输完按回车");
-        ui->statusbar->showMessage(tip, 15000);
-        m_sshView->appendSystemMessage(tr("── %1 ──").arg(tip));
-        if (m_mode == Mode::Ssh)
-            m_sshView->setFocus();
     });
     connect(m_ssh, &SshSession::stateChanged, this,
             [this](Transport::State) { updateConnectionUi(); updatePersistentStatus(); });
@@ -888,7 +881,12 @@ void MainWindow::clearHostStats()
 bool MainWindow::confirmHostKeyChange(const QString &host, const QString &stored, const QString &current)
 {
     const auto show = [](const QString &hex) {
-        QString b64 = QString::fromLatin1(QByteArray::fromHex(hex.toLatin1()).toBase64());
+        if (hex.contains(QLatin1Char('\n')))
+            return hex;
+        const QByteArray raw = QByteArray::fromHex(hex.toLatin1());
+        if (raw.isEmpty())
+            return hex;
+        QString b64 = QString::fromLatin1(raw.toBase64());
         while (b64.endsWith(QLatin1Char('=')))
             b64.chop(1);
         return QStringLiteral("SHA256:") + b64;
@@ -897,7 +895,7 @@ bool MainWindow::confirmHostKeyChange(const QString &host, const QString &stored
     QDialog dialog(this);
     dialog.setWindowTitle(tr("主机密钥已变化"));
     auto *layout = new QVBoxLayout(&dialog);
-    auto *intro = new QLabel(tr("主机 %1 的密钥指纹和上次记下的不一致。CPU 和内存采样需要这条连接。").arg(host), &dialog);
+    auto *intro = new QLabel(tr("主机 %1 的密钥指纹和上次记下的不一致。").arg(host), &dialog);
     intro->setWordWrap(true);
     layout->addWidget(intro);
 
@@ -910,17 +908,71 @@ bool MainWindow::confirmHostKeyChange(const QString &host, const QString &stored
     addLine(tr("上次记录"), stored);
     addLine(tr("这次连接"), current);
 
-    auto *hint = new QLabel(tr("确认这台机器重装过或换过密钥后，再更新记录并继续。如果这台机器不该换密钥，请取消。"), &dialog);
+    auto *hint = new QLabel(tr("确认这台机器重装过或换过密钥后，再更新记录并继续。如果这台机器不该换密钥，请拒绝。"), &dialog);
     hint->setWordWrap(true);
     layout->addWidget(hint);
 
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, &dialog);
-    buttons->addButton(tr("更新并连接"), QDialogButtonBox::AcceptRole);
+    auto *buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    buttons->button(QDialogButtonBox::Ok)->setText(tr("更新并连接"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(tr("拒绝"));
+    buttons->button(QDialogButtonBox::Ok)->setAutoDefault(false);
+    buttons->button(QDialogButtonBox::Ok)->setDefault(false);
+    buttons->button(QDialogButtonBox::Cancel)->setDefault(true);
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     dialog.setMinimumWidth(460);
     return dialog.exec() == QDialog::Accepted;
+}
+
+void MainWindow::promptHostKeyDecision(const SshHostKeyChange &change)
+{
+    if (change.oldFingerprint.isEmpty()) {
+        m_sshView->appendSystemMessage(
+            tr("── 已记录主机 %1 的新密钥 ──").arg(change.host));
+        m_ssh->answerHostKey(change.requestId, true);
+        return;
+    }
+
+    const bool accept = confirmHostKeyChange(
+        change.host, change.oldFingerprint, change.newFingerprint);
+    m_ssh->answerHostKey(change.requestId, accept);
+}
+
+void MainWindow::promptAuthAnswers(SshRequestId requestId,
+                                   const QList<SshAuthPrompt> &prompts)
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("SSH 认证"));
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *form = new QFormLayout;
+    QList<QLineEdit *> edits;
+    for (const SshAuthPrompt &prompt : prompts) {
+        auto *edit = new QLineEdit(&dialog);
+        edit->setEchoMode(prompt.echo ? QLineEdit::Normal : QLineEdit::Password);
+        form->addRow(prompt.text, edit);
+        edits.append(edit);
+    }
+    layout->addLayout(form);
+
+    auto *buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    dialog.setMinimumWidth(420);
+
+    if (dialog.exec() != QDialog::Accepted) {
+        m_ssh->answerAuthentication(requestId, {});
+        return;
+    }
+
+    QStringList answers;
+    answers.reserve(edits.size());
+    for (QLineEdit *edit : edits)
+        answers.append(edit->text());
+    m_ssh->answerAuthentication(requestId, answers);
 }
 
 // ---------------------------------------------------------------- 本机 MCP

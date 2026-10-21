@@ -1,23 +1,28 @@
 #ifndef SSHSESSION_H
 #define SSHSESSION_H
 
+#include <memory>
+
+#include <QByteArray>
+#include <QList>
 #include <QString>
 #include <QStringList>
 
-#include "conpty.h"
+#include "ssh/sshtypes.h"
 #include "sshtarget.h"
 #include "transport.h"
+
+class KnownHostsStore;
+class LibsshApi;
+class QThread;
+class SshWorker;
 
 /*
  * SshSession: SSH 后端，实现 Transport 契约。
  *
- * 实现方式：在 Windows 伪终端（ConPty）里运行系统自带的 OpenSSH 客户端
- * ssh.exe。子进程面对的是真 tty，因此远端会分配 PTY、开启回显、输出 ANSI
- * 彩色，top/vim 这类全屏程序也照常可用。填了「密码」时代填最多 3 次。
- * 主机指纹不代答，必须由用户在终端里输入 yes 或 no。
- *
- * 与 SerialSession 的差别只在"异步"：open() 返回空串只代表已开始建立，
- * 成功要等 opened()，失败看 errorOccurred()。
+ * GUI 线程 facade：创建 SshWorker 并移到私有 QThread，命令和事件全部
+ * queued 连接。认证成功后 worker 的 connected 映射为 opened()，原始
+ * bytes 原样转发到 received()。
  */
 class SshSession : public Transport
 {
@@ -25,56 +30,81 @@ class SshSession : public Transport
 
 public:
     explicit SshSession(QObject *parent = nullptr);
+    SshSession(LibsshApi &api, KnownHostsStore &knownHosts,
+               QObject *parent = nullptr);
     ~SshSession() override;
 
     Kind kind() const override { return SshLink; }
 
-    // 定位系统 OpenSSH 客户端；找不到返回空字符串。
-    static QString sshExecutable();
-    static QString availabilityError(); // 空 = 本平台的 SSH 后端可用
+    static QString availabilityError();
 
     void setPtySize(int cols, int rows);
 
-    QString open(const SshTarget &target);   // 空串 = 已开始建立
+    QString open(const SshTarget &target);
     void close() override;
     QString send(const QByteArray &data) override;
 
     SshTarget target() const { return m_target; }
-    QString summary() const;                 // "user@host:port"，用于状态栏 / 提示
+    QString summary() const;
+    bool recordedUnknownHostKey() const { return m_recordedUnknownHostKey; }
+
+public slots:
+    void answerHostKey(SshRequestId requestId, bool accept);
+    void answerAuthentication(SshRequestId requestId,
+                              const QStringList &answers);
 
 signals:
-    // 会话结束的原因码，供上层在终端里写一行人类可读的说明。
     void sessionEnded(int exitCode, bool userRequested);
-    // 终端里出现了 password 提示，但本会话没有可代填的凭据。
-    // 上层据此提示用户「要在终端里敲，且密码不回显」。
-    void passwordPromptDetected();
-    // 首次连接的主机指纹确认。不代答 yes：指纹要对过再由用户自己输入。
-    void hostKeyPromptDetected();
+    void hostKeyDecisionRequired(const SshHostKeyChange &change);
+    void authAnswersRequired(SshRequestId requestId,
+                             const QList<SshAuthPrompt> &prompts);
 
 private:
-    void onLaunched(const QString &errorText);
-    void onFinished(int exitCode, bool terminatedByUs);
-    void onOutputReceived(const QByteArray &chunk); // 侦测 ssh.exe 的密码提示
-    void beginClose();
-    QStringList buildArguments() const;
-    static QString sanitizedArg(const QString &s); // 去掉换行等控制字符，避免命令行非法
-    static QString exitHint(int exitCode);
+    friend class TestSshSession;
 
-    ConPty m_pty;
+    void setupWorker(LibsshApi &api, KnownHostsStore &knownHosts);
+    void teardownWorker();
+    void startConnect(const SshTarget &target);
+    void requestCloseCurrent();
+    void refreshUnknownHostFlag(const SshTarget &target);
+
+private slots:
+    void handleWorkerConnected(quint64 generation);
+    void handleWorkerShellData(quint64 generation, const QByteArray &data);
+    void handleWorkerClosed(quint64 generation);
+    void handleWorkerFailed(quint64 generation, const SshError &error);
+    void handleWorkerHostKey(quint64 generation,
+                             const SshHostKeyChange &change);
+    void handleWorkerAuth(quint64 generation, SshRequestId requestId,
+                          const QList<SshAuthPrompt> &prompts);
+
+signals:
+    void requestConnect(quint64 generation, const SshTarget &target,
+                        int cols, int rows);
+    void requestWrite(quint64 generation, const QByteArray &data);
+    void requestResize(quint64 generation, int cols, int rows);
+    void requestCloseConnection(quint64 generation);
+    void requestHostKeyDecision(quint64 generation, SshRequestId requestId,
+                                bool accept);
+    void requestAuthAnswers(quint64 generation, SshRequestId requestId,
+                            const QStringList &answers);
+
+private:
+    std::unique_ptr<LibsshApi> m_ownedApi;
+    std::unique_ptr<KnownHostsStore> m_ownedStore;
+    KnownHostsStore *m_knownHosts = nullptr;
+    QThread *m_thread = nullptr;
+    SshWorker *m_worker = nullptr;
     SshTarget m_target;
+    SshTarget m_pendingReopen;
+    quint64 m_generation = 0;
     int m_cols = 80;
     int m_rows = 24;
     bool m_userRequestedClose = false;
-    // 密码自动填充：终端输出里出现 "password:" 提示时代填一次，
-    // 上限 3 次（ssh 认证重试通常 3 次），防止错误密码死循环。
-    QByteArray m_promptTail;
-    int m_autofillLeft = 0;
-    bool m_promptHintSent = false; // 无凭据可代填时，提醒只发一次
-    bool m_hostKeyHintSent = false;
-    // 已连接时再次 open()：先收旧会话，closed() 之后自动接着建新会话，
-    // 全程不阻塞（不做「断开—等待—重连」那种会让 UI 卡住的同步等待）。
-    SshTarget m_pendingReopen;
     bool m_hasPendingReopen = false;
+    bool m_openedEmitted = false;
+    bool m_recordedUnknownHostKey = false;
+    SshError m_lastError;
 };
 
 #endif // SSHSESSION_H
