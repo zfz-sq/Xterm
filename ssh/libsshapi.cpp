@@ -53,6 +53,7 @@ ssh_session LibsshApi::newSession()
 
 void LibsshApi::freeSession(ssh_session session)
 {
+    m_authenticationErrors.remove(session);
     ssh_free(session);
 }
 
@@ -162,14 +163,14 @@ QString LibsshApi::serverHostKeyType(ssh_session session)
 
 int LibsshApi::authAgent(ssh_session session)
 {
-    m_authenticationError.clear();
+    m_authenticationErrors.remove(session);
     return ssh_userauth_agent(session, nullptr);
 }
 
 int LibsshApi::authExplicitKey(ssh_session session, const QString &path,
                                const QByteArray &passphrase)
 {
-    m_authenticationError.clear();
+    m_authenticationErrors.remove(session);
     const QByteArray pathBytes = path.toUtf8();
     ssh_key privateKey = nullptr;
     const int importResult = ssh_pki_import_privkey_file(
@@ -182,15 +183,15 @@ int LibsshApi::authExplicitKey(ssh_session session, const QString &path,
         }
         const QFileInfo keyFile(path);
         if (!keyFile.exists()) {
-            m_authenticationError =
+            m_authenticationErrors[session] =
                 QStringLiteral("Private key file does not exist: %1")
                     .arg(path);
         } else if (!keyFile.isReadable()) {
-            m_authenticationError =
+            m_authenticationErrors[session] =
                 QStringLiteral("Private key file is not readable: %1")
                     .arg(path);
         } else {
-            m_authenticationError =
+            m_authenticationErrors[session] =
                 QStringLiteral(
                     "Private key is invalid or could not be decrypted: %1")
                     .arg(path);
@@ -204,15 +205,16 @@ int LibsshApi::authExplicitKey(ssh_session session, const QString &path,
 
 QString LibsshApi::authenticationErrorString(ssh_session session) const
 {
-    return m_authenticationError.isEmpty()
+    const QString localError = m_authenticationErrors.value(session);
+    return localError.isEmpty()
         ? errorString(session)
-        : m_authenticationError;
+        : localError;
 }
 
 int LibsshApi::authAutomaticPublicKey(ssh_session session,
                                       const QByteArray &passphrase)
 {
-    m_authenticationError.clear();
+    m_authenticationErrors.remove(session);
     return ssh_userauth_publickey_auto(
         session, nullptr,
         passphrase.isEmpty() ? nullptr : passphrase.constData());
@@ -220,7 +222,7 @@ int LibsshApi::authAutomaticPublicKey(ssh_session session,
 
 int LibsshApi::authKeyboardInteractive(ssh_session session)
 {
-    m_authenticationError.clear();
+    m_authenticationErrors.remove(session);
     return ssh_userauth_kbdint(session, nullptr, nullptr);
 }
 
@@ -254,7 +256,7 @@ int LibsshApi::setKeyboardInteractiveAnswer(ssh_session session,
 int LibsshApi::authPassword(ssh_session session,
                             const QByteArray &password)
 {
-    m_authenticationError.clear();
+    m_authenticationErrors.remove(session);
     return ssh_userauth_password(session, nullptr, password.constData());
 }
 

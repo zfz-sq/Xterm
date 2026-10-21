@@ -2,6 +2,8 @@
 
 #include "knownhostsstore.h"
 
+#include <QScopeGuard>
+
 #include <utility>
 
 LibsshConnection::LibsshConnection(LibsshApi &api,
@@ -22,6 +24,8 @@ LibsshConnection::~LibsshConnection()
 
 void LibsshConnection::begin(const SshTarget &target)
 {
+    beginOperation();
+    const auto operation = qScopeGuard([this] { endOperation(); });
     m_deferredPassword.fill('\0');
     m_deferredPassword.clear();
     m_deferredTarget.password.clear();
@@ -29,16 +33,29 @@ void LibsshConnection::begin(const SshTarget &target)
     m_deferredPassword = target.password.toUtf8();
     m_deferredTarget.password.clear();
     m_hasDeferredBegin = true;
-    drainDeferredBegins();
+}
+
+void LibsshConnection::beginOperation()
+{
+    ++m_operationDepth;
+}
+
+void LibsshConnection::endOperation()
+{
+    --m_operationDepth;
+    if (m_operationDepth == 0) {
+        drainDeferredBegins();
+    }
 }
 
 void LibsshConnection::drainDeferredBegins()
 {
-    if (m_beginInProgress) {
+    if (m_operationDepth != 0 || m_drainingBegins) {
         return;
     }
 
-    m_beginInProgress = true;
+    m_drainingBegins = true;
+    ++m_operationDepth;
     while (m_hasDeferredBegin) {
         SshTarget next = m_deferredTarget;
         QByteArray nextPassword = std::move(m_deferredPassword);
@@ -59,7 +76,8 @@ void LibsshConnection::drainDeferredBegins()
         initializeBegin(next, std::move(nextPassword));
         next.password.clear();
     }
-    m_beginInProgress = false;
+    --m_operationDepth;
+    m_drainingBegins = false;
 }
 
 void LibsshConnection::initializeBegin(const SshTarget &target,
@@ -76,6 +94,7 @@ void LibsshConnection::initializeBegin(const SshTarget &target,
     m_serverKeyType.clear();
     m_effectiveHost.clear();
     m_effectivePort = 0;
+    m_legacyPort = 0;
     m_pendingLegacyFingerprint.clear();
 
     m_session = m_api.newSession();
@@ -91,6 +110,8 @@ void LibsshConnection::initializeBegin(const SshTarget &target,
 
 void LibsshConnection::advance()
 {
+    beginOperation();
+    const auto operation = qScopeGuard([this] { endOperation(); });
     if (m_finished || m_session == nullptr) {
         return;
     }
@@ -116,16 +137,22 @@ void LibsshConnection::advance()
     case Step::VerifyHost:
         verifyHost();
         return;
-    case Step::AcceptChangedHost:
+    case Step::AcceptChangedHost: {
         if (m_api.updateKnownHosts(m_session) != SSH_OK) {
             const SshError error = apiError(SshError::Domain::HostKey, false);
             fail(error.domain, error.message, error.retryable, error.code);
             return;
         }
+        QString validationError;
+        if (!validateUpdatedHostKey(&validationError)
+            || !normalizeCurrentHostKeys(&validationError)) {
+            fail(SshError::Domain::HostKey, validationError);
+            return;
+        }
         if (!m_pendingLegacyFingerprint.isEmpty()) {
             QString migrationError;
             if (!m_knownHosts.consumeLegacyRecord(
-                    m_target.host, static_cast<quint16>(m_target.port),
+                    m_target.host, m_legacyPort,
                     m_pendingLegacyFingerprint, m_effectiveHost,
                     m_effectivePort, m_serverKeyType,
                     m_currentFingerprint, &migrationError)) {
@@ -133,16 +160,11 @@ void LibsshConnection::advance()
                 return;
             }
             m_pendingLegacyFingerprint.clear();
-        } else {
-            QString validationError;
-            if (!validateUpdatedHostKey(&validationError)) {
-                fail(SshError::Domain::HostKey, validationError);
-                return;
-            }
         }
         m_step = Step::AuthAgent;
         setPhase(SshPhase::Authenticating);
         return;
+    }
     case Step::WaitForHostDecision:
     case Step::WaitForAuthAnswers:
         return;
@@ -198,6 +220,8 @@ void LibsshConnection::advance()
 void LibsshConnection::submitHostKeyDecision(SshRequestId requestId,
                                               bool accept)
 {
+    beginOperation();
+    const auto operation = qScopeGuard([this] { endOperation(); });
     if (m_finished || m_step != Step::WaitForHostDecision
         || requestId != m_pendingRequestId) {
         return;
@@ -214,6 +238,8 @@ void LibsshConnection::submitHostKeyDecision(SshRequestId requestId,
 void LibsshConnection::submitAuthAnswers(SshRequestId requestId,
                                          const QStringList &answers)
 {
+    beginOperation();
+    const auto operation = qScopeGuard([this] { endOperation(); });
     if (m_finished || m_step != Step::WaitForAuthAnswers
         || requestId != m_pendingRequestId) {
         return;
@@ -266,6 +292,8 @@ SshError LibsshConnection::sendKeepalive()
 
 void LibsshConnection::close()
 {
+    beginOperation();
+    const auto operation = qScopeGuard([this] { endOperation(); });
     if (m_step == Step::Idle && m_session == nullptr) {
         return;
     }
@@ -273,10 +301,6 @@ void LibsshConnection::close()
         return;
     }
 
-    const bool ownsLifecycleGuard = !m_beginInProgress;
-    if (ownsLifecycleGuard) {
-        m_beginInProgress = true;
-    }
     const bool shouldReportCancellation = !m_finished;
     releaseSession();
     clearSecrets();
@@ -285,10 +309,6 @@ void LibsshConnection::close()
     if (shouldReportCancellation) {
         complete({SshError::Domain::Cancelled, 0,
                   QStringLiteral("SSH connection cancelled"), false});
-    }
-    if (ownsLifecycleGuard) {
-        m_beginInProgress = false;
-        drainDeferredBegins();
     }
 }
 
@@ -379,7 +399,7 @@ void LibsshConnection::configure()
         return;
     }
 
-    m_effectiveHost = m_api.effectiveHost(m_session);
+    m_effectiveHost = m_api.effectiveHost(m_session).toLower();
     m_effectivePort = m_api.effectivePort(m_session);
     if (m_effectiveHost.isEmpty() || m_effectivePort == 0) {
         fail(SshError::Domain::Configuration,
@@ -410,14 +430,20 @@ void LibsshConnection::verifyHost()
         return;
     }
 
-    const bool hasLegacyPort =
-        m_target.port >= 0 && m_target.port <= 65535;
+    m_legacyPort =
+        m_target.port >= 1 && m_target.port <= 65535
+        ? static_cast<quint16>(m_target.port)
+        : m_effectivePort;
     const QString legacyFingerprint =
-        hasLegacyPort
-        ? m_knownHosts.legacyFingerprint(
-              m_target.host, static_cast<quint16>(m_target.port))
-        : QString();
+        m_knownHosts.legacyFingerprint(m_target.host, m_legacyPort);
     if (state == SSH_KNOWN_HOSTS_OK) {
+        QString normalizationError;
+        if (!m_knownHosts.retryPendingNormalization(
+                m_effectiveHost, m_effectivePort, m_serverKeyType,
+                m_currentFingerprint, &normalizationError)) {
+            fail(SshError::Domain::HostKey, normalizationError);
+            return;
+        }
         if (!legacyFingerprint.isEmpty()) {
             if (legacyFingerprint.compare(m_currentFingerprint,
                                           Qt::CaseInsensitive) != 0) {
@@ -431,7 +457,7 @@ void LibsshConnection::verifyHost()
             }
             QString migrationError;
             if (!m_knownHosts.consumeLegacyRecord(
-                    m_target.host, static_cast<quint16>(m_target.port),
+                    m_target.host, m_legacyPort,
                     m_currentFingerprint, m_effectiveHost,
                     m_effectivePort, m_serverKeyType,
                     m_currentFingerprint, &migrationError)) {
@@ -459,6 +485,10 @@ void LibsshConnection::verifyHost()
                 fail(SshError::Domain::HostKey, validationError);
                 return;
             }
+            if (!normalizeCurrentHostKeys(&validationError)) {
+                fail(SshError::Domain::HostKey, validationError);
+                return;
+            }
             m_step = Step::AuthAgent;
             setPhase(SshPhase::Authenticating);
             return;
@@ -473,9 +503,15 @@ void LibsshConnection::verifyHost()
                      error.code);
                 return;
             }
+            QString validationError;
+            if (!validateUpdatedHostKey(&validationError)
+                || !normalizeCurrentHostKeys(&validationError)) {
+                fail(SshError::Domain::HostKey, validationError);
+                return;
+            }
             QString migrationError;
             if (!m_knownHosts.consumeLegacyRecord(
-                    m_target.host, static_cast<quint16>(m_target.port),
+                    m_target.host, m_legacyPort,
                     m_currentFingerprint, m_effectiveHost,
                     m_effectivePort, m_serverKeyType,
                     m_currentFingerprint, &migrationError)) {
@@ -496,8 +532,7 @@ void LibsshConnection::verifyHost()
         return;
     }
 
-    if (state == SSH_KNOWN_HOSTS_CHANGED
-        || state == SSH_KNOWN_HOSTS_OTHER) {
+    if (state == SSH_KNOWN_HOSTS_CHANGED) {
         QString fingerprintError;
         const QString oldFingerprint =
             m_knownHosts.standardFingerprint(
@@ -515,27 +550,52 @@ void LibsshConnection::verifyHost()
         return;
     }
 
+    if (state == SSH_KNOWN_HOSTS_OTHER) {
+        QString keysError;
+        const QList<KnownHostKeyInfo> keys =
+            m_knownHosts.standardKeys(m_effectiveHost, m_effectivePort,
+                                      &keysError);
+        QStringList oldKeys;
+        for (const KnownHostKeyInfo &key : keys) {
+            if (key.keyType != m_serverKeyType) {
+                oldKeys.append(
+                    QStringLiteral("%1 %2")
+                        .arg(key.keyType, key.fingerprint));
+            }
+        }
+        if (oldKeys.isEmpty()) {
+            fail(SshError::Domain::HostKey, keysError.isEmpty()
+                     ? QStringLiteral(
+                           "No different stored host key for %1:%2")
+                           .arg(m_effectiveHost)
+                           .arg(m_effectivePort)
+                     : keysError);
+            return;
+        }
+        m_pendingRequestId = m_nextRequestId++;
+        m_step = Step::WaitForHostDecision;
+        emit hostKeyDecisionRequired(
+            {m_pendingRequestId, m_target.host,
+             oldKeys.join(QLatin1Char('\n')), m_currentFingerprint});
+        return;
+    }
+
     const SshError error = apiError(SshError::Domain::HostKey, false);
     fail(error.domain, error.message, error.retryable, error.code);
 }
 
 bool LibsshConnection::validateUpdatedHostKey(QString *error) const
 {
-    const QString stored = m_knownHosts.standardFingerprint(
-        m_effectiveHost, m_effectivePort, m_serverKeyType, error);
-    if (stored.isEmpty()) {
-        return false;
-    }
-    if (stored.compare(m_currentFingerprint, Qt::CaseInsensitive) != 0) {
-        if (error) {
-            *error = QStringLiteral(
-                "Updated OpenSSH host key fingerprint mismatch for %1:%2")
-                         .arg(m_effectiveHost)
-                         .arg(m_effectivePort);
-        }
-        return false;
-    }
-    return true;
+    return m_knownHosts.containsStandardKey(
+        m_effectiveHost, m_effectivePort, m_serverKeyType,
+        m_currentFingerprint, error);
+}
+
+bool LibsshConnection::normalizeCurrentHostKeys(QString *error)
+{
+    return m_knownHosts.normalizeHostKeys(
+        m_effectiveHost, m_effectivePort, m_serverKeyType,
+        m_currentFingerprint, error);
 }
 
 void LibsshConnection::handleAuthResult(int result, Step nextStep)

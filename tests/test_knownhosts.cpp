@@ -68,9 +68,11 @@ public:
         ++calls;
         const auto decoded = QByteArray::fromBase64Encoding(
             encodedKey, QByteArray::AbortOnBase64DecodingErrors);
-        return accept && decoded
-            && algorithm == QByteArrayLiteral("ssh-ed25519")
-            && decoded.decoded.size() == 51;
+        const bool supported =
+            algorithm == QByteArrayLiteral("ssh-ed25519")
+            || algorithm == QByteArrayLiteral("ssh-rsa");
+        return accept && decoded && supported
+            && decoded.decoded.size() == 40 + algorithm.size();
     }
 
     mutable int calls = 0;
@@ -91,6 +93,9 @@ private slots:
     void createsAndMaintainsEmptyGlobalKnownHosts();
     void readsStrictStandardFingerprintThroughValidator();
     void standardFingerprintSelectsExpectedKeyType();
+    void listsAllStandardKeysInStableDeduplicatedOrder();
+    void normalizesAcceptedHostKeyAtomically();
+    void noPendingNormalizationPreservesAlternateKeys();
     void consumesLegacyAgainstDifferentStandardHost();
     void atomicRewritePreservesUnrelatedHosts();
     void requiresMatchingStandardKeyBeforeConsumingLegacy();
@@ -242,6 +247,90 @@ void TestKnownHosts::standardFingerprintSelectsExpectedKeyType()
                  QStringLiteral("target.test"), 22,
                  QStringLiteral("ssh-ed25519"), &error),
              QString::fromLatin1(fingerprintForBlob(ed)));
+}
+
+void TestKnownHosts::listsAllStandardKeysInStableDeduplicatedOrder()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    KnownHostsStore store(m_validator, directory.path());
+    QByteArray rsa;
+    appendSshString(&rsa, QByteArrayLiteral("ssh-rsa"));
+    appendSshString(&rsa, QByteArray(32, 'r'));
+    const QByteArray ed = ed25519Blob('e');
+    QVERIFY(writeFile(store.path(),
+                      "[real.test]:2222 ssh-rsa " + rsa.toBase64() + "\n"
+                      "[real.test]:2222 ssh-ed25519 " + ed.toBase64() + "\n"
+                      "[real.test]:2222 ssh-rsa " + rsa.toBase64() + "\n"));
+
+    QString error;
+    const QList<KnownHostKeyInfo> keys =
+        store.standardKeys(QStringLiteral("REAL.TEST"), 2222, &error);
+
+    QCOMPARE(keys.size(), 2);
+    QCOMPARE(keys.at(0).keyType, QStringLiteral("ssh-rsa"));
+    QCOMPARE(keys.at(0).fingerprint,
+             QString::fromLatin1(fingerprintForBlob(rsa)));
+    QCOMPARE(keys.at(1).keyType, QStringLiteral("ssh-ed25519"));
+    QCOMPARE(keys.at(1).fingerprint,
+             QString::fromLatin1(fingerprintForBlob(ed)));
+}
+
+void TestKnownHosts::normalizesAcceptedHostKeyAtomically()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    KnownHostsStore store(m_validator, directory.path());
+    const QByteArray oldBlob = ed25519Blob('o');
+    const QByteArray newBlob = ed25519Blob('n');
+    const QByteArray other =
+        "other.test ssh-ed25519 " + ed25519Blob('x').toBase64() + "\n";
+    const QString newFingerprint =
+        QString::fromLatin1(fingerprintForBlob(newBlob));
+    QVERIFY(writeFile(store.path(),
+                      "# comment\n" + other
+                      + "target.test ssh-ed25519 "
+                      + oldBlob.toBase64() + "\n"
+                      + "target.test ssh-ed25519 "
+                      + newBlob.toBase64() + "\n"));
+
+    QString error;
+    QVERIFY(store.containsStandardKey(
+        QStringLiteral("TARGET.TEST"), 22,
+        QStringLiteral("ssh-ed25519"), newFingerprint, &error));
+    QVERIFY2(store.normalizeHostKeys(
+                 QStringLiteral("TARGET.TEST"), 22,
+                 QStringLiteral("ssh-ed25519"), newFingerprint, &error),
+             qPrintable(error));
+
+    const QByteArray normalized = readFile(store.path());
+    QVERIFY(normalized.contains("# comment\n"));
+    QVERIFY(normalized.contains(other));
+    QVERIFY(!normalized.contains(oldBlob.toBase64()));
+    QCOMPARE(normalized.count(newBlob.toBase64()), 1);
+}
+
+void TestKnownHosts::noPendingNormalizationPreservesAlternateKeys()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    KnownHostsStore store(m_validator, directory.path());
+    QByteArray rsa;
+    appendSshString(&rsa, QByteArrayLiteral("ssh-rsa"));
+    appendSshString(&rsa, QByteArray(32, 'r'));
+    const QByteArray ed = ed25519Blob('e');
+    const QByteArray original =
+        "target.test ssh-rsa " + rsa.toBase64() + "\n"
+        "target.test ssh-ed25519 " + ed.toBase64() + "\n";
+    QVERIFY(writeFile(store.path(), original));
+
+    QString error;
+    QVERIFY2(store.retryPendingNormalization(
+                 QStringLiteral("target.test"), 22,
+                 QStringLiteral("ssh-ed25519"),
+                 QString::fromLatin1(fingerprintForBlob(ed)), &error),
+             qPrintable(error));
+    QCOMPARE(readFile(store.path()), original);
 }
 
 void TestKnownHosts::consumesLegacyAgainstDifferentStandardHost()

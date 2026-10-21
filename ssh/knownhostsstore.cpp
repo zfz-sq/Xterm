@@ -120,19 +120,50 @@ bool hostPatternsMatch(const QString &patternsField,
         if (!pattern.isEmpty() && pattern.startsWith(QLatin1Char('!'))) {
             return false;
         }
-        if (pattern == expectedPattern) {
+        if (pattern.compare(expectedPattern, Qt::CaseInsensitive) == 0) {
             hasPositiveMatch = true;
         }
     }
     return hasPositiveMatch;
 }
 
-QString standardFileFingerprint(const QString &path,
-                                const KnownHostKeyValidator &keyValidator,
-                                const QString &host, quint16 port,
-                                const QString &expectedKeyType,
-                                const QString &expectedFingerprint,
-                                QString *error)
+QString standardHostPattern(const QString &host, quint16 port)
+{
+    const QString lowerHost = host.toLower();
+    return port == 22
+        ? lowerHost
+        : QStringLiteral("[%1]:%2").arg(lowerHost).arg(port);
+}
+
+bool keyInfoFromFields(const QStringList &fields,
+                       const KnownHostKeyValidator &keyValidator,
+                       KnownHostKeyInfo *info)
+{
+    if (fields.size() < 3) {
+        return false;
+    }
+
+    const QByteArray declaredType = fields.at(1).toLatin1();
+    const QByteArray encodedBlob = fields.at(2).toLatin1();
+    const auto decoded = QByteArray::fromBase64Encoding(
+        encodedBlob, QByteArray::AbortOnBase64DecodingErrors);
+    if (!decoded
+        || !wireBlobAlgorithmMatches(decoded.decoded, declaredType)
+        || !keyValidator.validateKnownHostKey(declaredType,
+                                              encodedBlob)) {
+        return false;
+    }
+
+    info->keyType = QString::fromLatin1(declaredType);
+    info->fingerprint = QString::fromLatin1(
+        QCryptographicHash::hash(decoded.decoded,
+                                 QCryptographicHash::Sha256).toHex());
+    return true;
+}
+
+QList<KnownHostKeyInfo> standardFileKeys(
+    const QString &path, const KnownHostKeyValidator &keyValidator,
+    const QString &host, quint16 port, QString *error)
 {
     QByteArray contents;
     if (!readFileContents(path, QStringLiteral("known_hosts"), &contents,
@@ -140,10 +171,8 @@ QString standardFileFingerprint(const QString &path,
         return {};
     }
 
-    const QString expectedPattern =
-        port == 22
-            ? host
-            : QStringLiteral("[%1]:%2").arg(host).arg(port);
+    const QString expectedPattern = standardHostPattern(host, port);
+    QList<KnownHostKeyInfo> keys;
     const QList<QByteArray> lines = contents.split('\n');
     for (const QByteArray &line : lines) {
         const QString trimmed = QString::fromUtf8(line).trimmed();
@@ -159,37 +188,58 @@ QString standardFileFingerprint(const QString &path,
             continue;
         }
 
-        const QByteArray declaredType = fields.at(1).toLatin1();
-        if (!expectedKeyType.isEmpty()
-            && declaredType != expectedKeyType.toLatin1()) {
+        KnownHostKeyInfo info;
+        if (!keyInfoFromFields(fields, keyValidator, &info)) {
             continue;
         }
-        const QByteArray encodedBlob = fields.at(2).toLatin1();
-        const auto decoded = QByteArray::fromBase64Encoding(
-            encodedBlob, QByteArray::AbortOnBase64DecodingErrors);
-        if (!decoded
-            || !wireBlobAlgorithmMatches(decoded.decoded, declaredType)
-            || !keyValidator.validateKnownHostKey(declaredType,
-                                                  encodedBlob)) {
-            continue;
+        bool duplicate = false;
+        for (const KnownHostKeyInfo &existing : std::as_const(keys)) {
+            if (existing.keyType == info.keyType
+                && existing.fingerprint.compare(
+                       info.fingerprint, Qt::CaseInsensitive) == 0) {
+                duplicate = true;
+                break;
+            }
         }
+        if (!duplicate) {
+            keys.append(std::move(info));
+        }
+    }
 
-        const QByteArray hash =
-            QCryptographicHash::hash(decoded.decoded,
-                                     QCryptographicHash::Sha256)
-                .toHex();
-        const QString fingerprint = QString::fromLatin1(hash);
-        if (!expectedFingerprint.isEmpty()
-            && fingerprint.compare(expectedFingerprint,
-                                   Qt::CaseInsensitive) != 0) {
+    if (!keys.isEmpty()) {
+        setError(error, {});
+        return keys;
+    }
+    setError(error,
+             QStringLiteral("No valid OpenSSH host key for %1:%2 in %3")
+                 .arg(host)
+                 .arg(port)
+                 .arg(path));
+    return keys;
+}
+
+QString standardFileFingerprint(const QString &path,
+                                const KnownHostKeyValidator &keyValidator,
+                                const QString &host, quint16 port,
+                                const QString &expectedKeyType,
+                                const QString &expectedFingerprint,
+                                QString *error)
+{
+    const QList<KnownHostKeyInfo> keys =
+        standardFileKeys(path, keyValidator, host, port, error);
+    for (const KnownHostKeyInfo &key : keys) {
+        if ((!expectedKeyType.isEmpty()
+             && key.keyType != expectedKeyType)
+            || (!expectedFingerprint.isEmpty()
+                && key.fingerprint.compare(expectedFingerprint,
+                                           Qt::CaseInsensitive) != 0)) {
             continue;
         }
         setError(error, {});
-        return fingerprint;
+        return key.fingerprint;
     }
-
     setError(error,
-             QStringLiteral("No valid OpenSSH host key for %1:%2 in %3")
+             QStringLiteral("No matching OpenSSH host key for %1:%2 in %3")
                  .arg(host)
                  .arg(port)
                  .arg(path));
@@ -344,6 +394,164 @@ QString KnownHostsStore::standardFingerprint(const QString &host,
     setError(error, {});
     return standardFileFingerprint(path(), m_keyValidator, host, port,
                                    expectedKeyType, {}, error);
+}
+
+QList<KnownHostKeyInfo> KnownHostsStore::standardKeys(
+    const QString &host, quint16 port, QString *error) const
+{
+    setError(error, {});
+    return standardFileKeys(path(), m_keyValidator, host.toLower(), port,
+                            error);
+}
+
+bool KnownHostsStore::containsStandardKey(
+    const QString &host, quint16 port, const QString &keyType,
+    const QString &fingerprint, QString *error) const
+{
+    setError(error, {});
+    return !standardFileFingerprint(
+                path(), m_keyValidator, host.toLower(), port, keyType,
+                fingerprint, error)
+                .isEmpty();
+}
+
+bool KnownHostsStore::normalizeHostKeys(
+    const QString &host, quint16 port, const QString &currentKeyType,
+    const QString &currentFingerprint, QString *error)
+{
+    setError(error, {});
+    if (!containsStandardKey(host, port, currentKeyType,
+                             currentFingerprint, error)) {
+        return false;
+    }
+    m_pendingHost = host.toLower();
+    m_pendingPort = port;
+    m_pendingKeyType = currentKeyType;
+    m_pendingFingerprint = currentFingerprint.toLower();
+
+    QByteArray contents;
+    if (!readFileContents(path(), QStringLiteral("known_hosts"),
+                          &contents, error)) {
+        return false;
+    }
+
+    const QString expectedPattern = standardHostPattern(host, port);
+    QByteArray rewritten;
+    rewritten.reserve(contents.size());
+    bool keptCurrent = false;
+    qsizetype position = 0;
+    while (position < contents.size()) {
+        const qsizetype newline = contents.indexOf('\n', position);
+        const qsizetype end = newline < 0 ? contents.size() : newline + 1;
+        const QByteArray completeLine = contents.mid(position,
+                                                      end - position);
+        const QString trimmed =
+            QString::fromUtf8(completeLine).trimmed();
+        const QStringList fields =
+            trimmed.split(QRegularExpression(QStringLiteral("\\s+")),
+                          Qt::SkipEmptyParts);
+        if (fields.size() < 3
+            || !hostPatternsMatch(fields.at(0), expectedPattern)) {
+            rewritten.append(completeLine);
+            position = end;
+            continue;
+        }
+
+        KnownHostKeyInfo info;
+        const bool validKey =
+            keyInfoFromFields(fields, m_keyValidator, &info);
+        const bool isCurrent =
+            validKey && info.keyType == currentKeyType
+            && info.fingerprint.compare(currentFingerprint,
+                                        Qt::CaseInsensitive) == 0;
+        if (isCurrent && !keptCurrent) {
+            rewritten.append(completeLine);
+            keptCurrent = true;
+            position = end;
+            continue;
+        }
+
+        QStringList remainingPatterns;
+        const QStringList patterns =
+            fields.at(0).split(QLatin1Char(','));
+        for (const QString &pattern : patterns) {
+            if (pattern.compare(expectedPattern,
+                                Qt::CaseInsensitive) != 0) {
+                remainingPatterns.append(pattern);
+            }
+        }
+        if (!remainingPatterns.isEmpty()) {
+            qsizetype tokenStart = 0;
+            while (tokenStart < completeLine.size()
+                   && completeLine.at(tokenStart) <= ' ') {
+                ++tokenStart;
+            }
+            qsizetype tokenEnd = tokenStart;
+            while (tokenEnd < completeLine.size()
+                   && completeLine.at(tokenEnd) > ' ') {
+                ++tokenEnd;
+            }
+            QByteArray preserved = completeLine;
+            preserved.replace(
+                tokenStart, tokenEnd - tokenStart,
+                remainingPatterns.join(QLatin1Char(',')).toUtf8());
+            rewritten.append(preserved);
+        }
+        position = end;
+    }
+
+    if (!keptCurrent) {
+        setError(error,
+                 QStringLiteral(
+                     "Current OpenSSH host key disappeared for %1:%2")
+                     .arg(host)
+                     .arg(port));
+        return false;
+    }
+
+    QSaveFile output(path());
+    if (!output.open(QIODevice::WriteOnly)) {
+        setError(error,
+                 QStringLiteral("Cannot normalize known_hosts file %1: %2")
+                     .arg(path(), output.errorString()));
+        return false;
+    }
+    if (output.write(rewritten) != rewritten.size()) {
+        setError(error,
+                 QStringLiteral("Cannot write normalized known_hosts file %1: %2")
+                     .arg(path(), output.errorString()));
+        output.cancelWriting();
+        return false;
+    }
+    if (!output.commit()) {
+        setError(error,
+                 QStringLiteral("Cannot commit normalized known_hosts file %1: %2")
+                     .arg(path(), output.errorString()));
+        return false;
+    }
+    m_pendingHost.clear();
+    m_pendingPort = 0;
+    m_pendingKeyType.clear();
+    m_pendingFingerprint.clear();
+    return true;
+}
+
+bool KnownHostsStore::retryPendingNormalization(
+    const QString &host, quint16 port, const QString &currentKeyType,
+    const QString &currentFingerprint, QString *error)
+{
+    setError(error, {});
+    if (m_pendingHost.isEmpty()) {
+        return true;
+    }
+    if (m_pendingHost != host.toLower() || m_pendingPort != port
+        || m_pendingKeyType != currentKeyType
+        || m_pendingFingerprint.compare(currentFingerprint,
+                                        Qt::CaseInsensitive) != 0) {
+        return true;
+    }
+    return normalizeHostKeys(host, port, currentKeyType,
+                             currentFingerprint, error);
 }
 
 bool KnownHostsStore::consumeLegacyRecord(

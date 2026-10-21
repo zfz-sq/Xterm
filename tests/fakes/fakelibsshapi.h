@@ -2,6 +2,8 @@
 
 #include "ssh/libsshapi.h"
 
+#include <QCryptographicHash>
+#include <QFile>
 #include <QHash>
 #include <QList>
 #include <QStringList>
@@ -9,6 +11,24 @@
 class FakeLibsshApi final : public LibsshApi
 {
 public:
+    FakeLibsshApi()
+    {
+        auto appendString = [](QByteArray *blob,
+                               const QByteArray &value) {
+            const quint32 size = static_cast<quint32>(value.size());
+            blob->append(char((size >> 24) & 0xff));
+            blob->append(char((size >> 16) & 0xff));
+            blob->append(char((size >> 8) & 0xff));
+            blob->append(char(size & 0xff));
+            blob->append(value);
+        };
+        appendString(&serverKeyBlob, QByteArrayLiteral("ssh-ed25519"));
+        appendString(&serverKeyBlob, QByteArray(32, 'm'));
+        serverFingerprint = QString::fromLatin1(
+            QCryptographicHash::hash(
+                serverKeyBlob, QCryptographicHash::Sha256).toHex());
+    }
+
     bool validateKnownHostKey(const QByteArray &algorithm,
                               const QByteArray &encodedKey) const override
     {
@@ -94,6 +114,11 @@ public:
     enum ssh_known_hosts_e knownHostState(ssh_session) override
     {
         calls.append(QStringLiteral("knownHostState"));
+        if (knownState == SSH_KNOWN_HOSTS_OK
+            && ensureKnownHostForOk
+            && !appendCurrentKnownHost()) {
+            return SSH_KNOWN_HOSTS_ERROR;
+        }
         return knownState;
     }
 
@@ -101,6 +126,9 @@ public:
     {
         calls.append(QStringLiteral("updateKnownHosts"));
         ++updateKnownHostsCount;
+        if (appendKnownHostOnUpdate && !appendCurrentKnownHost()) {
+            return SSH_ERROR;
+        }
         return updateKnownHostsResult;
     }
 
@@ -209,8 +237,11 @@ public:
     enum ssh_known_hosts_e knownState = SSH_KNOWN_HOSTS_OK;
     int updateKnownHostsResult = SSH_OK;
     int updateKnownHostsCount = 0;
-    QString serverFingerprint = QStringLiteral("new-sha256");
+    bool appendKnownHostOnUpdate = true;
+    bool ensureKnownHostForOk = true;
+    QString serverFingerprint;
     QString serverKeyType = QStringLiteral("ssh-ed25519");
+    QByteArray serverKeyBlob;
     mutable QList<bool> keyValidationResults;
     QList<int> agentResults;
     QList<int> explicitKeyResults;
@@ -226,6 +257,24 @@ public:
     int disconnectCount = 0;
 
 private:
+    bool appendCurrentKnownHost()
+    {
+        QFile file(stringOptions.value(SSH_OPTIONS_KNOWNHOSTS));
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Append)) {
+            return false;
+        }
+        const QString hostPattern =
+            effectivePortValue == 22
+            ? effectiveHostValue.toLower()
+            : QStringLiteral("[%1]:%2")
+                  .arg(effectiveHostValue.toLower())
+                  .arg(effectivePortValue);
+        const QByteArray line =
+            hostPattern.toUtf8() + ' ' + serverKeyType.toLatin1()
+            + ' ' + serverKeyBlob.toBase64() + '\n';
+        return file.write(line) == line.size();
+    }
+
     int takeOptionResult(enum ssh_options_e option)
     {
         auto it = optionResults.find(option);

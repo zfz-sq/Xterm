@@ -4,6 +4,7 @@
 #include "sshtypes.h"
 
 #include <QByteArray>
+#include <QHash>
 #include <QList>
 #include <QString>
 
@@ -61,5 +62,5 @@ public:
     virtual int errorCode(ssh_session session) const;
 
 private:
-    QString m_authenticationError;
+    QHash<ssh_session, QString> m_authenticationErrors;
 };
