@@ -1,9 +1,19 @@
-if(NOT DEFINED SOURCE_DIR OR NOT DEFINED DEST_DIR)
-    message(FATAL_ERROR "SOURCE_DIR and DEST_DIR are required")
+if(NOT DEFINED SOURCE_DIR OR NOT DEFINED WINPTHREAD_DLL OR NOT DEFINED DEST_DIR)
+    message(FATAL_ERROR "SOURCE_DIR, WINPTHREAD_DLL, and DEST_DIR are required")
 endif()
 
 string(REGEX REPLACE "^\"|\"$" "" SOURCE_DIR "${SOURCE_DIR}")
+string(REGEX REPLACE "^\"|\"$" "" WINPTHREAD_DLL "${WINPTHREAD_DLL}")
 string(REGEX REPLACE "^\"|\"$" "" DEST_DIR "${DEST_DIR}")
+
+if(NOT EXISTS "${WINPTHREAD_DLL}")
+    message(FATAL_ERROR "Compiler runtime does not exist: ${WINPTHREAD_DLL}")
+endif()
+get_filename_component(_winpthread_name "${WINPTHREAD_DLL}" NAME)
+string(TOLOWER "${_winpthread_name}" _winpthread_name_lower)
+if(NOT _winpthread_name_lower STREQUAL "libwinpthread-1.dll")
+    message(FATAL_ERROR "Unexpected compiler runtime: ${WINPTHREAD_DLL}")
+endif()
 
 file(GLOB _runtime_dlls "${SOURCE_DIR}/*.dll")
 if(NOT _runtime_dlls)
@@ -40,3 +50,11 @@ foreach(_dll IN LISTS _runtime_dlls)
         message(FATAL_ERROR "Failed to copy ${_dll} to ${DEST_DIR}")
     endif()
 endforeach()
+
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${WINPTHREAD_DLL}" "${DEST_DIR}"
+    RESULT_VARIABLE _winpthread_copy_result
+)
+if(NOT _winpthread_copy_result EQUAL 0)
+    message(FATAL_ERROR "Failed to copy ${WINPTHREAD_DLL} to ${DEST_DIR}")
+endif()
