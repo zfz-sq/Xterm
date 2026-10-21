@@ -95,6 +95,9 @@ private slots:
     void doesNotCreateSftpUntilFirstRequest();
     void opensSftpViaChannelStepsAndKeepsSessionNonblocking();
     void subsystemAgainRetriesAndSubsystemFailureReleasesHalfOpenChannel();
+    void rebuildAllocatesFreshChannelAfterRelease();
+    void wrapFailureFailsRequestAndReleasesHalfOpenChannel();
+    void syncSftpGuardsNestIntoOneBlockingWindow();
     void listsDirectoryAndResolvesRealPath();
     void mkdirCreateDeleteRenameAndChmod();
     void recursiveCopyUsesExecWithoutNewSshSession();
@@ -200,6 +203,76 @@ void TestSftpChannel::subsystemAgainRetriesAndSubsystemFailureReleasesHalfOpenCh
     QCOMPARE(api.channelRequestSftpCount, 3);
     QCOMPARE(ofKind(results, SftpResult::Kind::Listed).size(), 1);
     QCOMPARE(newSessionCount(api), 1);
+}
+
+void TestSftpChannel::rebuildAllocatesFreshChannelAfterRelease()
+{
+    // releaseSftp 的 sftp_free 分支必须同时清掉 m_sftpChannel：包装后
+    // channel 的所有权随 sftp_free 一起释放，重建若复用旧指针就是对已
+    // 释放 channel 的 use-after-free（真机风险；fake 不跟踪生命周期，
+    // 用 newChannel 次数断言）。
+    FakeLibsshApi api;
+    api.sftpInitResults = {SSH_ERROR, SSH_OK};
+    api.directoryEntries[QStringLiteral("/ok")] = {
+        {QStringLiteral("f"), 1, 1, 0644, false, false}
+    };
+    SftpChannel channel(api, api.newSession());
+
+    channel.enqueue(makeRequest(70, SftpOp::List, QStringLiteral("/ok")));
+    pump(channel);
+    channel.enqueue(makeRequest(71, SftpOp::List, QStringLiteral("/ok")));
+    const QList<SftpResult> second = pump(channel);
+
+    QCOMPARE(ofKind(second, SftpResult::Kind::Listed).size(), 1);
+    QCOMPARE(api.calls.count(QStringLiteral("newChannel")), 2);
+}
+
+void TestSftpChannel::wrapFailureFailsRequestAndReleasesHalfOpenChannel()
+{
+    // 覆盖 fake 的 sftpNewChannelFails：wrap 失败时半开通道被释放、
+    // 请求以 ListedFailed 终止，下一个请求完整重建。
+    FakeLibsshApi api;
+    api.sftpNewChannelFails = true;
+    SftpChannel channel(api, api.newSession());
+
+    channel.enqueue(makeRequest(72, SftpOp::List, QStringLiteral("/x")));
+    const QList<SftpResult> first = pump(channel);
+    QCOMPARE(ofKind(first, SftpResult::Kind::ListedFailed).size(), 1);
+    QCOMPARE(api.sftpNewChannelCount, 1);
+    QCOMPARE(api.channelFreeCount, 1);
+
+    api.sftpNewChannelFails = false;
+    api.directoryEntries[QStringLiteral("/x")] = {};
+    channel.enqueue(makeRequest(73, SftpOp::List, QStringLiteral("/x")));
+    const QList<SftpResult> second = pump(channel);
+    QCOMPARE(ofKind(second, SftpResult::Kind::Listed).size(), 1);
+}
+
+void TestSftpChannel::syncSftpGuardsNestIntoOneBlockingWindow()
+{
+    // 守卫会嵌套（failActive 内部的 closeRemoteFiles/releaseSftp 也带
+    // 守卫）：整个同步窗口只允许一对 blocking 开关。内层析构提前恢复
+    // 非阻塞的话，同窗口内后续经典调用会踩 SSH_AGAIN 协议错位。
+    FakeLibsshApi api;
+    api.opendirResults = {nullptr};
+    SftpChannel channel(api, api.newSession());
+
+    channel.enqueue(makeRequest(74, SftpOp::List, QStringLiteral("/x")));
+    pump(channel);
+
+    // 本 tick 有两个顶层同步窗口（init + 列目录），必须严格交替：
+    // 1,0,1,0。嵌套守卫提前恢复非阻塞时会变成 1,0,1,1,0,1,0,0。
+    QStringList toggles;
+    for (const QString &call : api.calls) {
+        if (call.startsWith(QStringLiteral("blocking:"))) {
+            toggles.append(call);
+        }
+    }
+    QCOMPARE(toggles,
+             QStringList({QStringLiteral("blocking:1"),
+                          QStringLiteral("blocking:0"),
+                          QStringLiteral("blocking:1"),
+                          QStringLiteral("blocking:0")}));
 }
 
 void TestSftpChannel::listsDirectoryAndResolvesRealPath()

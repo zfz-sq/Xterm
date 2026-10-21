@@ -30,24 +30,38 @@ SftpEntry entryFromAttributes(sftp_attributes attrs)
 // 非阻塞会话下无数据时返回的 SSH_AGAIN(2) 会被当作已读字节数累加，
 // 协议立即错位（真机上 realpath 等必失败）。因此这些同步调用期间
 // 临时切回阻塞（受 SSH_OPTIONS_TIMEOUT 约束），离开作用域恢复非阻塞。
-// AIO 传输不受影响：file 已标记 nonblocking，wait 走 poll 路径。
+// begin 提交侧不套守卫，AIO 流水线的提交仍是非阻塞的。
+// 守卫会嵌套（failActive 里的 closeRemoteFiles/releaseSftp 也带守卫）：
+// 用深度计数保证整个窗口只有最外层那一对 blocking 开关，内层不提前
+// 恢复非阻塞。
 class ScopedSyncSftp
 {
 public:
     ScopedSyncSftp(LibsshApi &api, ssh_session session)
         : m_api(api), m_session(session)
     {
-        m_api.setBlocking(m_session, true);
+        if (s_depth++ == 0) {
+            m_api.setBlocking(m_session, true);
+        }
     }
-    ~ScopedSyncSftp() { m_api.setBlocking(m_session, false); }
+    ~ScopedSyncSftp()
+    {
+        if (--s_depth == 0) {
+            m_api.setBlocking(m_session, false);
+        }
+    }
 
     ScopedSyncSftp(const ScopedSyncSftp &) = delete;
     ScopedSyncSftp &operator=(const ScopedSyncSftp &) = delete;
 
 private:
+    static thread_local int s_depth;
+
     LibsshApi &m_api;
     ssh_session m_session;
 };
+
+thread_local int ScopedSyncSftp::s_depth = 0;
 
 } // namespace
 
@@ -1010,10 +1024,12 @@ void SftpChannel::releaseSftp()
 {
     if (m_sftp != nullptr) {
         // sftp_free 连同包装进去的 channel 一起 EOF 并释放；阻塞模式下
-        // EOF 发送也是同步完成的。
+        // EOF 发送也是同步完成的。所有权已随之交还，必须清空指针，
+        // 否则重建时会拿已释放的 channel 去 open（真机 use-after-free）。
         const ScopedSyncSftp sync(m_api, m_session);
         m_api.sftpFree(m_sftp);
         m_sftp = nullptr;
+        m_sftpChannel = nullptr;
     } else if (m_sftpChannel != nullptr) {
         // 还没交给 sftp 会话的半开通道自己释放。
         m_api.freeChannel(m_sftpChannel);
