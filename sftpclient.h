@@ -31,9 +31,6 @@ public:
     explicit SftpClient(SshSession *session, QObject *parent = nullptr);
     ~SftpClient() override;
 
-    // hoststats 旧连接的 known_hosts 路径还在用；任务 8 移除后删除。
-    static QString knownHostsPath();
-
 signals:
     void listed(const QString &path, const QVector<SftpEntry> &entries);
     void listedFailed(const QString &path, const QString &error);

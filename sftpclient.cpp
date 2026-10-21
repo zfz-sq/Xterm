@@ -2,9 +2,6 @@
 
 #include "sshsession.h"
 
-#include <QDir>
-#include <QStandardPaths>
-
 SftpClient::SftpClient(SshSession *session, QObject *parent)
     : QObject(parent), m_session(session)
 {
@@ -27,12 +24,6 @@ SftpClient::~SftpClient()
     // 只取消自己发起的请求；会话与 shell 原样保留。
     for (auto it = m_pending.constBegin(); it != m_pending.constEnd(); ++it)
         m_session->cancelTransfer(it.key());
-}
-
-QString SftpClient::knownHostsPath()
-{
-    const QString base = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
-    return QDir(base).filePath(QStringLiteral("known_hosts"));
 }
 
 void SftpClient::listDir(const QString &path)

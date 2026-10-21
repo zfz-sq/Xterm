@@ -4,6 +4,14 @@ project(svtest LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# 与根 CMakeLists 相同的动态 libssh/OpenSSL 依赖根（独立配置时可用
+# -DXTERM_SSH_DEPS_ROOT=... 覆盖）。
+set(XTERM_SSH_DEPS_ROOT
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../.deps/vcpkg_installed/x64-mingw-dynamic"
+    CACHE PATH "Root of dynamic libssh/OpenSSL dependencies")
+list(PREPEND CMAKE_PREFIX_PATH "${XTERM_SSH_DEPS_ROOT}")
+find_package(libssh CONFIG REQUIRED)
+
 find_package(Qt6 REQUIRED COMPONENTS Widgets SerialPort)
 
 qt_standard_project_setup()
@@ -16,8 +24,13 @@ qt_add_executable(svtest
     ../../termscreen.h
     ../../sshsession.cpp
     ../../sshsession.h
-    ../../conpty.cpp
-    ../../conpty.h
+    ../../ssh/libsshapi.cpp
+    ../../ssh/libsshconnection.cpp
+    ../../ssh/knownhostsstore.cpp
+    ../../ssh/shellchannel.cpp
+    ../../ssh/sftpchannel.cpp
+    ../../ssh/statschannel.cpp
+    ../../ssh/sshworker.cpp
     ../../serialsession.cpp
     ../../serialsession.h
     ../../completionengine.cpp
@@ -29,4 +42,4 @@ qt_add_executable(svtest
 set_target_properties(svtest PROPERTIES WIN32_EXECUTABLE OFF)
 
 target_include_directories(svtest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
-target_link_libraries(svtest PRIVATE Qt6::Widgets Qt6::SerialPort)
+target_link_libraries(svtest PRIVATE Qt6::Widgets Qt6::SerialPort ssh)

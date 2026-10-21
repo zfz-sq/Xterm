@@ -14,7 +14,7 @@ struct SshTarget
 {
     QString host;                 // 主机名 / IP，也可以是 ~/.ssh/config 里的别名
     int port = 22;
-    QString user;                 // 留空则由 ssh.exe 用 ~/.ssh/config 或用户名推断
+    QString user;                 // 留空则交给 ~/.ssh/config 的 User 或系统用户名推断
     QString password;             // 非空时自动应答终端里的 password 提示；留空走手动输入
     QString privateKey;           // 留空走默认密钥 / 密码交互
     int connectTimeoutSec = 10;

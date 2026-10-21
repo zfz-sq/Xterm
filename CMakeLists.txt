@@ -49,22 +49,6 @@ qt_standard_project_setup()
 # qt_standard_project_setup() 不含 AUTORCC，qrc 资源需显式开启
 set(CMAKE_AUTORCC ON)
 
-# vendored libssh2（SFTP 协议栈）：纯 C、静态链接、WinCNG 加密后端（走
-# Windows bcrypt API，免 OpenSSL 依赖）、不启 zlib 压缩。
-# EXCLUDE_FROM_ALL：不随默认目标构建，仅在 Xterm 链接时才缩译。
-set(_xterm_build_testing "${BUILD_TESTING}")
-set(BUILD_TESTING OFF)
-set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-set(CRYPTO_BACKEND "WinCNG" CACHE STRING "" FORCE)
-set(ENABLE_ZLIB_COMPRESSION OFF CACHE BOOL "" FORCE)
-# WinCNG 默认只有有限域 DH。OpenSSH 9/10 默认只接受 curve25519 和
-# ecdh-sha2-nistp*，对不上就会报 Unable to exchange encryption keys。
-# ECDSA/ECDH 走 bcrypt，需要 Windows 10 及以上。
-set(ENABLE_ECDSA_WINCNG ON CACHE BOOL "" FORCE)
-add_subdirectory(third_party/libssh2 EXCLUDE_FROM_ALL)
-set(BUILD_TESTING "${_xterm_build_testing}")
-
 qt_add_executable(Xterm
     WIN32
     MACOSX_BUNDLE
@@ -128,7 +112,6 @@ target_link_libraries(Xterm
         Qt6::SerialPort
         Qt6::Network
         ssh
-        libssh2
         ws2_32
         bcrypt
         shell32
@@ -150,3 +133,13 @@ install(TARGETS Xterm
     BUNDLE  DESTINATION .
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+
+# 发布部署：运行时 DLL（libssh/OpenSSL，与构建期 DeploySshRuntime 同源）
+# 与第三方许可说明一并安装。
+install(DIRECTORY "${XTERM_SSH_DEPS_ROOT}/bin/"
+        DESTINATION ${CMAKE_INSTALL_BINDIR}
+        FILES_MATCHING PATTERN "*.dll")
+install(FILES "${XTERM_WINPTHREAD_DLL}"
+        DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES THIRD_PARTY_NOTICES.md
+        DESTINATION ${CMAKE_INSTALL_DOCDIR})
