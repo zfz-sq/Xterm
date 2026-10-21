@@ -5,6 +5,8 @@ project(Xterm VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+include(CTest)
+
 set(XTERM_SSH_DEPS_ROOT
     "${CMAKE_CURRENT_SOURCE_DIR}/.deps/vcpkg_installed/x64-mingw-dynamic"
     CACHE PATH "Root of dynamic libssh/OpenSSL dependencies")
@@ -50,7 +52,8 @@ set(CMAKE_AUTORCC ON)
 # vendored libssh2（SFTP 协议栈）：纯 C、静态链接、WinCNG 加密后端（走
 # Windows bcrypt API，免 OpenSSL 依赖）、不启 zlib 压缩。
 # EXCLUDE_FROM_ALL：不随默认目标构建，仅在 Xterm 链接时才缩译。
-set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(_xterm_build_testing "${BUILD_TESTING}")
+set(BUILD_TESTING OFF)
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(CRYPTO_BACKEND "WinCNG" CACHE STRING "" FORCE)
@@ -60,6 +63,7 @@ set(ENABLE_ZLIB_COMPRESSION OFF CACHE BOOL "" FORCE)
 # ECDSA/ECDH 走 bcrypt，需要 Windows 10 及以上。
 set(ENABLE_ECDSA_WINCNG ON CACHE BOOL "" FORCE)
 add_subdirectory(third_party/libssh2 EXCLUDE_FROM_ALL)
+set(BUILD_TESTING "${_xterm_build_testing}")
 
 qt_add_executable(Xterm
     WIN32
@@ -117,6 +121,10 @@ target_link_libraries(Xterm
 )
 
 xterm_deploy_ssh_runtime(Xterm)
+
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
 
 install(TARGETS Xterm
     BUNDLE  DESTINATION .
