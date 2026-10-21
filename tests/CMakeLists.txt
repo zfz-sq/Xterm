@@ -13,7 +13,10 @@ target_include_directories(test_knownhosts
 target_link_libraries(test_knownhosts
     PRIVATE
         Qt6::Test
+        ssh
 )
+
+xterm_deploy_ssh_runtime(test_knownhosts)
 
 set_target_properties(test_knownhosts PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"

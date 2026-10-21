@@ -7,6 +7,8 @@
 #include <QSaveFile>
 #include <QStandardPaths>
 
+#include <libssh/libssh.h>
+
 #include <utility>
 
 namespace {
@@ -84,6 +86,49 @@ bool createEmptyFile(const QString &path, QString *error)
     return true;
 }
 
+bool wireBlobAlgorithmMatches(const QByteArray &blob,
+                              const QByteArray &declaredType)
+{
+    constexpr qsizetype lengthFieldSize = 4;
+    if (blob.size() < lengthFieldSize) {
+        return false;
+    }
+
+    const auto *bytes =
+        reinterpret_cast<const unsigned char *>(blob.constData());
+    const quint32 algorithmLength =
+        (static_cast<quint32>(bytes[0]) << 24)
+        | (static_cast<quint32>(bytes[1]) << 16)
+        | (static_cast<quint32>(bytes[2]) << 8)
+        | static_cast<quint32>(bytes[3]);
+    const quint64 available =
+        static_cast<quint64>(blob.size() - lengthFieldSize);
+    if (static_cast<quint64>(algorithmLength) > available
+        || static_cast<quint64>(algorithmLength)
+               != static_cast<quint64>(declaredType.size())) {
+        return false;
+    }
+    return QByteArrayView(blob).sliced(lengthFieldSize, algorithmLength)
+        == QByteArrayView(declaredType);
+}
+
+bool hostPatternsMatch(const QString &patternsField,
+                       const QString &expectedPattern)
+{
+    bool hasPositiveMatch = false;
+    const QString negatedPattern = QLatin1Char('!') + expectedPattern;
+    const QStringList patterns = patternsField.split(QLatin1Char(','));
+    for (const QString &pattern : patterns) {
+        if (pattern == negatedPattern) {
+            return false;
+        }
+        if (pattern == expectedPattern) {
+            hasPositiveMatch = true;
+        }
+    }
+    return hasPositiveMatch;
+}
+
 bool standardFileHasMatchingKey(const QString &path, const QString &host,
                                 quint16 port, const QString &fingerprint,
                                 QString *error)
@@ -109,15 +154,36 @@ bool standardFileHasMatchingKey(const QString &path, const QString &host,
             trimmed.split(QRegularExpression(QStringLiteral("\\s+")),
                           Qt::SkipEmptyParts);
         if (fields.size() < 3
-            || !fields.at(0).split(QLatin1Char(',')).contains(expectedPattern)) {
+            || !hostPatternsMatch(fields.at(0), expectedPattern)) {
             continue;
         }
 
-        const auto decoded = QByteArray::fromBase64Encoding(
-            fields.at(2).toLatin1(), QByteArray::AbortOnBase64DecodingErrors);
-        if (!decoded) {
+        const QByteArray declaredType = fields.at(1).toLatin1();
+        const enum ssh_keytypes_e keyType =
+            ssh_key_type_from_name(declaredType.constData());
+        if (keyType == SSH_KEYTYPE_UNKNOWN) {
             continue;
         }
+
+        const QByteArray encodedBlob = fields.at(2).toLatin1();
+        const auto decoded = QByteArray::fromBase64Encoding(
+            encodedBlob, QByteArray::AbortOnBase64DecodingErrors);
+        if (!decoded
+            || !wireBlobAlgorithmMatches(decoded.decoded, declaredType)) {
+            continue;
+        }
+
+        ssh_key parsedKey = nullptr;
+        const int importResult = ssh_pki_import_pubkey_base64(
+            encodedBlob.constData(), keyType, &parsedKey);
+        if (importResult != SSH_OK || parsedKey == nullptr) {
+            if (parsedKey != nullptr) {
+                ssh_key_free(parsedKey);
+            }
+            continue;
+        }
+        ssh_key_free(parsedKey);
+
         const QByteArray hash =
             QCryptographicHash::hash(decoded.decoded,
                                      QCryptographicHash::Sha256)

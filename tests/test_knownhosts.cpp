@@ -26,6 +26,24 @@ QByteArray fingerprintForBlob(const QByteArray &blob)
     return QCryptographicHash::hash(blob, QCryptographicHash::Sha256).toHex();
 }
 
+void appendSshString(QByteArray *blob, const QByteArray &value)
+{
+    const quint32 size = static_cast<quint32>(value.size());
+    blob->append(static_cast<char>((size >> 24) & 0xff));
+    blob->append(static_cast<char>((size >> 16) & 0xff));
+    blob->append(static_cast<char>((size >> 8) & 0xff));
+    blob->append(static_cast<char>(size & 0xff));
+    blob->append(value);
+}
+
+QByteArray ed25519Blob(char fill)
+{
+    QByteArray blob;
+    appendSshString(&blob, QByteArrayLiteral("ssh-ed25519"));
+    appendSshString(&blob, QByteArray(32, fill));
+    return blob;
+}
+
 bool writeFile(const QString &path, const QByteArray &contents)
 {
     QFile file(path);
@@ -55,6 +73,8 @@ private slots:
     void atomicRewritePreservesUnrelatedHosts();
     void requiresMatchingStandardKeyBeforeConsumingLegacy();
     void unreadableStandardFileDoesNotConsumeLegacy();
+    void rejectsMalformedOrMismatchedStandardKeys();
+    void rejectsNegatedHostPatterns();
     void matchesStandardHostPatternsAndPorts();
     void standardFileIsNotMigrated();
     void migrationRefusesLegacyConflict();
@@ -133,7 +153,7 @@ void TestKnownHosts::atomicRewritePreservesUnrelatedHosts()
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     KnownHostsStore store(directory.path());
-    const QByteArray keyBlob("target-public-key-blob");
+    const QByteArray keyBlob = ed25519Blob('t');
     const QByteArray fingerprint = fingerprintForBlob(keyBlob);
     const QByteArray standardContents =
         "target.test ssh-ed25519 " + keyBlob.toBase64() + "\n";
@@ -170,7 +190,7 @@ void TestKnownHosts::requiresMatchingStandardKeyBeforeConsumingLegacy()
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     KnownHostsStore store(directory.path());
-    const QByteArray keyBlob("expected-public-key-blob");
+    const QByteArray keyBlob = ed25519Blob('e');
     const QByteArray fingerprint = fingerprintForBlob(keyBlob);
     const QByteArray legacyContents =
         "target.test:22 " + fingerprint + "\n";
@@ -183,7 +203,7 @@ void TestKnownHosts::requiresMatchingStandardKeyBeforeConsumingLegacy()
     QVERIFY(!error.isEmpty());
     QCOMPARE(readFile(store.legacyPath()), legacyContents);
 
-    const QByteArray wrongBlob("different-public-key-blob");
+    const QByteArray wrongBlob = ed25519Blob('w');
     QVERIFY(writeFile(store.path(),
                       "target.test ssh-ed25519 " + wrongBlob.toBase64() + "\n"));
     error.clear();
@@ -206,7 +226,7 @@ void TestKnownHosts::unreadableStandardFileDoesNotConsumeLegacy()
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     KnownHostsStore store(directory.path());
-    const QByteArray keyBlob("expected-public-key-blob");
+    const QByteArray keyBlob = ed25519Blob('e');
     const QByteArray fingerprint = fingerprintForBlob(keyBlob);
     const QByteArray legacyContents =
         "target.test:22 " + fingerprint + "\n";
@@ -221,20 +241,83 @@ void TestKnownHosts::unreadableStandardFileDoesNotConsumeLegacy()
     QVERIFY(QFileInfo(store.path()).isDir());
 }
 
+void TestKnownHosts::rejectsMalformedOrMismatchedStandardKeys()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    KnownHostsStore store(directory.path());
+
+    QByteArray truncatedBlob;
+    appendSshString(&truncatedBlob, QByteArrayLiteral("ssh-ed25519"));
+    truncatedBlob.append("\0\0\0\x20", 4);
+    truncatedBlob.append("tiny", 4);
+
+    const QList<QPair<QByteArray, QByteArray>> invalidKeys = {
+        {QByteArrayLiteral("arbitrary-text"), QByteArrayLiteral("arbitrary")},
+        {QByteArrayLiteral("ssh-rsa"), ed25519Blob('m')},
+        {QByteArrayLiteral("ssh-ed25519"), truncatedBlob},
+    };
+    for (const auto &invalidKey : invalidKeys) {
+        const QByteArray fingerprint = fingerprintForBlob(invalidKey.second);
+        const QByteArray legacyContents =
+            "target.test:22 " + fingerprint + "\n";
+        QVERIFY(writeFile(store.path(),
+                          "target.test " + invalidKey.first + " "
+                              + invalidKey.second.toBase64() + "\n"));
+        QVERIFY(writeFile(store.legacyPath(), legacyContents));
+
+        QString error;
+        QVERIFY(!store.rememberLegacyMatch(
+            QStringLiteral("target.test"), 22,
+            QString::fromLatin1(fingerprint), &error));
+        QVERIFY(!error.isEmpty());
+        QCOMPARE(readFile(store.legacyPath()), legacyContents);
+    }
+}
+
+void TestKnownHosts::rejectsNegatedHostPatterns()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    KnownHostsStore store(directory.path());
+    const QByteArray keyBlob = ed25519Blob('n');
+    const QByteArray fingerprint = fingerprintForBlob(keyBlob);
+    const QByteArray legacyContents =
+        "target.test:22 " + fingerprint + "\n";
+    const QList<QByteArray> patterns = {
+        QByteArrayLiteral("target.test,!target.test"),
+        QByteArrayLiteral("!target.test"),
+    };
+
+    for (const QByteArray &patternsField : patterns) {
+        QVERIFY(writeFile(store.path(),
+                          patternsField + " ssh-ed25519 "
+                              + keyBlob.toBase64() + "\n"));
+        QVERIFY(writeFile(store.legacyPath(), legacyContents));
+
+        QString error;
+        QVERIFY(!store.rememberLegacyMatch(
+            QStringLiteral("target.test"), 22,
+            QString::fromLatin1(fingerprint), &error));
+        QVERIFY(!error.isEmpty());
+        QCOMPARE(readFile(store.legacyPath()), legacyContents);
+    }
+}
+
 void TestKnownHosts::matchesStandardHostPatternsAndPorts()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     KnownHostsStore store(directory.path());
-    const QByteArray defaultBlob("default-port-key-blob");
-    const QByteArray alternateBlob("alternate-port-key-blob");
+    const QByteArray defaultBlob = ed25519Blob('d');
+    const QByteArray alternateBlob = ed25519Blob('a');
     const QByteArray defaultFingerprint = fingerprintForBlob(defaultBlob);
     const QByteArray alternateFingerprint = fingerprintForBlob(alternateBlob);
     QVERIFY(writeFile(store.path(),
                       "# standard hosts\n"
                       "other.test,target.test ssh-ed25519 "
                           + defaultBlob.toBase64() + "\n"
-                      "other.test,[target.test]:2200 ssh-rsa "
+                      "other.test,[target.test]:2200 ssh-ed25519 "
                           + alternateBlob.toBase64() + " comment\n"));
     QVERIFY(writeFile(store.legacyPath(),
                       "target.test:22 " + defaultFingerprint + "\n"

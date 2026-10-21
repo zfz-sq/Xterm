@@ -26,7 +26,7 @@ function(xterm_deploy_ssh_runtime target)
             -DSOURCE_DIR="${XTERM_SSH_DEPS_ROOT}/bin"
             -DWINPTHREAD_DLL="${XTERM_WINPTHREAD_DLL}"
             -DDEST_DIR="$<TARGET_FILE_DIR:${target}>"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/DeploySshRuntime.cmake"
+            -P "${PROJECT_SOURCE_DIR}/cmake/DeploySshRuntime.cmake"
         VERBATIM)
 endfunction()
 
