@@ -41,6 +41,9 @@ private slots:
     void closeIsIdempotent();
     void reopenWaitsForOldGenerationToClose();
     void staleWorkerEventsDoNotAffectNewSession();
+    void unknownHostKeyRecordedOnlyAfterSuccessfulWrite();
+    void knownEffectiveHostDoesNotRecordNoteForUnknownAlias();
+    void closingAuthPromptCancelsConnection();
 };
 
 void TestSshSession::openReturnsImmediatelyAndEntersConnecting()
@@ -185,6 +188,76 @@ void TestSshSession::staleWorkerEventsDoNotAffectNewSession()
     QCOMPARE(received.count(), 0);
     QCOMPARE(session.state(), Transport::Connected);
     QCOMPARE(closed.count(), 1);
+}
+
+void TestSshSession::unknownHostKeyRecordedOnlyAfterSuccessfulWrite()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    FakeLibsshApi api;
+    api.configuredHost = QStringLiteral("real.test");
+    api.knownState = SSH_KNOWN_HOSTS_UNKNOWN;
+    api.agentResults = {SSH_AUTH_SUCCESS};
+    KnownHostsStore store(api, directory.path());
+    SshSession session(api, store);
+    QSignalSpy recorded(&session, &SshSession::unknownHostKeyRecorded);
+    QSignalSpy opened(&session, &SshSession::opened);
+
+    SshTarget alias = target();
+    alias.host = QStringLiteral("jump.alias");
+    QCOMPARE(session.open(alias), QString());
+    QTRY_COMPARE(opened.count(), 1);
+
+    QCOMPARE(api.updateKnownHostsCount, 1);
+    QCOMPARE(recorded.count(), 1);
+    QCOMPARE(recorded.first().at(0).toString(), QStringLiteral("real.test"));
+}
+
+void TestSshSession::knownEffectiveHostDoesNotRecordNoteForUnknownAlias()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    FakeLibsshApi api;
+    prepareSuccessfulConnection(api);
+    api.configuredHost = QStringLiteral("real.test");
+    KnownHostsStore store(api, directory.path());
+    SshSession session(api, store);
+    QSignalSpy recorded(&session, &SshSession::unknownHostKeyRecorded);
+    QSignalSpy opened(&session, &SshSession::opened);
+
+    SshTarget alias = target();
+    alias.host = QStringLiteral("jump.alias");
+    QCOMPARE(session.open(alias), QString());
+    QTRY_COMPARE(opened.count(), 1);
+
+    QCOMPARE(api.updateKnownHostsCount, 0);
+    QCOMPARE(recorded.count(), 0);
+}
+
+void TestSshSession::closingAuthPromptCancelsConnection()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    FakeLibsshApi api;
+    api.knownState = SSH_KNOWN_HOSTS_OK;
+    api.agentResults = {SSH_AUTH_DENIED};
+    api.explicitKeyResults = {SSH_AUTH_DENIED};
+    api.autoKeyResults = {SSH_AUTH_DENIED};
+    api.keyboardResults = {SSH_AUTH_INFO};
+    api.prompts = {{QStringLiteral("Password:"), false}};
+    KnownHostsStore store(api, directory.path());
+    SshSession session(api, store);
+    QSignalSpy prompts(&session, &SshSession::authAnswersRequired);
+    QSignalSpy closed(&session, &SshSession::closed);
+
+    QCOMPARE(session.open(target()), QString());
+    QTRY_COMPARE(prompts.count(), 1);
+    QCOMPARE(session.state(), Transport::Connecting);
+
+    session.close();
+    QTRY_COMPARE(closed.count(), 1);
+    QCOMPARE(session.state(), Transport::Disconnected);
+    QCOMPARE(session.lastError().domain, SshError::Domain::Cancelled);
 }
 
 QTEST_MAIN(TestSshSession)

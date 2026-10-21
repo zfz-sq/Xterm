@@ -440,10 +440,6 @@ void MainWindow::connectSignals()
     // ---- SSH 链路 ----
     connect(m_ssh, &SshSession::opened, this, [this] {
         m_sshView->appendSystemMessage(tr("── 已连接 %1 ──").arg(m_ssh->summary()));
-        if (m_ssh->recordedUnknownHostKey()) {
-            m_sshView->appendSystemMessage(
-                tr("── 已记录主机 %1 的新密钥 ──").arg(m_ssh->target().host));
-        }
         clearHostStats();
         m_hostStats->start(m_ssh->target());
         updateConnectionUi();
@@ -472,6 +468,12 @@ void MainWindow::connectSignals()
     connect(m_ssh, &SshSession::received, m_sshView, &ScreenView::receiveData);
     connect(m_ssh, &SshSession::hostKeyDecisionRequired, this,
             &MainWindow::promptHostKeyDecision);
+    connect(m_ssh, &SshSession::unknownHostKeyRecorded, this,
+            [this](const QString &host) {
+                m_sshView->appendSystemMessage(
+                    tr("── 已记录主机 %1 的新密钥。首次信任无法防止中间人攻击 ──")
+                        .arg(host));
+            });
     connect(m_ssh, &SshSession::authAnswersRequired, this,
             &MainWindow::promptAuthAnswers);
     connect(m_sshView, &ScreenView::shellTitleChanged, this, [this](const QString &title) {
@@ -928,13 +930,6 @@ bool MainWindow::confirmHostKeyChange(const QString &host, const QString &stored
 
 void MainWindow::promptHostKeyDecision(const SshHostKeyChange &change)
 {
-    if (change.oldFingerprint.isEmpty()) {
-        m_sshView->appendSystemMessage(
-            tr("── 已记录主机 %1 的新密钥 ──").arg(change.host));
-        m_ssh->answerHostKey(change.requestId, true);
-        return;
-    }
-
     const bool accept = confirmHostKeyChange(
         change.host, change.oldFingerprint, change.newFingerprint);
     m_ssh->answerHostKey(change.requestId, accept);
@@ -964,7 +959,7 @@ void MainWindow::promptAuthAnswers(SshRequestId requestId,
     dialog.setMinimumWidth(420);
 
     if (dialog.exec() != QDialog::Accepted) {
-        m_ssh->answerAuthentication(requestId, {});
+        m_ssh->close();
         return;
     }
 
@@ -1226,6 +1221,6 @@ void MainWindow::closeEvent(QCloseEvent *event)
                                             : QStringLiteral("ssh"));
     m_store->save();
     m_serial->close();
-    m_ssh->close(); // 收尾在 IO 线程进行；ConPty 析构时会等它结束
+    m_ssh->close();
     event->accept();
 }

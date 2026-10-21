@@ -50,7 +50,6 @@ void SshSession::setupWorker(LibsshApi &api, KnownHostsStore &knownHosts)
     }();
     Q_UNUSED(registered);
 
-    m_knownHosts = &knownHosts;
     m_thread = new QThread(this);
     m_worker = new SshWorker(api, knownHosts);
     m_worker->moveToThread(m_thread);
@@ -74,6 +73,8 @@ void SshSession::setupWorker(LibsshApi &api, KnownHostsStore &knownHosts)
             &SshSession::handleWorkerShellData, Qt::QueuedConnection);
     connect(m_worker, &SshWorker::hostKeyDecisionRequired, this,
             &SshSession::handleWorkerHostKey, Qt::QueuedConnection);
+    connect(m_worker, &SshWorker::unknownHostKeyRecorded, this,
+            &SshSession::handleWorkerUnknownHostKey, Qt::QueuedConnection);
     connect(m_worker, &SshWorker::authAnswersRequired, this,
             &SshSession::handleWorkerAuth, Qt::QueuedConnection);
     connect(m_worker, &SshWorker::connectionFailed, this,
@@ -101,7 +102,10 @@ void SshSession::teardownWorker()
             m_worker = nullptr;
         }
         m_thread->quit();
-        m_thread->wait();
+        if (!m_thread->wait(2000)) {
+            m_thread->terminate();
+            m_thread->wait(1000);
+        }
     } else {
         delete m_worker;
         m_worker = nullptr;
@@ -161,6 +165,8 @@ void SshSession::requestCloseCurrent()
     if (state() == Disconnected || state() == Disconnecting)
         return;
     m_userRequestedClose = true;
+    m_lastError = {SshError::Domain::Cancelled, 0,
+                   tr("SSH connection cancelled"), false};
     setState(Disconnecting);
     emit requestCloseConnection(m_generation);
 }
@@ -172,26 +178,9 @@ void SshSession::startConnect(const SshTarget &target)
     m_userRequestedClose = false;
     m_openedEmitted = false;
     m_lastError = {};
-    refreshUnknownHostFlag(m_target);
     ++m_generation;
     setState(Connecting);
     emit requestConnect(m_generation, m_target, m_cols, m_rows);
-}
-
-void SshSession::refreshUnknownHostFlag(const SshTarget &target)
-{
-    m_recordedUnknownHostKey = false;
-    if (m_knownHosts == nullptr)
-        return;
-
-    const quint16 port =
-        static_cast<quint16>(qBound(1, target.port, 65535));
-    QString error;
-    const QList<KnownHostKeyInfo> keys =
-        m_knownHosts->standardKeys(target.host, port, &error);
-    const QString legacy =
-        m_knownHosts->legacyFingerprint(target.host, port);
-    m_recordedUnknownHostKey = keys.isEmpty() && legacy.isEmpty();
 }
 
 QString SshSession::send(const QByteArray &data)
@@ -260,6 +249,14 @@ void SshSession::handleWorkerHostKey(quint64 generation,
     emit hostKeyDecisionRequired(change);
 }
 
+void SshSession::handleWorkerUnknownHostKey(quint64 generation,
+                                            const QString &host)
+{
+    if (generation != m_generation || state() != Connecting)
+        return;
+    emit unknownHostKeyRecorded(host);
+}
+
 void SshSession::handleWorkerAuth(quint64 generation,
                                   SshRequestId requestId,
                                   const QList<SshAuthPrompt> &prompts)
@@ -279,7 +276,6 @@ void SshSession::handleWorkerClosed(quint64 generation)
     const int exitCode = m_lastError.isError() ? m_lastError.code : 0;
     m_openedEmitted = false;
     m_userRequestedClose = false;
-    m_lastError = {};
     emitClosed();
     if (wasOpen)
         emit sessionEnded(exitCode, userRequested);

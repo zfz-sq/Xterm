@@ -33,6 +33,7 @@ public:
 signals:
     void phaseChanged(SshPhase phase);
     void hostKeyDecisionRequired(const SshHostKeyChange &change);
+    void unknownHostKeyRecorded(const QString &host);
     void authAnswersRequired(SshRequestId requestId,
                              const QList<SshAuthPrompt> &prompts);
     void finished(const SshError &error);

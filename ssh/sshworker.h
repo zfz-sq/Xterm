@@ -41,6 +41,7 @@ signals:
     void phaseChanged(quint64 generation, SshPhase phase);
     void hostKeyDecisionRequired(quint64 generation,
                                  const SshHostKeyChange &change);
+    void unknownHostKeyRecorded(quint64 generation, const QString &host);
     void authAnswersRequired(quint64 generation, SshRequestId requestId,
                              const QList<SshAuthPrompt> &prompts);
     void connectionFailed(quint64 generation, const SshError &error);

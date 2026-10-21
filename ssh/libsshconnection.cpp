@@ -244,6 +244,11 @@ void LibsshConnection::submitAuthAnswers(SshRequestId requestId,
         || requestId != m_pendingRequestId) {
         return;
     }
+    if (answers.isEmpty()) {
+        fail(SshError::Domain::Cancelled,
+             QStringLiteral("SSH connection cancelled"), false, 0);
+        return;
+    }
     if (answers.size() != m_pendingPrompts.size()) {
         fail(SshError::Domain::Authentication,
              QStringLiteral(
@@ -489,6 +494,8 @@ void LibsshConnection::verifyHost()
                 fail(SshError::Domain::HostKey, validationError);
                 return;
             }
+            emit unknownHostKeyRecorded(
+                m_effectiveHost.isEmpty() ? m_target.host : m_effectiveHost);
             m_step = Step::AuthAgent;
             setPhase(SshPhase::Authenticating);
             return;

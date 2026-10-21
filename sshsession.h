@@ -46,7 +46,7 @@ public:
 
     SshTarget target() const { return m_target; }
     QString summary() const;
-    bool recordedUnknownHostKey() const { return m_recordedUnknownHostKey; }
+    SshError lastError() const { return m_lastError; }
 
 public slots:
     void answerHostKey(SshRequestId requestId, bool accept);
@@ -56,6 +56,7 @@ public slots:
 signals:
     void sessionEnded(int exitCode, bool userRequested);
     void hostKeyDecisionRequired(const SshHostKeyChange &change);
+    void unknownHostKeyRecorded(const QString &host);
     void authAnswersRequired(SshRequestId requestId,
                              const QList<SshAuthPrompt> &prompts);
 
@@ -66,7 +67,6 @@ private:
     void teardownWorker();
     void startConnect(const SshTarget &target);
     void requestCloseCurrent();
-    void refreshUnknownHostFlag(const SshTarget &target);
 
 private slots:
     void handleWorkerConnected(quint64 generation);
@@ -75,6 +75,7 @@ private slots:
     void handleWorkerFailed(quint64 generation, const SshError &error);
     void handleWorkerHostKey(quint64 generation,
                              const SshHostKeyChange &change);
+    void handleWorkerUnknownHostKey(quint64 generation, const QString &host);
     void handleWorkerAuth(quint64 generation, SshRequestId requestId,
                           const QList<SshAuthPrompt> &prompts);
 
@@ -92,7 +93,6 @@ signals:
 private:
     std::unique_ptr<LibsshApi> m_ownedApi;
     std::unique_ptr<KnownHostsStore> m_ownedStore;
-    KnownHostsStore *m_knownHosts = nullptr;
     QThread *m_thread = nullptr;
     SshWorker *m_worker = nullptr;
     SshTarget m_target;
@@ -103,7 +103,6 @@ private:
     bool m_userRequestedClose = false;
     bool m_hasPendingReopen = false;
     bool m_openedEmitted = false;
-    bool m_recordedUnknownHostKey = false;
     SshError m_lastError;
 };
 

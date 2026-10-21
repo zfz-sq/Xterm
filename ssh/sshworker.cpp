@@ -67,6 +67,14 @@ void SshWorker::connectToHost(quint64 generation, const SshTarget &target,
                     emit hostKeyDecisionRequired(generation, change);
                 }
             });
+    connect(m_connection.get(),
+            &LibsshConnection::unknownHostKeyRecorded, this,
+            [this, generation](const QString &host) {
+                if (generation == m_generation
+                    && m_state == State::Connecting) {
+                    emit unknownHostKeyRecorded(generation, host);
+                }
+            });
     connect(m_connection.get(), &LibsshConnection::authAnswersRequired,
             this,
             [this, generation](

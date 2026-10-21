@@ -8,7 +8,7 @@
  *
  * 单独一个头文件，是因为它同时被两边使用：CommandStore 按值存进 Profile 做
  * JSON 持久化，SshSession 按值收作连接输入。让持久化层去 include SSH 后端
- * （连带 ConPTY 的 Win32 头）既不必要也会拖慢编译，纯数据类型独立出来最干净。
+ * 既不必要也会拖慢编译，纯数据类型独立出来最干净。
  */
 struct SshTarget
 {
