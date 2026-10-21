@@ -5,6 +5,7 @@
 #include "libsshconnection.h"
 #include "sftpchannel.h"
 #include "shellchannel.h"
+#include "statschannel.h"
 
 #include <QMetaType>
 #include <QThread>
@@ -262,6 +263,42 @@ void SshWorker::cancelSftpRequest(quint64 generation, SshRequestId requestId)
     schedule();
 }
 
+void SshWorker::startStats(quint64 generation)
+{
+    if (!isOwnerThread()) {
+        QMetaObject::invokeMethod(
+            this, [this, generation] { startStats(generation); },
+            Qt::QueuedConnection);
+        return;
+    }
+    assertOwnerThread();
+    if (generation != m_generation || m_state != State::Ready
+        || m_connection == nullptr) {
+        return;
+    }
+    if (m_stats == nullptr) {
+        m_stats = std::make_unique<StatsChannel>(
+            m_api, m_connection->sessionForWorker());
+    }
+    m_stats->start();
+    schedule();
+}
+
+void SshWorker::stopStats(quint64 generation)
+{
+    if (!isOwnerThread()) {
+        QMetaObject::invokeMethod(
+            this, [this, generation] { stopStats(generation); },
+            Qt::QueuedConnection);
+        return;
+    }
+    assertOwnerThread();
+    if (generation != m_generation || m_stats == nullptr) {
+        return;
+    }
+    m_stats->stop();
+}
+
 void SshWorker::advance()
 {
     assertOwnerThread();
@@ -299,6 +336,7 @@ void SshWorker::advance()
 
     if (m_state == State::Ready) {
         serviceSftp();
+        serviceStats();
     }
 
     switch (result) {
@@ -424,6 +462,7 @@ void SshWorker::requestClose(bool notify)
         emitSftpResults(results);
         m_sftp.reset();
     }
+    m_stats.reset();
     if (m_shell != nullptr) {
         m_shell->close();
         schedule();
@@ -448,6 +487,8 @@ void SshWorker::forceCloseCurrent(bool notify)
         emitSftpResults(results);
         m_sftp.reset();
     }
+    // stats 通道要在 session 释放前释放（freeChannel 依赖会话）。
+    m_stats.reset();
     m_shell.reset();
     if (m_connection != nullptr) {
         disconnect(m_connection.get(), nullptr, this, nullptr);
@@ -477,5 +518,22 @@ void SshWorker::emitSftpResults(const QList<SftpResult> &results)
 {
     for (const SftpResult &result : results) {
         emit sftpResult(m_generation, result);
+    }
+}
+
+void SshWorker::serviceStats()
+{
+    if (m_stats == nullptr) {
+        return;
+    }
+    QList<QString> samples;
+    bool degraded = false;
+    bool recovered = false;
+    m_stats->advance(&samples, &degraded, &recovered);
+    if (degraded) {
+        emit statsDegraded(m_generation);
+    }
+    for (const QString &sample : samples) {
+        emit statsSample(m_generation, sample);
     }
 }

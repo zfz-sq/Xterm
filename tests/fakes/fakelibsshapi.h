@@ -206,14 +206,23 @@ public:
     ssh_channel newChannel(ssh_session) override
     {
         calls.append(QStringLiteral("newChannel"));
-        return reinterpret_cast<ssh_channel>(quintptr(2));
+        // 每次返回不同指针：多通道并存时（shell/sftp/stats）测试才能
+        // 按通道区分脚本。首块指针保持 2，既有测试不受影响。
+        const ssh_channel channel =
+            reinterpret_cast<ssh_channel>(quintptr(nextChannelPointer));
+        ++nextChannelPointer;
+        createdChannels.append(channel);
+        return channel;
     }
 
-    void freeChannel(ssh_channel) override
+    void freeChannel(ssh_channel channel) override
     {
         calls.append(QStringLiteral("freeChannel"));
         ++channelFreeCount;
-        readingExec = false;
+        if (channel == execChannel) {
+            readingExec = false;
+            execChannel = nullptr;
+        }
     }
 
     int openChannelSession(ssh_channel) override
@@ -259,11 +268,29 @@ public:
         return result;
     }
 
-    int readChannelNonblocking(ssh_channel, char *data, quint32 size,
-                               bool stderrStream) override
+    int readChannelNonblocking(ssh_channel channel, char *data,
+                               quint32 size, bool stderrStream) override
     {
         ++readCallCount;
-        if (readingExec) {
+        if (streamByChannel.contains(channel)) {
+            // 按通道脚本化的输出流（stats 通道用）：逐块吐出，
+            // 吐完返回 SSH_AGAIN。
+            QList<QByteArray> &chunks = streamByChannel[channel];
+            if (chunks.isEmpty()) {
+                return SSH_AGAIN;
+            }
+            QByteArray &source = chunks.first();
+            const int count = qMin(int(size), source.size());
+            memcpy(data, source.constData(), size_t(count));
+            source.remove(0, count);
+            if (source.isEmpty()) {
+                chunks.removeFirst();
+            }
+            return count;
+        }
+        // exec 读取模式只对发起 exec 的那条通道生效（多通道并存时
+        // 不得波及 shell）。
+        if (readingExec && channel == execChannel) {
             QByteArray &source =
                 stderrStream ? execStderrRemaining : execStdoutRemaining;
             if (source.isEmpty()) {
@@ -299,9 +326,12 @@ public:
         return take(resizeResults, SSH_OK);
     }
 
-    bool channelIsEof(ssh_channel) override
+    bool channelIsEof(ssh_channel channel) override
     {
-        if (readingExec) {
+        if (streamByChannel.contains(channel)) {
+            return false;   // 脚本化通道只有脚本说完才算完
+        }
+        if (readingExec && channel == execChannel) {
             return execStdoutRemaining.isEmpty()
                 && execStderrRemaining.isEmpty();
         }
@@ -337,10 +367,11 @@ public:
     QString errorString(ssh_session) const override { return errorText; }
     int errorCode(ssh_session) const override { return errorNumber; }
 
-    int requestExec(ssh_channel, const QByteArray &command) override
+    int requestExec(ssh_channel channel, const QByteArray &command) override
     {
         execCommands.append(command);
         readingExec = true;
+        execChannel = channel;
         execStdoutRemaining = execStdout;
         execStderrRemaining = execStderr;
         return take(execResults, SSH_OK);
@@ -709,6 +740,8 @@ public:
     QByteArray execStdout;
     QByteArray execStderr;
     int execExitStatus = 0;
+    QList<ssh_channel> createdChannels;
+    QHash<ssh_channel, QList<QByteArray>> streamByChannel;
     int aioBeginReadCount = 0;
     int aioWaitReadCount = 0;
     int aioBeginWriteCount = 0;
@@ -741,7 +774,9 @@ private:
     QHash<sftp_dir, FakeDir> dirs;
     QHash<sftp_file, FakeFile> files;
     quintptr nextHandle = 100;
+    quintptr nextChannelPointer = 2;
     bool readingExec = false;
+    ssh_channel execChannel = nullptr;
     QByteArray execStdoutRemaining;
     QByteArray execStderrRemaining;
 

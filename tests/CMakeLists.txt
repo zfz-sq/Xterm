@@ -56,6 +56,7 @@ add_executable(test_sshworker
     "${CMAKE_SOURCE_DIR}/ssh/knownhostsstore.cpp"
     "${CMAKE_SOURCE_DIR}/ssh/shellchannel.cpp"
     "${CMAKE_SOURCE_DIR}/ssh/sftpchannel.cpp"
+    "${CMAKE_SOURCE_DIR}/ssh/statschannel.cpp"
     "${CMAKE_SOURCE_DIR}/ssh/sshworker.cpp"
 )
 
@@ -88,6 +89,7 @@ add_executable(test_sshsession
     "${CMAKE_SOURCE_DIR}/ssh/knownhostsstore.cpp"
     "${CMAKE_SOURCE_DIR}/ssh/shellchannel.cpp"
     "${CMAKE_SOURCE_DIR}/ssh/sftpchannel.cpp"
+    "${CMAKE_SOURCE_DIR}/ssh/statschannel.cpp"
     "${CMAKE_SOURCE_DIR}/ssh/sshworker.cpp"
 )
 
@@ -120,6 +122,7 @@ add_executable(test_sftpchannel
     "${CMAKE_SOURCE_DIR}/ssh/knownhostsstore.cpp"
     "${CMAKE_SOURCE_DIR}/ssh/shellchannel.cpp"
     "${CMAKE_SOURCE_DIR}/ssh/sftpchannel.cpp"
+    "${CMAKE_SOURCE_DIR}/ssh/statschannel.cpp"
     "${CMAKE_SOURCE_DIR}/ssh/sshworker.cpp"
 )
 
@@ -154,6 +157,7 @@ add_executable(test_sftpclient
     "${CMAKE_SOURCE_DIR}/ssh/knownhostsstore.cpp"
     "${CMAKE_SOURCE_DIR}/ssh/shellchannel.cpp"
     "${CMAKE_SOURCE_DIR}/ssh/sftpchannel.cpp"
+    "${CMAKE_SOURCE_DIR}/ssh/statschannel.cpp"
     "${CMAKE_SOURCE_DIR}/ssh/sshworker.cpp"
 )
 
@@ -175,3 +179,40 @@ set_target_properties(test_sftpclient PROPERTIES
 )
 
 add_test(NAME test_sftpclient COMMAND test_sftpclient)
+
+add_executable(test_statschannel
+    test_statschannel.cpp
+    "${CMAKE_SOURCE_DIR}/hoststats.cpp"
+    "${CMAKE_SOURCE_DIR}/hoststats.h"
+    # HostStats 构造里 connect SshSession 的信号，需要其 moc 符号，
+    # 于是连带整条 worker 链。
+    "${CMAKE_SOURCE_DIR}/sshsession.cpp"
+    "${CMAKE_SOURCE_DIR}/sshsession.h"
+    "${CMAKE_SOURCE_DIR}/transport.h"
+    "${CMAKE_SOURCE_DIR}/ssh/libsshapi.cpp"
+    "${CMAKE_SOURCE_DIR}/ssh/libsshconnection.cpp"
+    "${CMAKE_SOURCE_DIR}/ssh/knownhostsstore.cpp"
+    "${CMAKE_SOURCE_DIR}/ssh/shellchannel.cpp"
+    "${CMAKE_SOURCE_DIR}/ssh/sftpchannel.cpp"
+    "${CMAKE_SOURCE_DIR}/ssh/statschannel.cpp"
+    "${CMAKE_SOURCE_DIR}/ssh/sshworker.cpp"
+)
+
+target_include_directories(test_statschannel
+    PRIVATE
+        "${CMAKE_SOURCE_DIR}"
+)
+
+target_link_libraries(test_statschannel
+    PRIVATE
+        Qt6::Test
+        ssh
+)
+
+xterm_deploy_ssh_runtime(test_statschannel)
+
+set_target_properties(test_statschannel PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)
+
+add_test(NAME test_statschannel COMMAND test_statschannel)

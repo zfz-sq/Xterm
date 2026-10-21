@@ -74,6 +74,10 @@ void SshSession::setupWorker(LibsshApi &api, KnownHostsStore &knownHosts)
             &SshWorker::submitSftpRequest, Qt::QueuedConnection);
     connect(this, &SshSession::requestSftpCancel, m_worker,
             &SshWorker::cancelSftpRequest, Qt::QueuedConnection);
+    connect(this, &SshSession::requestStartStats, m_worker,
+            &SshWorker::startStats, Qt::QueuedConnection);
+    connect(this, &SshSession::requestStopStats, m_worker,
+            &SshWorker::stopStats, Qt::QueuedConnection);
 
     connect(m_worker, &SshWorker::connected, this,
             &SshSession::handleWorkerConnected, Qt::QueuedConnection);
@@ -91,6 +95,10 @@ void SshSession::setupWorker(LibsshApi &api, KnownHostsStore &knownHosts)
             &SshSession::handleWorkerClosed, Qt::QueuedConnection);
     connect(m_worker, &SshWorker::sftpResult, this,
             &SshSession::handleWorkerSftpResult, Qt::QueuedConnection);
+    connect(m_worker, &SshWorker::statsSample, this,
+            &SshSession::handleWorkerStatsSample, Qt::QueuedConnection);
+    connect(m_worker, &SshWorker::statsDegraded, this,
+            &SshSession::handleWorkerStatsDegraded, Qt::QueuedConnection);
 
     m_thread->start();
 }
@@ -210,6 +218,19 @@ QString SshSession::summary() const
     if (m_target.port != 22)
         s += QLatin1Char(':') + QString::number(m_target.port);
     return s;
+}
+
+void SshSession::startStats()
+{
+    if (state() != Connected) {
+        return;
+    }
+    emit requestStartStats(m_generation);
+}
+
+void SshSession::stopStats()
+{
+    emit requestStopStats(m_generation);
 }
 
 void SshSession::answerHostKey(SshRequestId requestId, bool accept)
@@ -416,6 +437,23 @@ void SshSession::handleWorkerSftpResult(quint64 generation,
                             result.error);
         break;
     }
+}
+
+void SshSession::handleWorkerStatsSample(quint64 generation,
+                                         const QString &sample)
+{
+    if (generation != m_generation || state() != Connected) {
+        return;
+    }
+    emit statsSample(sample);
+}
+
+void SshSession::handleWorkerStatsDegraded(quint64 generation)
+{
+    if (generation != m_generation || state() != Connected) {
+        return;
+    }
+    emit statsDegraded();
 }
 
 void SshSession::handleWorkerClosed(quint64 generation)

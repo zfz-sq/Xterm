@@ -2,6 +2,7 @@
 #include "ssh/knownhostsstore.h"
 #include "ssh/shellchannel.h"
 #include "ssh/sshworker.h"
+#include "ssh/statschannel.h"
 
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -53,6 +54,8 @@ private slots:
     void openingShellAgainTimerIsNotZeroMs();
     void nonOwnerShellChannelCallsDoNotTouchHandles();
     void pendingWriteDoesNotStarveOutputWithinTwoTicks();
+    void streamsStatsSamplesOnDedicatedChannel();
+    void statsFailureDegradesButShellStaysReady();
 };
 
 void TestSshWorker::requestsXtermPtyWithInitialSize()
@@ -398,6 +401,69 @@ void TestSshWorker::pendingWriteDoesNotStarveOutputWithinTwoTicks()
     QVERIFY(api.acceptedWrites.size() < 100);
     QCOMPARE(data.first().at(1).toByteArray(),
              QByteArrayLiteral("server"));
+}
+
+void TestSshWorker::streamsStatsSamplesOnDedicatedChannel()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    FakeLibsshApi api;
+    prepareSuccessfulConnection(api);
+    KnownHostsStore store(api, directory.path());
+    SshWorker worker(api, store);
+    QSignalSpy connected(&worker, &SshWorker::connected);
+    QSignalSpy samples(&worker, &SshWorker::statsSample);
+    QSignalSpy degraded(&worker, &SshWorker::statsDegraded);
+    QSignalSpy failed(&worker, &SshWorker::connectionFailed);
+
+    worker.connectToHost(31, target(), 80, 24);
+    QTRY_COMPARE(connected.count(), 1);
+    // 先把 stats 通道的 open 钉在 SSH_AGAIN：通道建出来后挂好输出
+    // 脚本再放行，避免 exec 先于脚本落地时 fake 立刻判 EOF 杀通道。
+    api.openChannelFallback = SSH_AGAIN;
+    worker.startStats(31);
+    QTRY_VERIFY(api.createdChannels.size() >= 2);
+    api.streamByChannel[api.createdChannels.at(1)] = {
+        StatsChannel::kFrameBegin
+            + QByteArrayLiteral("\ncpu  1 0 0 9 0\nMemTotal: 8 kB\n")
+            + StatsChannel::kFrameEnd,
+    };
+    api.openChannelFallback = SSH_OK;
+
+    QTRY_COMPARE(samples.count(), 1);
+    QCOMPARE(samples.first().at(0).toULongLong(), quint64(31));
+    QCOMPARE(samples.first().at(1).toString(),
+             QStringLiteral("cpu  1 0 0 9 0\nMemTotal: 8 kB"));
+    QCOMPARE(degraded.count(), 0);
+    QCOMPARE(failed.count(), 0);
+}
+
+void TestSshWorker::statsFailureDegradesButShellStaysReady()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    FakeLibsshApi api;
+    prepareSuccessfulConnection(api);
+    KnownHostsStore store(api, directory.path());
+    SshWorker worker(api, store);
+    QSignalSpy connected(&worker, &SshWorker::connected);
+    QSignalSpy degraded(&worker, &SshWorker::statsDegraded);
+    QSignalSpy failed(&worker, &SshWorker::connectionFailed);
+    QSignalSpy data(&worker, &SshWorker::shellData);
+
+    worker.connectToHost(33, target(), 80, 24);
+    QTRY_COMPARE(connected.count(), 1);
+    api.readEvents = {{false, QByteArrayLiteral("shell-alive")}};
+    // shell 通道已开完，此后的 open 全部失败（stats 每次重试都碰壁）。
+    api.openChannelFallback = SSH_ERROR;
+    worker.startStats(33);
+
+    QTRY_VERIFY(degraded.count() >= 1);
+    QTRY_COMPARE(data.count(), 1);          // shell 数据照常流动
+    QCOMPARE(data.first().at(1).toByteArray(),
+             QByteArrayLiteral("shell-alive"));
+    QCOMPARE(connected.count(), 1);         // 连接没有被 stats 拖垮
+    QCOMPARE(failed.count(), 0);
 }
 
 QTEST_MAIN(TestSshWorker)

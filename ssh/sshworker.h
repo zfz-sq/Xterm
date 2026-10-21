@@ -16,6 +16,7 @@ class LibsshApi;
 class LibsshConnection;
 class SftpChannel;
 class ShellChannel;
+class StatsChannel;
 
 class SshWorker final : public QObject
 {
@@ -38,6 +39,8 @@ public slots:
                            const QStringList &answers);
     void submitSftpRequest(quint64 generation, const SftpRequest &request);
     void cancelSftpRequest(quint64 generation, SshRequestId requestId);
+    void startStats(quint64 generation);
+    void stopStats(quint64 generation);
 
 signals:
     void connected(quint64 generation);
@@ -51,6 +54,8 @@ signals:
     void connectionFailed(quint64 generation, const SshError &error);
     void connectionClosed(quint64 generation);
     void sftpResult(quint64 generation, const SftpResult &result);
+    void statsSample(quint64 generation, const QString &sample);
+    void statsDegraded(quint64 generation);
 
 private slots:
     void advance();
@@ -80,6 +85,7 @@ private:
     void forceCloseCurrent(bool notify);
     void serviceSftp();
     void emitSftpResults(const QList<SftpResult> &results);
+    void serviceStats();
 
     LibsshApi &m_api;
     KnownHostsStore &m_knownHosts;
@@ -87,6 +93,7 @@ private:
     std::unique_ptr<LibsshConnection> m_connection;
     std::unique_ptr<ShellChannel> m_shell;
     std::unique_ptr<SftpChannel> m_sftp;
+    std::unique_ptr<StatsChannel> m_stats;
     quint64 m_generation = 0;
     int m_initialCols = 80;
     int m_initialRows = 24;

@@ -8,6 +8,9 @@
 // 用法（与 sshtest 相同的环境变量）:
 //   XTERM_SSH_HOST / XTERM_SSH_USER / XTERM_SSH_PASSWORD
 //   XTERM_SSH_KEY / XTERM_SSH_PORT / XTERM_SSH_TIMEOUT
+//   XTERM_SSH_SOAK_SEC=N  常规流程结束后进入 N 秒浸泡：启动 stats
+//                         通道、循环下载与 shell marker，并断言样本
+//                         数量足够、stats 字节从未进入 shell。
 //   未设置 XTERM_SSH_HOST 时输出 SKIP 并以 77 退出。
 #include <QByteArray>
 #include <QCoreApplication>
@@ -100,8 +103,18 @@ public:
                 [](const QString &message) {
                     std::fprintf(stderr, "ssh error: %s\n", qPrintable(message));
                 });
+        // stats 通道观察口（仅浸泡模式下启动）
+        connect(&m_session, &SshSession::statsSample, this,
+                [this](const QString &) { ++m_statsSamples; });
+        connect(&m_session, &SshSession::statsDegraded, this, [this] {
+            m_statsDegraded = true;
+            std::printf("      stats degraded (channel retrying)\n");
+            std::fflush(stdout);
+        });
         connect(&m_session, &SshSession::opened, this, [this] {
             m_started = true;
+            if (m_soakSeconds > 0)
+                m_session.startStats();
             next(QStringLiteral("realpath"));
             m_client->realPath(QStringLiteral("."));
         });
@@ -149,6 +162,11 @@ public:
             QTimer::singleShot(2000, this, [this] { QCoreApplication::exit(1); });
         });
         m_watchdog->start(45000);
+
+        bool soakOk = false;
+        const int soak =
+            qEnvironmentVariableIntValue("XTERM_SSH_SOAK_SEC", &soakOk);
+        m_soakSeconds = soakOk && soak > 0 ? soak : 0;
     }
 
     void start()
@@ -187,13 +205,16 @@ private:
         // shell 在传输期间每发一条 marker 都要有响应（echo 回显 + 命令输出）。
         const int responses =
             m_shellOutput.count(kMarker) - m_baseMarkers;
-        check(m_markersSent > 3,
-              "markers sent during transfer",
-              QString::number(m_markersSent));
-        check(responses >= m_markersSent, "shell alive during transfer",
-              QStringLiteral("sent=%1 responses=%2")
-                  .arg(m_markersSent)
-                  .arg(responses));
+        if (m_soakSeconds == 0) {
+            // 非浸泡运行沿用原判据；浸泡的 shell 存活检查在 endSoak。
+            check(m_markersSent > 3,
+                  "markers sent during transfer",
+                  QString::number(m_markersSent));
+            check(responses >= m_markersSent, "shell alive during transfer",
+                  QStringLiteral("sent=%1 responses=%2")
+                      .arg(m_markersSent)
+                      .arg(responses));
+        }
         std::printf("---- %d passed, %d failed ----\n", g_pass, g_fail);
         std::fflush(stdout);
         QCoreApplication::exit(g_fail == 0 ? 0 : 1);
@@ -262,11 +283,68 @@ private:
             const QByteArray a = fileSha256(m_localUp);
             const QByteArray b = fileSha256(m_localDown);
             check(a == b && !a.isEmpty(), "sha256 round-trip");
+            if (m_soakSeconds > 0) {
+                beginSoak();
+                startSoakTransfer();
+                return;
+            }
             next(QStringLiteral("rename"));
             m_client->renameEntry(m_remoteUp,
                                   m_home + QStringLiteral("/sftptest-up2.bin"));
             m_remoteUp = m_home + QStringLiteral("/sftptest-up2.bin");
+        } else if (id >= 3) {
+            // 浸泡循环：下载完成（或失败）后稍歇再下一轮。endSoak 关会话
+            // 会掐断最后一轮在途下载（结果为"已取消"），不算失败。
+            if (m_soakRunning && !ok)
+                check(false, "soak download", error);
+            QTimer::singleShot(300, this, [this] {
+                if (m_soakRunning)
+                    startSoakTransfer();
+            });
         }
+    }
+
+    void beginSoak()
+    {
+        m_soakRunning = true;
+        std::printf("---- soak %d s: stats + transfers + markers ----\n",
+                    m_soakSeconds);
+        std::fflush(stdout);
+        next(QStringLiteral("soak"));
+        // marker 降频到 1s：长浸泡避免自身刷屏。
+        m_markerTimer->setInterval(1000);
+        m_markerTimer->start();
+        QTimer::singleShot(m_soakSeconds * 1000, this, [this] { endSoak(); });
+    }
+
+    void startSoakTransfer()
+    {
+        if (!m_soakRunning)
+            return;
+        next(QStringLiteral("soak-transfer"));
+        m_client->downloadFile(++m_soakTransferId, m_remoteUp, m_localDown);
+    }
+
+    void endSoak()
+    {
+        m_soakRunning = false;
+        m_markerTimer->stop();
+        const int expected = qMax(1, m_soakSeconds / 6);  // 远端 3s 一帧，留裕量
+        check(m_statsSamples >= expected, "stats samples during soak",
+              QStringLiteral("samples=%1 expected>=%2")
+                  .arg(m_statsSamples)
+                  .arg(expected));
+        check(!m_statsDegraded, "stats channel stayed healthy");
+        check(!m_shellOutput.contains("__XTERM_STATS_"),
+              "stats bytes never reach shell");
+        const int responses =
+            m_shellOutput.count(kMarker) - m_baseMarkers;
+        check(m_markersSent > 0 && responses >= m_markersSent * 8 / 10,
+              "shell alive during soak",
+              QStringLiteral("sent=%1 responses=%2")
+                  .arg(m_markersSent)
+                  .arg(responses));
+        quit();
     }
 
     SshTarget m_target;
@@ -281,6 +359,11 @@ private:
     bool m_started = false;
     int m_baseMarkers = 0;
     int m_markersSent = 0;
+    int m_soakSeconds = 0;
+    bool m_soakRunning = false;
+    int m_soakTransferId = 2;
+    int m_statsSamples = 0;
+    bool m_statsDegraded = false;
 };
 
 int main(int argc, char **argv)

@@ -110,10 +110,8 @@ MainWindow::MainWindow(QWidget *parent)
     m_serial = new SerialSession(this);
     m_ssh = new SshSession(this);
     m_store = new CommandStore(this);
-    m_hostStats = new HostStats;
-    m_hostStats->setHostKeyPrompter([this](const QString &host, const QString &stored, const QString &current) {
-        return confirmHostKeyChange(host, stored, current);
-    });
+    // 主机状态采样走共享 SSH 会话的 stats 通道（任务 8）。
+    m_hostStats = new HostStats(m_ssh, this);
     connect(m_hostStats, &HostStats::statsUpdated, this,
             [this](bool cpuOk, int cpuPercent, bool memOk, bool memPercentOk, int memPercent,
                    qint64 usedKiB, qint64 totalKiB) {
@@ -174,11 +172,6 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
-    if (m_hostStats) {
-        QObject::disconnect(m_hostStats, nullptr, this, nullptr);
-        delete m_hostStats;
-        m_hostStats = nullptr;
-    }
     delete ui;
 }
 
@@ -441,14 +434,15 @@ void MainWindow::connectSignals()
     connect(m_ssh, &SshSession::opened, this, [this] {
         m_sshView->appendSystemMessage(tr("── 已连接 %1 ──").arg(m_ssh->summary()));
         clearHostStats();
-        m_hostStats->start(m_ssh->target());
+        m_hostStats->resetDelta();
+        m_ssh->startStats();
         updateConnectionUi();
         updatePersistentStatus();
         if (m_mode == Mode::Ssh)
             m_sshView->setFocus();
     });
     connect(m_ssh, &SshSession::closed, this, [this] {
-        m_hostStats->stop();
+        m_ssh->stopStats();
         clearHostStats();
         updateConnectionUi();
         updatePersistentStatus();

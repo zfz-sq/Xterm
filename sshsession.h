@@ -59,6 +59,10 @@ public:
                         quint32 mode);
     void execCommand(SshRequestId requestId, const QString &command);
 
+    // 主机状态采样：共享连接上的独立 exec 通道，不影响 shell。
+    void startStats();
+    void stopStats();
+
     QString open(const SshTarget &target);
     void close() override;
     QString send(const QByteArray &data) override;
@@ -88,6 +92,8 @@ signals:
                               const QString &error);
     void sftpOpFinished(SshRequestId requestId, const QString &op,
                         const QString &arg, bool ok, const QString &error);
+    void statsSample(const QString &sample);
+    void statsDegraded();
 
 private:
     friend class TestSshSession;
@@ -109,6 +115,8 @@ private slots:
     void handleWorkerAuth(quint64 generation, SshRequestId requestId,
                           const QList<SshAuthPrompt> &prompts);
     void handleWorkerSftpResult(quint64 generation, const SftpResult &result);
+    void handleWorkerStatsSample(quint64 generation, const QString &sample);
+    void handleWorkerStatsDegraded(quint64 generation);
 
 signals:
     void requestConnect(quint64 generation, const SshTarget &target,
@@ -122,6 +130,8 @@ signals:
                             const QStringList &answers);
     void requestSftp(quint64 generation, const SftpRequest &request);
     void requestSftpCancel(quint64 generation, SshRequestId requestId);
+    void requestStartStats(quint64 generation);
+    void requestStopStats(quint64 generation);
 
 private:
     std::unique_ptr<LibsshApi> m_ownedApi;

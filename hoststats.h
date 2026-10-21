@@ -3,39 +3,46 @@
 
 #include <QObject>
 #include <QString>
-#include <functional>
 
-class QThread;
-class QTimer;
+class SshSession;
 
-#include "sshtarget.h"
+struct HostCpuSample
+{
+    bool ok = false;
+    quint64 total = 0;
+    quint64 idle = 0;
+};
+
+struct HostMemSample
+{
+    bool ok = false;
+    bool percentOk = false;
+    int percent = 0;
+    qint64 usedKiB = 0;
+    qint64 totalKiB = 0;
+};
 
 /*
- * HostStats: 给 SSH 状态栏采样远端 CPU 和内存。
+ * HostStats: 状态栏的主机 CPU/内存适配器。
  *
- * 和终端会话、SFTP 都不是同一条连接。工作线程里用 libssh2 开一条
- * 只执行 /bin/cat /proc/stat /proc/meminfo 的会话，大约每 3 秒读一次。
- * 终端里的按键和回显不会被这些采样插进去。
- *
- * 主机指纹沿用 SFTP 那份 known_hosts。指纹变了询问一次界面；
- * 用户拒绝后本次 SSH 连接不再重试。
+ * 不再自己开第二条 SSH 连接：解析共享会话 stats 通道送来的 /proc 帧，
+ * 维护相邻两帧的 CPU 计数差值；通道降级（statsDegraded）时整帧显示
+ * "--"。解析函数是公开静态，供单测直接喂 /proc 文本。
  */
 class HostStats : public QObject
 {
     Q_OBJECT
 
 public:
-    explicit HostStats();
-    ~HostStats() override;
+    explicit HostStats(SshSession *session, QObject *parent = nullptr);
 
-    using HostKeyPrompter = std::function<bool(const QString &host,
-                                               const QString &storedFingerprint,
-                                               const QString &currentFingerprint)>;
-    void setHostKeyPrompter(HostKeyPrompter prompter);
+    static HostCpuSample parseCpuSample(const QString &text);
+    static HostMemSample parseMemSample(const QString &text);
 
-public slots:
-    void start(const SshTarget &target);
-    void stop();
+    // 丢弃 CPU 差值基线（重连后调用，避免跨连接算差值）。
+    void resetDelta();
+
+    void testApplySample(const QString &sample);   // 仅单测用
 
 signals:
     // 任一字段无效时对应的 ok 为 false，界面显示 "--"。
@@ -44,26 +51,14 @@ signals:
                       bool memOk, bool memPercentOk, int memPercent,
                       qint64 usedKiB, qint64 totalKiB);
 
+private slots:
+    void onSample(const QString &sample);
+    void onDegraded();
+
 private:
-    void onTick();
-    bool deferToWorker(const std::function<void()> &fn);
-    bool openSession();
-    void closeSession();
-    bool execRead(const char *command, QByteArray *output);
-    bool readProc(QByteArray *output);
-    bool confirmHostKey(const QString &host, const QString &stored, const QString &current);
-    bool rememberHost(const QString &key, const QString &fingerprint);
+    void applySample(const QString &sample);
 
-    HostKeyPrompter m_prompter;
-    QThread *m_thread = nullptr;
-    QTimer *m_timer = nullptr;
-
-    SshTarget m_target;
-    void *m_session = nullptr;   // LIBSSH2_SESSION*
-    quintptr m_sock = 0;
-    bool m_stopped = true;
-    bool m_giveUp = false;       // 认证失败或用户拒绝新指纹：本次 start 不再重试
-
+    SshSession *m_session = nullptr;
     bool m_haveCpu = false;
     quint64 m_prevTotal = 0;
     quint64 m_prevIdle = 0;

@@ -111,6 +111,8 @@ qt_add_executable(Xterm
     ssh/sftprequest.h
     ssh/sftpchannel.cpp
     ssh/sftpchannel.h
+    ssh/statschannel.cpp
+    ssh/statschannel.h
     ssh/sshworker.cpp
     ssh/sshworker.h
     ssh/sshtypes.h
