@@ -3,8 +3,7 @@
 
 如果自动代填仍然生效，终端里会自动出现 3 次「Permission denied」+ 提示行，
 第 4 次提示时代填额度用尽，应改为给出「请在终端里手动输入」的说明。
-全程零键盘输入，所以这些拒绝只可能来自代填路径 —— 正好把
-「ConPTY 标准句柄改动有没有打断代填」这一条钉死。
+全程零键盘输入，所以这些拒绝只可能来自代填路径 —— 正好把代填通路钉死。
 
 用法: python tools/gui_autofill_check.py
 """
@@ -39,7 +38,7 @@ def set_wrong_password():
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     if not os.path.isfile(CONFIG):
-        print("NO_CONFIG：先跑一次 gui_pw_check 或在界面里填好主机")
+        print("NO_CONFIG：先在界面里连接过一台主机（写入配置文件）")
         return 1
     shutil.copy2(CONFIG, BACKUP)
     set_wrong_password()

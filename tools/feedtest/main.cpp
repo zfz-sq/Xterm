@@ -1,4 +1,4 @@
-// 离屏回放: 把 ConPTY 抓到的真实字节流(toptest.py 落盘)喂给 TermScreen
+// 离屏回放: 把抓取的真实终端字节流(dump 文件)喂给 TermScreen
 // (SSH/串口两页共用的屏幕模型), 打印渲染出的可见文本。
 // 构建: cmake -S tools/feedtest -B build/feedtest && cmake --build build/feedtest
 // 运行: build/feedtest/feedtest.exe <dump.bin> [cols] [rows]
