@@ -135,7 +135,7 @@ void TestSftpClient::offlineSubmissionsFailImmediately()
     QCOMPARE(ops.at(7).at(1).toString(), QStringLiteral("true"));
     for (const QList<QVariant> &event : ops)
         QVERIFY(!event.at(2).toBool());
-    QCOMPARE(m_api->sftpNewCount, 0);
+    QCOMPARE(m_api->sftpNewChannelCount, 0);
     QCOMPARE(newSessionCount(*m_api), 0);
 }
 

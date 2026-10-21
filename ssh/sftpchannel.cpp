@@ -26,6 +26,29 @@ SftpEntry entryFromAttributes(sftp_attributes attrs)
     return entry;
 }
 
+// libssh 的经典 sftp 客户端调用内部用 ssh_channel_read 同步收响应；
+// 非阻塞会话下无数据时返回的 SSH_AGAIN(2) 会被当作已读字节数累加，
+// 协议立即错位（真机上 realpath 等必失败）。因此这些同步调用期间
+// 临时切回阻塞（受 SSH_OPTIONS_TIMEOUT 约束），离开作用域恢复非阻塞。
+// AIO 传输不受影响：file 已标记 nonblocking，wait 走 poll 路径。
+class ScopedSyncSftp
+{
+public:
+    ScopedSyncSftp(LibsshApi &api, ssh_session session)
+        : m_api(api), m_session(session)
+    {
+        m_api.setBlocking(m_session, true);
+    }
+    ~ScopedSyncSftp() { m_api.setBlocking(m_session, false); }
+
+    ScopedSyncSftp(const ScopedSyncSftp &) = delete;
+    ScopedSyncSftp &operator=(const ScopedSyncSftp &) = delete;
+
+private:
+    LibsshApi &m_api;
+    ssh_session m_session;
+};
+
 } // namespace
 
 SftpChannel::SftpChannel(LibsshApi &api, ssh_session session)
@@ -145,18 +168,56 @@ SftpChannel::Result SftpChannel::ensureSession(QList<SftpResult> *results)
     if (m_sftpReady && m_sftp != nullptr) {
         return Result::Progress;
     }
-    if (m_sftp == nullptr) {
-        m_sftp = m_api.sftpNew(m_session);
-        if (m_sftp == nullptr) {
+    switch (m_channelStep) {
+    case ChannelStep::Open:
+        // 真 libssh 的 sftp_new 要求阻塞会话并同步开通道，非阻塞会话
+        // 直接被拒绝。因此通道自己非阻塞地开（与 shell 通道同款），
+        // 再用 sftp_new_channel 包装，避免阻塞 worker 线程。
+        if (m_sftpChannel == nullptr) {
+            m_sftpChannel = m_api.newChannel(m_session);
+            if (m_sftpChannel == nullptr) {
+                return failActive(results, QStringLiteral("打开 SFTP 通道"));
+            }
+        }
+        if (const int rc = m_api.openChannelSession(m_sftpChannel);
+            rc == SSH_AGAIN) {
+            return Result::Again;
+        } else if (rc != SSH_OK) {
             return failActive(results, QStringLiteral("打开 SFTP 通道"));
         }
+        m_channelStep = ChannelStep::Subsystem;
+        Q_FALLTHROUGH();
+    case ChannelStep::Subsystem: {
+        const int rc = m_api.channelRequestSftp(m_sftpChannel);
+        if (rc == SSH_AGAIN) {
+            return Result::Again;
+        }
+        if (rc != SSH_OK) {
+            return failActive(results, QStringLiteral("请求 sftp 子系统"));
+        }
+        m_channelStep = ChannelStep::Wrap;
+        Q_FALLTHROUGH();
     }
-    const int init = m_api.sftpInit(m_sftp);
-    if (init == SSH_AGAIN) {
-        return Result::Again;
+    case ChannelStep::Wrap:
+        m_sftp = m_api.sftpNewChannel(m_session, m_sftpChannel);
+        if (m_sftp == nullptr) {
+            return failActive(results, QStringLiteral("创建 SFTP 会话"));
+        }
+        m_channelStep = ChannelStep::Init;
+        Q_FALLTHROUGH();
+    case ChannelStep::Init: {
+        // sftp_init 是同步的 INIT/VERSION 握手，非阻塞会话上它会等到
+        // 超时。阻塞期间受 SSH_OPTIONS_TIMEOUT 约束。
+        const ScopedSyncSftp sync(m_api, m_session);
+        const int rc = m_api.sftpInit(m_sftp);
+        if (rc != SSH_OK) {
+            return failActive(results, QStringLiteral("初始化 SFTP 通道"));
+        }
+        m_channelStep = ChannelStep::Done;
+        break;
     }
-    if (init != SSH_OK) {
-        return failActive(results, QStringLiteral("初始化 SFTP 通道"));
+    case ChannelStep::Done:
+        break;
     }
     m_sftpReady = true;
     return Result::Progress;
@@ -190,6 +251,7 @@ SftpChannel::Result SftpChannel::advanceActive(QList<SftpResult> *results)
 
 SftpChannel::Result SftpChannel::advanceList(QList<SftpResult> *results)
 {
+    const ScopedSyncSftp sync(m_api, m_session);
     if (m_phase == Phase::None) {
         m_phase = Phase::ListOpen;
     }
@@ -250,6 +312,7 @@ SftpChannel::Result SftpChannel::advanceList(QList<SftpResult> *results)
 
 SftpChannel::Result SftpChannel::advanceRealPath(QList<SftpResult> *results)
 {
+    const ScopedSyncSftp sync(m_api, m_session);
     QString resolved;
     const int rc =
         m_api.sftpCanonicalizePath(m_sftp, m_active.path.toUtf8(), &resolved);
@@ -265,6 +328,7 @@ SftpChannel::Result SftpChannel::advanceRealPath(QList<SftpResult> *results)
 
 SftpChannel::Result SftpChannel::advanceSimple(QList<SftpResult> *results)
 {
+    const ScopedSyncSftp sync(m_api, m_session);
     int rc = SSH_ERROR;
     QString arg = m_active.path;
     const QByteArray path = m_active.path.toUtf8();
@@ -297,6 +361,7 @@ SftpChannel::Result SftpChannel::advanceSimple(QList<SftpResult> *results)
 
 SftpChannel::Result SftpChannel::advanceCreate(QList<SftpResult> *results)
 {
+    const ScopedSyncSftp sync(m_api, m_session);
     if (m_phase == Phase::None) {
         m_phase = Phase::CreateOpen;
     }
@@ -326,6 +391,7 @@ SftpChannel::Result SftpChannel::advanceCreate(QList<SftpResult> *results)
 SftpChannel::Result SftpChannel::advanceUpload(QList<SftpResult> *results)
 {
     if (m_phase == Phase::None || m_phase == Phase::TransferPrepare) {
+        const ScopedSyncSftp sync(m_api, m_session);
         if (!m_local.isOpen()) {
             m_local.setFileName(m_active.localPath);
             if (!m_local.open(QIODevice::ReadOnly)) {
@@ -353,7 +419,9 @@ SftpChannel::Result SftpChannel::advanceUpload(QList<SftpResult> *results)
         while (!m_aio.isEmpty()
                && m_tickRequests < TickRequestBudget) {
             const Result waited = waitAio(&m_aio.first(), results);
-            if (waited == Result::Error) {
+            // failActive 已重置全部状态（含清空 m_aio）并返回 Idle；
+            // Progress/Again 之外的结果必须立即终止，不能再碰 m_aio。
+            if (waited != Result::Progress && waited != Result::Again) {
                 return waited;
             }
             if (waited == Result::Again) {
@@ -374,7 +442,9 @@ SftpChannel::Result SftpChannel::advanceUpload(QList<SftpResult> *results)
                 break;
             }
             const Result began = beginWrite(m_file, m_pending, results);
-            if (began == Result::Error) {
+            // failActive 已重置全部状态（含清空 m_aio）并返回 Idle；
+            // Progress/Again 之外的结果必须立即终止，不能再碰 m_aio。
+            if (began != Result::Progress && began != Result::Again) {
                 return began;
             }
             if (began == Result::Again) {
@@ -389,6 +459,7 @@ SftpChannel::Result SftpChannel::advanceUpload(QList<SftpResult> *results)
     }
 
     if (m_phase == Phase::TransferClose) {
+        const ScopedSyncSftp sync(m_api, m_session);
         const int rc = m_api.sftpCloseFile(m_file);
         if (rc == SSH_AGAIN) {
             return Result::Again;
@@ -408,6 +479,7 @@ SftpChannel::Result SftpChannel::advanceUpload(QList<SftpResult> *results)
 SftpChannel::Result SftpChannel::advanceDownload(QList<SftpResult> *results)
 {
     if (m_phase == Phase::None || m_phase == Phase::TransferPrepare) {
+        const ScopedSyncSftp sync(m_api, m_session);
         m_file = m_api.sftpOpen(m_sftp, m_active.remotePath.toUtf8(),
                                 O_RDONLY, 0);
         if (m_file == nullptr) {
@@ -440,7 +512,9 @@ SftpChannel::Result SftpChannel::advanceDownload(QList<SftpResult> *results)
                && m_tickRequests < TickRequestBudget) {
             AioRequest &request = m_aio.first();
             const Result waited = waitAio(&request, results);
-            if (waited == Result::Error) {
+            // failActive 已重置全部状态（含清空 m_aio）并返回 Idle；
+            // Progress/Again 之外的结果必须立即终止，不能再碰 m_aio。
+            if (waited != Result::Progress && waited != Result::Again) {
                 return waited;
             }
             if (waited == Result::Again) {
@@ -464,7 +538,9 @@ SftpChannel::Result SftpChannel::advanceDownload(QList<SftpResult> *results)
                && m_tickRequests < TickRequestBudget
                && m_tickBytes < TickByteBudget) {
             const Result began = beginRead(m_file, results);
-            if (began == Result::Error) {
+            // failActive 已重置全部状态（含清空 m_aio）并返回 Idle；
+            // Progress/Again 之外的结果必须立即终止，不能再碰 m_aio。
+            if (began != Result::Progress && began != Result::Again) {
                 return began;
             }
             if (began == Result::Again) {
@@ -479,6 +555,7 @@ SftpChannel::Result SftpChannel::advanceDownload(QList<SftpResult> *results)
     }
 
     if (m_phase == Phase::TransferClose) {
+        const ScopedSyncSftp sync(m_api, m_session);
         const int rc = m_api.sftpCloseFile(m_file);
         if (rc == SSH_AGAIN) {
             return Result::Again;
@@ -513,6 +590,7 @@ SftpChannel::Result SftpChannel::advanceCopy(QList<SftpResult> *results)
         m_phase = Phase::CopyOpenSrc;
     }
     if (m_phase == Phase::CopyOpenSrc) {
+        const ScopedSyncSftp sync(m_api, m_session);
         m_file = m_api.sftpOpen(m_sftp, m_active.path.toUtf8(), O_RDONLY, 0);
         if (m_file == nullptr) {
             if (isAgain()) {
@@ -529,6 +607,7 @@ SftpChannel::Result SftpChannel::advanceCopy(QList<SftpResult> *results)
         m_phase = Phase::CopyOpenDst;
     }
     if (m_phase == Phase::CopyOpenDst) {
+        const ScopedSyncSftp sync(m_api, m_session);
         m_destFile = m_api.sftpOpen(m_sftp, m_active.dest.toUtf8(),
                                     O_WRONLY | O_CREAT | O_TRUNC,
                                     mode_t(m_copyMode));
@@ -546,7 +625,9 @@ SftpChannel::Result SftpChannel::advanceCopy(QList<SftpResult> *results)
                && m_tickRequests < TickRequestBudget) {
             AioRequest &request = m_aio.first();
             const Result waited = waitAio(&request, results);
-            if (waited == Result::Error) {
+            // failActive 已重置全部状态（含清空 m_aio）并返回 Idle；
+            // Progress/Again 之外的结果必须立即终止，不能再碰 m_aio。
+            if (waited != Result::Progress && waited != Result::Again) {
                 return waited;
             }
             if (waited == Result::Again) {
@@ -586,6 +667,7 @@ SftpChannel::Result SftpChannel::advanceCopy(QList<SftpResult> *results)
         }
     }
     if (m_phase == Phase::CopyClose) {
+        const ScopedSyncSftp sync(m_api, m_session);
         if (m_destFile != nullptr) {
             const int rc = m_api.sftpCloseFile(m_destFile);
             if (rc == SSH_AGAIN) {
@@ -695,6 +777,11 @@ SftpChannel::Result SftpChannel::waitAio(AioRequest *request,
                                          QList<SftpResult> *results)
 {
     ++m_tickRequests;
+    // libssh 0.11 的 sftp_aio_wait_* 非阻塞 poll 路径在响应包分片到达时
+    // 也会踩 SSH_AGAIN 被当作已读字节的坑（真机 16K DATA 包必分片，
+    // 实测 "Invalid sftp packet size!"）。等待也走阻塞；begin 提交侧
+    // 仍是非阻塞，4 路在途流水线让每次阻塞等待摊薄 RTT。
+    const ScopedSyncSftp sync(m_api, m_session);
     if (request->reading) {
         QByteArray buffer(int(request->requested), Qt::Uninitialized);
         const ssize_t n = m_api.sftpAioWaitRead(
@@ -900,6 +987,7 @@ void SftpChannel::freeAio()
 
 void SftpChannel::closeRemoteFiles()
 {
+    const ScopedSyncSftp sync(m_api, m_session);
     if (m_dir != nullptr) {
         m_api.sftpClosedir(m_dir);
         m_dir = nullptr;
@@ -921,10 +1009,18 @@ void SftpChannel::closeRemoteFiles()
 void SftpChannel::releaseSftp()
 {
     if (m_sftp != nullptr) {
+        // sftp_free 连同包装进去的 channel 一起 EOF 并释放；阻塞模式下
+        // EOF 发送也是同步完成的。
+        const ScopedSyncSftp sync(m_api, m_session);
         m_api.sftpFree(m_sftp);
         m_sftp = nullptr;
+    } else if (m_sftpChannel != nullptr) {
+        // 还没交给 sftp 会话的半开通道自己释放。
+        m_api.freeChannel(m_sftpChannel);
+        m_sftpChannel = nullptr;
     }
     m_sftpReady = false;
+    m_channelStep = ChannelStep::Open;
 }
 
 void SftpChannel::resetActive()
@@ -953,9 +1049,22 @@ bool SftpChannel::onOwnerThread() const
 
 QString SftpChannel::apiError(const QString &fallback) const
 {
+    // session 错误文本会被更早的尽力而为请求（如被拒绝的 env）污染，
+    // 附上 sftp 层错误码便于定位真实失败原因。
+    const int sftpCode =
+        m_sftp != nullptr ? m_api.sftpGetError(m_sftp) : 0;
     const QString detail = m_api.errorString(m_session);
-    return detail.isEmpty() ? fallback
-                            : QStringLiteral("%1: %2").arg(fallback, detail);
+    if (detail.isEmpty()) {
+        return sftpCode == 0
+            ? fallback
+            : QStringLiteral("%1: sftp error %2").arg(fallback).arg(sftpCode);
+    }
+    return sftpCode == 0
+        ? QStringLiteral("%1: %2").arg(fallback, detail)
+        : QStringLiteral("%1: sftp error %2: %3")
+              .arg(fallback)
+              .arg(sftpCode)
+              .arg(detail);
 }
 
 QString SftpChannel::shellQuote(const QString &text)

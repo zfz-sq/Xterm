@@ -46,6 +46,14 @@ private:
         bool reading = false;
     };
 
+    enum class ChannelStep {
+        Open,
+        Subsystem,
+        Wrap,
+        Init,
+        Done
+    };
+
     enum class Phase {
         None,
         ListOpen,
@@ -109,6 +117,8 @@ private:
     QThread *m_ownerThread = nullptr;
     ssh_session m_session = nullptr;
     sftp_session m_sftp = nullptr;
+    ssh_channel m_sftpChannel = nullptr;
+    ChannelStep m_channelStep = ChannelStep::Open;
     bool m_sftpReady = false;
     QQueue<SftpRequest> m_queue;
     QList<SftpRequest> m_cancelledQueued;

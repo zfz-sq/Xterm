@@ -2,6 +2,7 @@
 
 #include <QByteArray>
 #include <QFileInfo>
+#include <QtGlobal>
 
 namespace {
 
@@ -25,6 +26,14 @@ QString fingerprintForKey(ssh_key key)
 }
 
 } // namespace
+
+LibsshApi::LibsshApi()
+{
+    // 真机排查开关：设置 XTERM_SSH_TRACE 时输出 libssh 包级日志。
+    if (qEnvironmentVariableIsSet("XTERM_SSH_TRACE")) {
+        ssh_set_log_level(SSH_LOG_PACKET);
+    }
+}
 
 bool LibsshApi::validateKnownHostKey(
     const QByteArray &algorithm,
@@ -364,9 +373,15 @@ int LibsshApi::channelGetExitStatus(ssh_channel channel)
     return int(exitCode);
 }
 
-sftp_session LibsshApi::sftpNew(ssh_session session)
+int LibsshApi::channelRequestSftp(ssh_channel channel)
 {
-    return sftp_new(session);
+    return ssh_channel_request_sftp(channel);
+}
+
+sftp_session LibsshApi::sftpNewChannel(ssh_session session,
+                                       ssh_channel channel)
+{
+    return sftp_new_channel(session, channel);
 }
 
 void LibsshApi::sftpFree(sftp_session sftp)

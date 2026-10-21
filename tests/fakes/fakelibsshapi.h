@@ -351,10 +351,21 @@ public:
         return execExitStatus;
     }
 
-    sftp_session sftpNew(ssh_session) override
+    int channelRequestSftp(ssh_channel) override
     {
-        ++sftpNewCount;
-        return reinterpret_cast<sftp_session>(quintptr(10 + sftpNewCount));
+        calls.append(QStringLiteral("requestSftp"));
+        ++channelRequestSftpCount;
+        return take(channelRequestSftpResults, SSH_OK);
+    }
+
+    sftp_session sftpNewChannel(ssh_session, ssh_channel) override
+    {
+        calls.append(QStringLiteral("sftpNewChannel"));
+        ++sftpNewChannelCount;
+        if (sftpNewChannelFails) {
+            return nullptr;
+        }
+        return reinterpret_cast<sftp_session>(quintptr(10 + sftpNewChannelCount));
     }
 
     void sftpFree(sftp_session) override
@@ -364,6 +375,7 @@ public:
 
     int sftpInit(sftp_session) override
     {
+        calls.append(QStringLiteral("sftpInit"));
         ++sftpInitCount;
         return take(sftpInitResults, SSH_OK);
     }
@@ -670,9 +682,12 @@ public:
     int errorNumber = SSH_ERROR;
     int disconnectCount = 0;
 
-    int sftpNewCount = 0;
+    int sftpNewChannelCount = 0;
+    int channelRequestSftpCount = 0;
     int sftpInitCount = 0;
     int sftpFreeCount = 0;
+    bool sftpNewChannelFails = false;
+    QList<int> channelRequestSftpResults;
     int sftpCloseFileCount = 0;
     int sftpError = 0;
     QList<int> sftpInitResults;

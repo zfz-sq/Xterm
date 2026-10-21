@@ -93,6 +93,8 @@ class TestSftpChannel : public QObject
 
 private slots:
     void doesNotCreateSftpUntilFirstRequest();
+    void opensSftpViaChannelStepsAndKeepsSessionNonblocking();
+    void subsystemAgainRetriesAndSubsystemFailureReleasesHalfOpenChannel();
     void listsDirectoryAndResolvesRealPath();
     void mkdirCreateDeleteRenameAndChmod();
     void recursiveCopyUsesExecWithoutNewSshSession();
@@ -101,6 +103,7 @@ private slots:
     void execCommandReturnsOutputAndStatus();
     void uploadUsesAioAndReportsProgress();
     void downloadWritesTempFileThenRenames();
+    void downloadWaitFailureMidTransferCompletesExactlyOnce();
     void partialAioAndSshAgainResumeOnNextTick();
     void cancelDownloadDeletesTempFileExactlyOnce();
     void sftpFailureFreesAndRebuildsOnceOnNextRequest();
@@ -115,7 +118,7 @@ void TestSftpChannel::doesNotCreateSftpUntilFirstRequest()
 {
     FakeLibsshApi api;
     SftpChannel channel(api, api.newSession());
-    QCOMPARE(api.sftpNewCount, 0);
+    QCOMPARE(api.sftpNewChannelCount, 0);
     QCOMPARE(api.sftpInitCount, 0);
 
     api.directoryEntries[QStringLiteral("/tmp")] = {
@@ -124,10 +127,79 @@ void TestSftpChannel::doesNotCreateSftpUntilFirstRequest()
     channel.enqueue(makeRequest(1, SftpOp::List, QStringLiteral("/tmp")));
     const QList<SftpResult> results = pump(channel);
 
-    QCOMPARE(api.sftpNewCount, 1);
+    QCOMPARE(api.sftpNewChannelCount, 1);
     QCOMPARE(api.sftpInitCount, 1);
     QCOMPARE(newSessionCount(api), 1);
     QCOMPARE(ofKind(results, SftpResult::Kind::Listed).size(), 1);
+}
+
+void TestSftpChannel::opensSftpViaChannelStepsAndKeepsSessionNonblocking()
+{
+    // 真 libssh（vcpkg 0.11）的 sftp_new 直接拒绝非阻塞会话——真机
+    // 192.168.11.150 上踩到。通道必须自己非阻塞地开（open session +
+    // request sftp），再 sftp_new_channel 包装；只有 sftp_init 的
+    // INIT/VERSION 同步握手期间临时切回阻塞，结束立即恢复非阻塞。
+    FakeLibsshApi api;
+    SftpChannel channel(api, api.newSession());
+    api.directoryEntries[QStringLiteral("/tmp")] = {};
+
+    channel.enqueue(makeRequest(1, SftpOp::List, QStringLiteral("/tmp")));
+    const QList<SftpResult> results = pump(channel);
+
+    QCOMPARE(api.channelRequestSftpCount, 1);
+    QCOMPARE(api.sftpNewChannelCount, 1);
+    QCOMPARE(ofKind(results, SftpResult::Kind::Listed).size(), 1);
+
+    const int openAt = api.calls.indexOf(QStringLiteral("openChannelSession"));
+    const int subsystemAt = api.calls.indexOf(QStringLiteral("requestSftp"));
+    const int wrapAt = api.calls.indexOf(QStringLiteral("sftpNewChannel"));
+    const int initAt = api.calls.indexOf(QStringLiteral("sftpInit"));
+    QVERIFY(openAt >= 0);
+    QVERIFY(subsystemAt > openAt);
+    QVERIFY(wrapAt > subsystemAt);
+    QVERIFY(initAt > wrapAt);
+    // 阻塞开关必须恰好包住 sftpInit，前后都回到非阻塞。
+    QCOMPARE(api.calls.value(initAt - 1), QStringLiteral("blocking:1"));
+    QCOMPARE(api.calls.value(initAt + 1), QStringLiteral("blocking:0"));
+    // 后续经典 sftp 调用同样各自配对，且结束时必已恢复非阻塞。
+    QCOMPARE(api.calls.count(QStringLiteral("blocking:1")),
+             api.calls.count(QStringLiteral("blocking:0")));
+    QVERIFY(api.calls.count(QStringLiteral("blocking:1")) >= 2);
+    QCOMPARE(api.calls.last(), QStringLiteral("blocking:0"));
+}
+
+void TestSftpChannel::subsystemAgainRetriesAndSubsystemFailureReleasesHalfOpenChannel()
+{
+    FakeLibsshApi api;
+    SftpChannel channel(api, api.newSession());
+    api.directoryEntries[QStringLiteral("/tmp")] = {};
+
+    // 第 1 tick：子系统请求 SSH_AGAIN，本 tick 不能包装、不能 init。
+    api.channelRequestSftpResults = {SSH_AGAIN};
+    channel.enqueue(makeRequest(1, SftpOp::List, QStringLiteral("/tmp")));
+    QList<SftpResult> results;
+    channel.advance(&results);
+    QCOMPARE(api.sftpNewChannelCount, 0);
+    QCOMPARE(api.sftpInitCount, 0);
+    QVERIFY(results.isEmpty());
+
+    // 第 2 tick：子系统请求失败，半开通道要释放（还没交给 sftp 会话），
+    // 请求以 ListedFailed 终止。
+    api.channelRequestSftpResults = {SSH_ERROR};
+    channel.advance(&results);
+    QCOMPARE(api.sftpFreeCount, 0);
+    QCOMPARE(api.channelFreeCount, 1);
+    QCOMPARE(ofKind(results, SftpResult::Kind::ListedFailed).size(), 1);
+
+    // 下一个请求完整重建通道并成功。
+    api.channelRequestSftpResults = {};
+    channel.enqueue(makeRequest(2, SftpOp::List, QStringLiteral("/tmp")));
+    results.clear();
+    results = pump(channel);
+    QCOMPARE(api.sftpNewChannelCount, 1);
+    QCOMPARE(api.channelRequestSftpCount, 3);
+    QCOMPARE(ofKind(results, SftpResult::Kind::Listed).size(), 1);
+    QCOMPARE(newSessionCount(api), 1);
 }
 
 void TestSftpChannel::listsDirectoryAndResolvesRealPath()
@@ -217,7 +289,7 @@ void TestSftpChannel::recursiveCopyUsesExecWithoutNewSshSession()
     QVERIFY(ops.first().ok);
     QCOMPARE(ops.first().op, QStringLiteral("copy"));
     QCOMPARE(newSessionCount(api), 1);
-    QCOMPARE(api.sftpNewCount, 1);
+    QCOMPARE(api.sftpNewChannelCount, 1);
     QVERIFY(api.execCommands.size() >= 1);
     QVERIFY(QString::fromUtf8(api.execCommands.first())
                 .contains(QStringLiteral("cp -a")));
@@ -355,6 +427,35 @@ void TestSftpChannel::downloadWritesTempFileThenRenames()
     QCOMPARE(out.readAll(), QByteArray(80, 'D'));
 }
 
+void TestSftpChannel::downloadWaitFailureMidTransferCompletesExactlyOnce()
+{
+    // 真机 192.168.11.150 上踩到的崩溃：传输中某个 AIO 等待失败时
+    // failActive 会清空 m_aio 并返回 Result::Idle；循环只拦 Error/Again，
+    // Idle 落穿后继续用悬空引用并对空列表 removeFirst（Qt 断言崩溃，
+    // Release 下是未定义行为）。必须恰好终止一次且不碰已释放状态。
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString dest = directory.filePath(QStringLiteral("down.bin"));
+    FakeLibsshApi api;
+    api.remoteContents[QStringLiteral("/down.bin")] = QByteArray(40 * 1024, 'D');
+    api.aioWaitReadResults = {16, SSH_ERROR};
+    SftpChannel channel(api, api.newSession());
+    SftpRequest request = makeRequest(60, SftpOp::Download);
+    request.remotePath = QStringLiteral("/down.bin");
+    request.localPath = dest;
+
+    channel.enqueue(request);
+    const QList<SftpResult> results = pump(channel);
+
+    const QList<SftpResult> finished =
+        ofKind(results, SftpResult::Kind::TransferFinished);
+    QCOMPARE(finished.size(), 1);
+    QVERIFY(!finished.first().ok);
+    // 进度结果允许存在，但失败后不允许再有终止结果。
+    QCOMPARE(ofKind(results, SftpResult::Kind::Progress).size() <= 1, true);
+    QVERIFY(!QFile::exists(dest));
+}
+
 void TestSftpChannel::partialAioAndSshAgainResumeOnNextTick()
 {
     QTemporaryDir directory;
@@ -424,14 +525,14 @@ void TestSftpChannel::sftpFailureFreesAndRebuildsOnceOnNextRequest()
     channel.enqueue(makeRequest(40, SftpOp::List, QStringLiteral("/ok")));
     const QList<SftpResult> first = pump(channel);
     QCOMPARE(ofKind(first, SftpResult::Kind::ListedFailed).size(), 1);
-    QCOMPARE(api.sftpNewCount, 1);
+    QCOMPARE(api.sftpNewChannelCount, 1);
     QCOMPARE(api.sftpInitCount, 1);
     QCOMPARE(api.sftpFreeCount, 1);
 
     channel.enqueue(makeRequest(41, SftpOp::List, QStringLiteral("/ok")));
     const QList<SftpResult> second = pump(channel);
     QCOMPARE(ofKind(second, SftpResult::Kind::Listed).size(), 1);
-    QCOMPARE(api.sftpNewCount, 2);
+    QCOMPARE(api.sftpNewChannelCount, 2);
     QCOMPARE(api.sftpInitCount, 2);
     QCOMPARE(newSessionCount(api), 1);
 }
@@ -494,7 +595,7 @@ void TestSftpChannel::workerEmitsCancelledWhenNotReady()
     QCOMPARE(exec.requestId, SshRequestId(91));
     QCOMPARE(exec.op, QStringLiteral("exec"));
     QCOMPARE(exec.arg, QStringLiteral("true"));
-    QCOMPARE(api.sftpNewCount, 0);
+    QCOMPARE(api.sftpNewChannelCount, 0);
     QCOMPARE(newSessionCount(api), 0);
 }
 

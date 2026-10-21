@@ -14,6 +14,7 @@
 class LibsshApi : public KnownHostKeyValidator
 {
 public:
+    LibsshApi();
     virtual ~LibsshApi() = default;
 
     bool validateKnownHostKey(
@@ -83,7 +84,9 @@ public:
     virtual int requestExec(ssh_channel channel, const QByteArray &command);
     virtual int channelGetExitStatus(ssh_channel channel);
 
-    virtual sftp_session sftpNew(ssh_session session);
+    virtual int channelRequestSftp(ssh_channel channel);
+    virtual sftp_session sftpNewChannel(ssh_session session,
+                                        ssh_channel channel);
     virtual void sftpFree(sftp_session sftp);
     virtual int sftpInit(sftp_session sftp);
     virtual int sftpGetError(sftp_session sftp) const;
