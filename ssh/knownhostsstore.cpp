@@ -116,10 +116,9 @@ bool hostPatternsMatch(const QString &patternsField,
                        const QString &expectedPattern)
 {
     bool hasPositiveMatch = false;
-    const QString negatedPattern = QLatin1Char('!') + expectedPattern;
     const QStringList patterns = patternsField.split(QLatin1Char(','));
     for (const QString &pattern : patterns) {
-        if (pattern == negatedPattern) {
+        if (!pattern.isEmpty() && pattern.startsWith(QLatin1Char('!'))) {
             return false;
         }
         if (pattern == expectedPattern) {

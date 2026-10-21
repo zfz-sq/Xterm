@@ -286,6 +286,8 @@ void TestKnownHosts::rejectsNegatedHostPatterns()
         "target.test:22 " + fingerprint + "\n";
     const QList<QByteArray> patterns = {
         QByteArrayLiteral("target.test,!target.test"),
+        QByteArrayLiteral("target.test,!*.test"),
+        QByteArrayLiteral("target.test,!other.test"),
         QByteArrayLiteral("!target.test"),
     };
 
