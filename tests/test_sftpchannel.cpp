@@ -97,6 +97,7 @@ private slots:
     void mkdirCreateDeleteRenameAndChmod();
     void recursiveCopyUsesExecWithoutNewSshSession();
     void fileCopyUsesAio();
+    void copyRetriesSourceCloseOnAgain();
     void execCommandReturnsOutputAndStatus();
     void uploadUsesAioAndReportsProgress();
     void downloadWritesTempFileThenRenames();
@@ -242,6 +243,30 @@ void TestSftpChannel::fileCopyUsesAio()
     QVERIFY(api.aioWaitReadCount > 0);
     QVERIFY(api.aioBeginWriteCount > 0);
     QVERIFY(api.aioWaitWriteCount > 0);
+}
+
+void TestSftpChannel::copyRetriesSourceCloseOnAgain()
+{
+    FakeLibsshApi api;
+    api.remoteContents[QStringLiteral("/s.bin")] = QByteArray(40, 'K');
+    api.closeFileResults = {SSH_OK, SSH_AGAIN};
+    SftpChannel channel(api, api.newSession());
+    SftpRequest request = makeRequest(23, SftpOp::Copy, QStringLiteral("/s.bin"));
+    request.dest = QStringLiteral("/d.bin");
+    request.isDir = false;
+
+    channel.enqueue(request);
+    QList<SftpResult> mid;
+    QCOMPARE(channel.advance(&mid), SftpChannel::Result::Again);
+    QCOMPARE(ofKind(mid, SftpResult::Kind::OpFinished).size(), 0);
+
+    const QList<SftpResult> ops =
+        ofKind(pump(channel), SftpResult::Kind::OpFinished);
+    QCOMPARE(ops.size(), 1);
+    QVERIFY(ops.first().ok);
+    QCOMPARE(api.sftpCloseFileCount, 3);
+    QCOMPARE(api.remoteContents.value(QStringLiteral("/d.bin")),
+             QByteArray(40, 'K'));
 }
 
 void TestSftpChannel::execCommandReturnsOutputAndStatus()

@@ -586,19 +586,26 @@ SftpChannel::Result SftpChannel::advanceCopy(QList<SftpResult> *results)
         }
     }
     if (m_phase == Phase::CopyClose) {
-        int rc = m_api.sftpCloseFile(m_destFile);
-        if (rc == SSH_AGAIN) {
-            return Result::Again;
+        if (m_destFile != nullptr) {
+            const int rc = m_api.sftpCloseFile(m_destFile);
+            if (rc == SSH_AGAIN) {
+                return Result::Again;
+            }
+            m_destFile = nullptr;
+            if (rc != SSH_OK) {
+                m_api.sftpUnlink(m_sftp, m_active.dest.toUtf8());
+                return failActive(results, QStringLiteral("关闭目标文件失败"));
+            }
         }
-        m_destFile = nullptr;
-        if (rc != SSH_OK) {
-            m_api.sftpUnlink(m_sftp, m_active.dest.toUtf8());
-            return failActive(results, QStringLiteral("关闭目标文件失败"));
-        }
-        rc = m_api.sftpCloseFile(m_file);
-        m_file = nullptr;
-        if (rc != SSH_OK && rc != SSH_AGAIN) {
-            return failActive(results, QStringLiteral("关闭源文件失败"));
+        if (m_file != nullptr) {
+            const int rc = m_api.sftpCloseFile(m_file);
+            if (rc == SSH_AGAIN) {
+                return Result::Again;
+            }
+            m_file = nullptr;
+            if (rc != SSH_OK) {
+                return failActive(results, QStringLiteral("关闭源文件失败"));
+            }
         }
         completeOp(results, QStringLiteral("copy"), m_active.path, true);
         return m_queue.isEmpty() ? Result::Idle : Result::Progress;

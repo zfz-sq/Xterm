@@ -489,8 +489,13 @@ public:
 
     int sftpCloseFile(sftp_file file) override
     {
+        ++sftpCloseFileCount;
+        const int scripted = take(closeFileResults, SSH_OK);
+        if (scripted == SSH_AGAIN) {
+            return SSH_AGAIN;
+        }
         files.remove(file);
-        return SSH_OK;
+        return scripted;
     }
 
     sftp_attributes sftpFstat(sftp_file file) override
@@ -668,8 +673,10 @@ public:
     int sftpNewCount = 0;
     int sftpInitCount = 0;
     int sftpFreeCount = 0;
+    int sftpCloseFileCount = 0;
     int sftpError = 0;
     QList<int> sftpInitResults;
+    QList<int> closeFileResults;
     QList<sftp_dir> opendirResults;
     QHash<QString, QVector<SftpEntry>> directoryEntries;
     QHash<QString, QString> realPaths;
