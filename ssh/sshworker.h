@@ -58,12 +58,20 @@ private:
         Closing
     };
 
+    static constexpr int ReadyPollDelayMs = 5;
+    static constexpr int MinAgainBackoffMs = 5;
+    static constexpr int MaxAgainBackoffMs = 50;
+
+    bool isOwnerThread() const;
     void assertOwnerThread() const;
     void schedule(int delayMs = 0);
+    void scheduleAgain();
+    void resetBackoff();
     void handleConnectionFinished(quint64 generation,
                                   const SshError &error);
     void failAndClose(const SshError &error);
-    void closeCurrent(bool notify);
+    void requestClose(bool notify);
+    void forceCloseCurrent(bool notify);
 
     LibsshApi &m_api;
     KnownHostsStore &m_knownHosts;
@@ -73,6 +81,8 @@ private:
     quint64 m_generation = 0;
     int m_initialCols = 80;
     int m_initialRows = 24;
+    int m_againBackoffMs = MinAgainBackoffMs;
     State m_state = State::Idle;
     bool m_closeNotified = false;
+    bool m_notifyOnClose = false;
 };

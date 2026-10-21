@@ -110,7 +110,7 @@ public:
     int connect(ssh_session) override
     {
         calls.append(QStringLiteral("connect"));
-        return take(connectResults, SSH_OK);
+        return take(connectResults, connectFallback);
     }
 
     enum ssh_known_hosts_e knownHostState(ssh_session) override
@@ -216,7 +216,7 @@ public:
     int openChannelSession(ssh_channel) override
     {
         calls.append(QStringLiteral("openChannelSession"));
-        return take(openChannelResults, SSH_OK);
+        return take(openChannelResults, openChannelFallback);
     }
 
     int requestPtySize(ssh_channel, const QByteArray &term, int cols,
@@ -259,6 +259,12 @@ public:
     int readChannelNonblocking(ssh_channel, char *data, quint32 size,
                                bool stderrStream) override
     {
+        ++readCallCount;
+        QList<int> &script =
+            stderrStream ? stderrReadResults : stdoutReadResults;
+        if (!script.isEmpty()) {
+            return take(script, SSH_AGAIN);
+        }
         if (readEvents.isEmpty()
             || readEvents.first().stderrStream != stderrStream) {
             return SSH_AGAIN;
@@ -283,14 +289,16 @@ public:
 
     int sendChannelEof(ssh_channel) override
     {
+        calls.append(QStringLiteral("sendChannelEof"));
         ++channelEofCount;
-        return SSH_OK;
+        return take(sendEofResults, SSH_OK);
     }
 
     int closeChannel(ssh_channel) override
     {
+        calls.append(QStringLiteral("closeChannel"));
         ++channelCloseCount;
-        return SSH_OK;
+        return take(closeChannelResults, SSH_OK);
     }
 
     int sendKeepalive(ssh_session) override
@@ -328,6 +336,8 @@ public:
     QString effectiveHostValue;
     quint16 effectivePortValue = 22;
     QList<int> connectResults;
+    int connectFallback = SSH_OK;
+    int openChannelFallback = SSH_OK;
     enum ssh_known_hosts_e knownState = SSH_KNOWN_HOSTS_OK;
     int updateKnownHostsResult = SSH_OK;
     int updateKnownHostsCount = 0;
@@ -354,7 +364,12 @@ public:
     QList<int> shellResults;
     QList<int> writeResults;
     QList<int> resizeResults;
+    QList<int> stdoutReadResults;
+    QList<int> stderrReadResults;
+    QList<int> sendEofResults;
+    QList<int> closeChannelResults;
     QList<ReadEvent> readEvents;
+    int readCallCount = 0;
     QByteArray ptyTerm;
     int ptyCols = 0;
     int ptyRows = 0;

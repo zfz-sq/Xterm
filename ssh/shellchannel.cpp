@@ -1,5 +1,6 @@
 #include "shellchannel.h"
 
+#include <QThread>
 #include <QtGlobal>
 
 #include <limits>
@@ -7,6 +8,7 @@
 ShellChannel::ShellChannel(LibsshApi &api, ssh_session session, int cols,
                            int rows)
     : m_api(api),
+      m_ownerThread(QThread::currentThread()),
       m_session(session),
       m_cols(qMax(1, cols)),
       m_rows(qMax(1, rows))
@@ -16,17 +18,30 @@ ShellChannel::ShellChannel(LibsshApi &api, ssh_session session, int cols,
 
 ShellChannel::~ShellChannel()
 {
-    close();
+    if (onOwnerThread()) {
+        releaseChannel();
+    }
 }
 
 ShellChannel::Result ShellChannel::advance(QList<QByteArray> *output,
                                            QString *error)
 {
+    if (!onOwnerThread()) {
+        if (error != nullptr) {
+            *error = QStringLiteral(
+                "Shell channel called from non-owner thread");
+        }
+        return Result::Error;
+    }
     if (m_closed || m_channel == nullptr) {
         if (!m_closed) {
             return fail(error, QStringLiteral("allocate shell channel"));
         }
         return Result::Closed;
+    }
+    if (m_step == Step::ClosingSendEof
+        || m_step == Step::ClosingChannel) {
+        return advanceClosing(error);
     }
     if (m_step != Step::Ready) {
         return advanceOpening(error);
@@ -36,6 +51,9 @@ ShellChannel::Result ShellChannel::advance(QList<QByteArray> *output,
 
 bool ShellChannel::queueInput(const QByteArray &data)
 {
+    if (!onOwnerThread()) {
+        return false;
+    }
     if (data.isEmpty()) {
         return true;
     }
@@ -53,6 +71,9 @@ bool ShellChannel::queueInput(const QByteArray &data)
 
 void ShellChannel::resize(int cols, int rows)
 {
+    if (!onOwnerThread()) {
+        return;
+    }
     m_pendingCols = qMax(1, cols);
     m_pendingRows = qMax(1, rows);
     m_resizePending = true;
@@ -60,25 +81,29 @@ void ShellChannel::resize(int cols, int rows)
 
 void ShellChannel::close()
 {
-    if (m_closed) {
+    if (!onOwnerThread() || m_closed
+        || m_step == Step::ClosingSendEof
+        || m_step == Step::ClosingChannel) {
         return;
     }
-    m_closed = true;
-    m_step = Step::Closed;
     if (m_channel == nullptr) {
+        m_closed = true;
+        m_step = Step::Closed;
         return;
     }
-    m_api.sendChannelEof(m_channel);
-    m_api.closeChannel(m_channel);
-    m_api.freeChannel(m_channel);
-    m_channel = nullptr;
-    m_pendingInput.clear();
-    m_writeOffset = 0;
+    m_step = Step::ClosingSendEof;
 }
 
 bool ShellChannel::isReady() const
 {
-    return m_step == Step::Ready && !m_closed;
+    return onOwnerThread() && m_step == Step::Ready && !m_closed;
+}
+
+bool ShellChannel::isClosing() const
+{
+    return onOwnerThread()
+        && (m_step == Step::ClosingSendEof
+            || m_step == Step::ClosingChannel);
 }
 
 ShellChannel::Result ShellChannel::advanceOpening(QString *error)
@@ -105,6 +130,9 @@ ShellChannel::Result ShellChannel::advanceOpening(QString *error)
     case Step::RequestShell:
         result = m_api.requestShell(m_channel);
         break;
+    case Step::ClosingSendEof:
+    case Step::ClosingChannel:
+        return advanceClosing(error);
     case Step::Ready:
         return Result::Ready;
     case Step::Closed:
@@ -135,6 +163,8 @@ ShellChannel::Result ShellChannel::advanceOpening(QString *error)
         m_step = Step::Ready;
         return Result::Ready;
     case Step::Ready:
+    case Step::ClosingSendEof:
+    case Step::ClosingChannel:
     case Step::Closed:
         break;
     }
@@ -144,69 +174,146 @@ ShellChannel::Result ShellChannel::advanceOpening(QString *error)
 ShellChannel::Result
 ShellChannel::advanceReady(QList<QByteArray> *output, QString *error)
 {
-    for (int operation = 0; operation < IoBudgetPerTick; ++operation) {
-        if (m_api.channelIsEof(m_channel)) {
-            return Result::Closed;
-        }
+    if (m_api.channelIsEof(m_channel)) {
+        close();
+        return advanceClosing(error);
+    }
 
-        if (m_resizePending) {
-            const int result = m_api.changePtySize(
-                m_channel, m_pendingCols, m_pendingRows);
-            if (result == SSH_AGAIN) {
-                return Result::Again;
+    bool progressed = false;
+    bool sawAgain = false;
+    for (int i = 0; i < KindCount; ++i) {
+        const int kind = (m_ioCursor + i) % KindCount;
+        Result result = Result::Again;
+        switch (kind) {
+        case Resize:
+            if (!m_resizePending) {
+                continue;
             }
-            if (result != SSH_OK) {
-                return fail(error, QStringLiteral("resize remote PTY"));
+            result = serviceResize(error);
+            break;
+        case Write:
+            if (m_writeOffset >= m_pendingInput.size()) {
+                continue;
             }
-            m_cols = m_pendingCols;
-            m_rows = m_pendingRows;
-            m_resizePending = false;
-            continue;
+            result = serviceWrite(error);
+            break;
+        case Stdout:
+            result = serviceRead(output, error, false);
+            break;
+        case Stderr:
+            result = serviceRead(output, error, true);
+            break;
+        case KindCount:
+            break;
         }
-
-        if (m_writeOffset < m_pendingInput.size()) {
-            const qsizetype remaining =
-                m_pendingInput.size() - m_writeOffset;
-            const int result = m_api.writeChannel(
-                m_channel, m_pendingInput.constData() + m_writeOffset,
-                quint32(qMin<quint64>(
-                    quint64(remaining),
-                    std::numeric_limits<quint32>::max())));
-            if (result == SSH_AGAIN) {
-                return Result::Again;
-            }
-            if (result < 0) {
-                return fail(error, QStringLiteral("write remote shell"));
-            }
-            if (result == 0) {
-                return Result::Again;
-            }
-            m_writeOffset += result;
-            if (m_writeOffset == m_pendingInput.size()) {
-                m_pendingInput.clear();
-                m_writeOffset = 0;
-            }
-            continue;
+        if (result == Result::Error || result == Result::Closed) {
+            return result;
         }
+        if (result == Result::Progress) {
+            progressed = true;
+        } else if (result == Result::Again) {
+            sawAgain = true;
+        }
+    }
+    m_ioCursor = (m_ioCursor + 1) % KindCount;
+    return progressed ? Result::Progress
+                      : (sawAgain ? Result::Again : Result::Progress);
+}
 
-        QByteArray bytes(ReadBufferSize, Qt::Uninitialized);
-        const bool stderrStream = m_readStderrNext;
-        m_readStderrNext = !m_readStderrNext;
-        const int result = m_api.readChannelNonblocking(
-            m_channel, bytes.data(), quint32(bytes.size()), stderrStream);
+ShellChannel::Result ShellChannel::serviceResize(QString *error)
+{
+    const int result = m_api.changePtySize(
+        m_channel, m_pendingCols, m_pendingRows);
+    if (result == SSH_AGAIN) {
+        return Result::Again;
+    }
+    if (result != SSH_OK) {
+        return fail(error, QStringLiteral("resize remote PTY"));
+    }
+    m_cols = m_pendingCols;
+    m_rows = m_pendingRows;
+    m_resizePending = false;
+    return Result::Progress;
+}
+
+ShellChannel::Result ShellChannel::serviceWrite(QString *error)
+{
+    const qsizetype remaining = m_pendingInput.size() - m_writeOffset;
+    const int result = m_api.writeChannel(
+        m_channel, m_pendingInput.constData() + m_writeOffset,
+        quint32(qMin<quint64>(
+            quint64(remaining),
+            std::numeric_limits<quint32>::max())));
+    if (result == SSH_AGAIN || result == 0) {
+        return Result::Again;
+    }
+    if (result < 0) {
+        return fail(error, QStringLiteral("write remote shell"));
+    }
+    m_writeOffset += result;
+    if (m_writeOffset == m_pendingInput.size()) {
+        m_pendingInput.clear();
+        m_writeOffset = 0;
+    }
+    return Result::Progress;
+}
+
+ShellChannel::Result
+ShellChannel::serviceRead(QList<QByteArray> *output, QString *error,
+                          bool stderrStream)
+{
+    QByteArray bytes(ReadBufferSize, Qt::Uninitialized);
+    const int result = m_api.readChannelNonblocking(
+        m_channel, bytes.data(), quint32(bytes.size()), stderrStream);
+    if (result == SSH_EOF) {
+        close();
+        return advanceClosing(error);
+    }
+    if (result == SSH_AGAIN) {
+        return Result::Again;
+    }
+    if (result < 0) {
+        return fail(error, QStringLiteral("read remote shell"));
+    }
+    if (result == 0) {
+        return Result::Again;
+    }
+    bytes.resize(result);
+    output->append(bytes);
+    return Result::Progress;
+}
+
+ShellChannel::Result ShellChannel::advanceClosing(QString *error)
+{
+    if (m_channel == nullptr) {
+        m_closed = true;
+        m_step = Step::Closed;
+        return Result::Closed;
+    }
+
+    if (m_step == Step::ClosingSendEof) {
+        const int result = m_api.sendChannelEof(m_channel);
         if (result == SSH_AGAIN) {
             return Result::Again;
         }
-        if (result < 0) {
-            return fail(error, QStringLiteral("read remote shell"));
+        if (result != SSH_OK && result != SSH_EOF) {
+            releaseChannel();
+            return fail(error, QStringLiteral("send remote shell EOF"));
         }
-        if (result == 0) {
-            continue;
-        }
-        bytes.resize(result);
-        output->append(bytes);
+        m_step = Step::ClosingChannel;
+        return Result::Progress;
     }
-    return Result::Progress;
+
+    const int result = m_api.closeChannel(m_channel);
+    if (result == SSH_AGAIN) {
+        return Result::Again;
+    }
+    if (result != SSH_OK && result != SSH_EOF) {
+        releaseChannel();
+        return fail(error, QStringLiteral("close remote shell"));
+    }
+    releaseChannel();
+    return Result::Closed;
 }
 
 ShellChannel::Result ShellChannel::fail(QString *error,
@@ -219,4 +326,21 @@ ShellChannel::Result ShellChannel::fail(QString *error,
             : QStringLiteral("%1: %2").arg(operation, detail);
     }
     return Result::Error;
+}
+
+void ShellChannel::releaseChannel()
+{
+    if (m_channel != nullptr) {
+        m_api.freeChannel(m_channel);
+        m_channel = nullptr;
+    }
+    m_pendingInput.clear();
+    m_writeOffset = 0;
+    m_closed = true;
+    m_step = Step::Closed;
+}
+
+bool ShellChannel::onOwnerThread() const
+{
+    return QThread::currentThread() == m_ownerThread;
 }

@@ -18,21 +18,35 @@ SshWorker::SshWorker(LibsshApi &api, KnownHostsStore &knownHosts,
 
 SshWorker::~SshWorker()
 {
-    assertOwnerThread();
-    closeCurrent(false);
+    if (!isOwnerThread()) {
+        qFatal("SshWorker must be destroyed on its owner thread");
+    }
+    m_timer->stop();
+    forceCloseCurrent(false);
 }
 
 void SshWorker::connectToHost(quint64 generation, const SshTarget &target,
                               int cols, int rows)
 {
+    if (!isOwnerThread()) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, generation, target, cols, rows] {
+                connectToHost(generation, target, cols, rows);
+            },
+            Qt::QueuedConnection);
+        return;
+    }
     assertOwnerThread();
     m_timer->stop();
-    closeCurrent(true);
+    forceCloseCurrent(true);
 
     m_generation = generation;
     m_initialCols = qMax(1, cols);
     m_initialRows = qMax(1, rows);
     m_closeNotified = false;
+    m_notifyOnClose = false;
+    resetBackoff();
     m_state = State::Connecting;
     m_connection =
         std::make_unique<LibsshConnection>(m_api, m_knownHosts);
@@ -70,11 +84,18 @@ void SshWorker::connectToHost(quint64 generation, const SshTarget &target,
             });
 
     m_connection->begin(target);
-    schedule();
+    scheduleAgain();
 }
 
 void SshWorker::writeShell(quint64 generation, const QByteArray &data)
 {
+    if (!isOwnerThread()) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, generation, data] { writeShell(generation, data); },
+            Qt::QueuedConnection);
+        return;
+    }
     assertOwnerThread();
     if (generation != m_generation || m_shell == nullptr
         || (m_state != State::OpeningShell
@@ -93,6 +114,15 @@ void SshWorker::writeShell(quint64 generation, const QByteArray &data)
 
 void SshWorker::resizeShell(quint64 generation, int cols, int rows)
 {
+    if (!isOwnerThread()) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, generation, cols, rows] {
+                resizeShell(generation, cols, rows);
+            },
+            Qt::QueuedConnection);
+        return;
+    }
     assertOwnerThread();
     if (generation != m_generation || m_shell == nullptr
         || (m_state != State::OpeningShell
@@ -105,16 +135,32 @@ void SshWorker::resizeShell(quint64 generation, int cols, int rows)
 
 void SshWorker::closeConnection(quint64 generation)
 {
+    if (!isOwnerThread()) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, generation] { closeConnection(generation); },
+            Qt::QueuedConnection);
+        return;
+    }
     assertOwnerThread();
     if (generation != m_generation || m_state == State::Idle) {
         return;
     }
-    closeCurrent(true);
+    requestClose(true);
 }
 
 void SshWorker::submitHostKeyDecision(quint64 generation,
                                       SshRequestId requestId, bool accept)
 {
+    if (!isOwnerThread()) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, generation, requestId, accept] {
+                submitHostKeyDecision(generation, requestId, accept);
+            },
+            Qt::QueuedConnection);
+        return;
+    }
     assertOwnerThread();
     if (generation != m_generation || m_state != State::Connecting
         || m_connection == nullptr) {
@@ -128,6 +174,15 @@ void SshWorker::submitAuthAnswers(quint64 generation,
                                   SshRequestId requestId,
                                   const QStringList &answers)
 {
+    if (!isOwnerThread()) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, generation, requestId, answers] {
+                submitAuthAnswers(generation, requestId, answers);
+            },
+            Qt::QueuedConnection);
+        return;
+    }
     assertOwnerThread();
     if (generation != m_generation || m_state != State::Connecting
         || m_connection == nullptr) {
@@ -145,14 +200,21 @@ void SshWorker::advance()
             m_connection->advance();
         }
         if (m_state == State::Connecting) {
-            schedule();
+            scheduleAgain();
         } else if (m_state == State::OpeningShell) {
+            resetBackoff();
             schedule();
         }
         return;
     }
 
-    if ((m_state != State::OpeningShell && m_state != State::Ready)
+    if (m_state == State::Closing && m_shell == nullptr) {
+        forceCloseCurrent(m_notifyOnClose);
+        return;
+    }
+
+    if ((m_state != State::OpeningShell && m_state != State::Ready
+         && m_state != State::Closing)
         || m_shell == nullptr) {
         return;
     }
@@ -172,18 +234,32 @@ void SshWorker::advance()
             emit phaseChanged(m_generation, SshPhase::Ready);
             emit connected(m_generation);
         }
-        schedule();
+        resetBackoff();
+        schedule(m_state == State::Ready ? ReadyPollDelayMs : 0);
         return;
     case ShellChannel::Result::Progress:
-        schedule();
+        resetBackoff();
+        if (m_state == State::Closing) {
+            schedule();
+            return;
+        }
+        schedule(m_state == State::Ready ? ReadyPollDelayMs : 0);
         return;
     case ShellChannel::Result::Again:
-        schedule(m_state == State::Ready ? 5 : 0);
+        scheduleAgain();
         return;
     case ShellChannel::Result::Closed:
-        closeCurrent(true);
+        if (m_state != State::Closing) {
+            m_state = State::Closing;
+            m_notifyOnClose = true;
+        }
+        forceCloseCurrent(m_notifyOnClose);
         return;
     case ShellChannel::Result::Error:
+        if (m_state == State::Closing) {
+            forceCloseCurrent(m_notifyOnClose);
+            return;
+        }
         failAndClose({SshError::Domain::Shell, m_api.errorCode(
                           m_connection->sessionForWorker()),
                       errorMessage, true});
@@ -191,9 +267,16 @@ void SshWorker::advance()
     }
 }
 
+bool SshWorker::isOwnerThread() const
+{
+    return thread() == QThread::currentThread();
+}
+
 void SshWorker::assertOwnerThread() const
 {
-    Q_ASSERT(thread() == QThread::currentThread());
+    if (!isOwnerThread()) {
+        qFatal("SshWorker called from non-owner thread");
+    }
 }
 
 void SshWorker::schedule(int delayMs)
@@ -201,6 +284,23 @@ void SshWorker::schedule(int delayMs)
     if (!m_timer->isActive()) {
         m_timer->start(delayMs);
     }
+}
+
+void SshWorker::scheduleAgain()
+{
+    const int delay = m_state == State::Ready
+        ? ReadyPollDelayMs
+        : m_againBackoffMs;
+    schedule(delay);
+    if (m_state != State::Ready) {
+        m_againBackoffMs =
+            qMin(m_againBackoffMs * 2, MaxAgainBackoffMs);
+    }
+}
+
+void SshWorker::resetBackoff()
+{
+    m_againBackoffMs = MinAgainBackoffMs;
 }
 
 void SshWorker::handleConnectionFinished(quint64 generation,
@@ -213,7 +313,7 @@ void SshWorker::handleConnectionFinished(quint64 generation,
     }
     if (error.isError()) {
         emit connectionFailed(generation, error);
-        closeCurrent(true);
+        forceCloseCurrent(true);
         return;
     }
 
@@ -221,6 +321,7 @@ void SshWorker::handleConnectionFinished(quint64 generation,
         m_api, m_connection->sessionForWorker(), m_initialCols,
         m_initialRows);
     m_state = State::OpeningShell;
+    resetBackoff();
     schedule();
 }
 
@@ -228,10 +329,30 @@ void SshWorker::failAndClose(const SshError &error)
 {
     assertOwnerThread();
     emit connectionFailed(m_generation, error);
-    closeCurrent(true);
+    forceCloseCurrent(true);
 }
 
-void SshWorker::closeCurrent(bool notify)
+void SshWorker::requestClose(bool notify)
+{
+    assertOwnerThread();
+    if (m_state == State::Idle && m_connection == nullptr
+        && m_shell == nullptr) {
+        return;
+    }
+
+    m_notifyOnClose = m_notifyOnClose || notify;
+    m_state = State::Closing;
+    m_timer->stop();
+    resetBackoff();
+    if (m_shell != nullptr) {
+        m_shell->close();
+        schedule();
+        return;
+    }
+    forceCloseCurrent(m_notifyOnClose);
+}
+
+void SshWorker::forceCloseCurrent(bool notify)
 {
     assertOwnerThread();
     if (m_state == State::Idle && m_connection == nullptr
@@ -240,7 +361,6 @@ void SshWorker::closeCurrent(bool notify)
     }
 
     const quint64 closingGeneration = m_generation;
-    m_state = State::Closing;
     m_timer->stop();
     m_shell.reset();
     if (m_connection != nullptr) {
@@ -249,8 +369,10 @@ void SshWorker::closeCurrent(bool notify)
         m_connection.reset();
     }
     m_state = State::Idle;
+    resetBackoff();
     if (notify && !m_closeNotified) {
         m_closeNotified = true;
         emit connectionClosed(closingGeneration);
     }
+    m_notifyOnClose = false;
 }
