@@ -291,7 +291,7 @@ SftpChannel::Result SftpChannel::advanceSimple(QList<SftpResult> *results)
     if (rc != SSH_OK) {
         return failActive(results, QStringLiteral("SFTP 操作失败"));
     }
-    completeOp(results, opName(m_active.op), arg, true);
+    completeOp(results, sftpOpName(m_active.op), arg, true);
     return m_queue.isEmpty() ? Result::Idle : Result::Progress;
 }
 
@@ -682,7 +682,7 @@ SftpChannel::Result SftpChannel::advanceExec(QList<SftpResult> *results)
         if (!ok && detail.trimmed().isEmpty()) {
             detail = QStringLiteral("退出码 %1").arg(status);
         }
-        completeOp(results, opName(m_active.op),
+        completeOp(results, sftpOpName(m_active.op),
                    m_active.op == SftpOp::Copy ? m_active.path
                                                : m_active.command,
                    ok, detail);
@@ -799,7 +799,7 @@ SftpChannel::Result SftpChannel::failActive(QList<SftpResult> *results,
         break;
     default:
         results->append({SftpResult::Kind::OpFinished, request.requestId,
-                         opName(request.op),
+                         sftpOpName(request.op),
                          request.op == SftpOp::Exec ? request.command
                                                     : request.path,
                          {}, {}, 0, 0, false, error});
@@ -841,25 +841,7 @@ void SftpChannel::completeList(QList<SftpResult> *results, bool ok,
 void SftpChannel::emitCancelled(QList<SftpResult> *results,
                                 const SftpRequest &request)
 {
-    switch (request.op) {
-    case SftpOp::List:
-        results->append({SftpResult::Kind::ListedFailed, request.requestId, {},
-                         {}, request.path, {}, 0, 0, false,
-                         QStringLiteral("已取消")});
-        break;
-    case SftpOp::Upload:
-    case SftpOp::Download:
-        results->append({SftpResult::Kind::TransferFinished, request.requestId,
-                         {}, {}, {}, {}, 0, 0, false, QStringLiteral("已取消")});
-        break;
-    default:
-        results->append({SftpResult::Kind::OpFinished, request.requestId,
-                         opName(request.op),
-                         request.op == SftpOp::Exec ? request.command
-                                                    : request.path,
-                         {}, {}, 0, 0, false, QStringLiteral("已取消")});
-        break;
-    }
+    results->append(sftpCancelledResult(request));
 }
 
 void SftpChannel::abortActive(QList<SftpResult> *results, const QString &error)
@@ -880,7 +862,7 @@ void SftpChannel::abortActive(QList<SftpResult> *results, const QString &error)
         break;
     default:
         results->append({SftpResult::Kind::OpFinished, request.requestId,
-                         opName(request.op),
+                         sftpOpName(request.op),
                          request.op == SftpOp::Exec ? request.command
                                                     : request.path,
                          {}, {}, 0, 0, false, error});
@@ -981,31 +963,4 @@ QString SftpChannel::shellQuote(const QString &text)
     QString escaped = text;
     escaped.replace(QLatin1Char('\''), QLatin1String("'\\''"));
     return QLatin1Char('\'') + escaped + QLatin1Char('\'');
-}
-
-QString SftpChannel::opName(SftpOp op)
-{
-    switch (op) {
-    case SftpOp::RealPath:
-        return QStringLiteral("realpath");
-    case SftpOp::Mkdir:
-        return QStringLiteral("mkdir");
-    case SftpOp::Create:
-        return QStringLiteral("create");
-    case SftpOp::Delete:
-        return QStringLiteral("remove");
-    case SftpOp::Rename:
-        return QStringLiteral("rename");
-    case SftpOp::Copy:
-        return QStringLiteral("copy");
-    case SftpOp::Chmod:
-        return QStringLiteral("chmod");
-    case SftpOp::Exec:
-        return QStringLiteral("exec");
-    case SftpOp::List:
-    case SftpOp::Upload:
-    case SftpOp::Download:
-        break;
-    }
-    return {};
 }

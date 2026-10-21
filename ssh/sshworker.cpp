@@ -224,8 +224,15 @@ void SshWorker::submitSftpRequest(quint64 generation,
         return;
     }
     assertOwnerThread();
-    if (generation != m_generation || m_state != State::Ready
-        || m_connection == nullptr) {
+    if (generation != m_generation) {
+        return;
+    }
+    if (m_state != State::Ready || m_connection == nullptr) {
+        // 不在服务状态也要给调用方恰好一次终止结果，否则界面上
+        // 的等待方永远收不到回音（shell 通道不受影响）。
+        QList<SftpResult> results;
+        results.append(sftpCancelledResult(request));
+        emitSftpResults(results);
         return;
     }
     if (m_sftp == nullptr) {

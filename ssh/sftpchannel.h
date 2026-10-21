@@ -104,7 +104,6 @@ private:
     bool onOwnerThread() const;
     QString apiError(const QString &fallback) const;
     static QString shellQuote(const QString &text);
-    static QString opName(SftpOp op);
 
     LibsshApi &m_api;
     QThread *m_ownerThread = nullptr;

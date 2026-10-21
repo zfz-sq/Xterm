@@ -106,6 +106,7 @@ private slots:
     void sftpFailureFreesAndRebuildsOnceOnNextRequest();
     void connectionLossFailsCurrentOpWithoutSecondSession();
     void successfulListCompletesExactlyOnce();
+    void workerEmitsCancelledWhenNotReady();
     void workerTransferDoesNotStarveShellReadEveryTick();
     void facadeForwardsSftpWithRequestId();
 };
@@ -467,6 +468,34 @@ void TestSftpChannel::successfulListCompletesExactlyOnce()
     QList<SftpResult> extra;
     QCOMPARE(channel.advance(&extra), SftpChannel::Result::Idle);
     QVERIFY(extra.isEmpty());
+}
+
+void TestSftpChannel::workerEmitsCancelledWhenNotReady()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    FakeLibsshApi api;
+    KnownHostsStore store(api, directory.path());
+    SshWorker worker(api, store);
+    QSignalSpy results(&worker, &SshWorker::sftpResult);
+
+    worker.submitSftpRequest(0, makeRequest(90, SftpOp::List, QStringLiteral("/x")));
+    SftpRequest execRequest = makeRequest(91, SftpOp::Exec);
+    execRequest.command = QStringLiteral("true");
+    worker.submitSftpRequest(0, execRequest);
+
+    QCOMPARE(results.count(), 2);
+    const SftpResult list = results.at(0).at(1).value<SftpResult>();
+    QCOMPARE(list.kind, SftpResult::Kind::ListedFailed);
+    QCOMPARE(list.requestId, SshRequestId(90));
+    QCOMPARE(list.error, QStringLiteral("已取消"));
+    const SftpResult exec = results.at(1).at(1).value<SftpResult>();
+    QCOMPARE(exec.kind, SftpResult::Kind::OpFinished);
+    QCOMPARE(exec.requestId, SshRequestId(91));
+    QCOMPARE(exec.op, QStringLiteral("exec"));
+    QCOMPARE(exec.arg, QStringLiteral("true"));
+    QCOMPARE(api.sftpNewCount, 0);
+    QCOMPARE(newSessionCount(api), 0);
 }
 
 void TestSftpChannel::workerTransferDoesNotStarveShellReadEveryTick()
