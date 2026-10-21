@@ -101,6 +101,71 @@ int main()
         expect(oldest && oldest->cells[0].cp == U'0', "oldest history line");
         expect(at(screen, 0, 0) == U'3' && at(screen, 2, 0) == U'5', "screen after scroll");
         expect(at(screen, 3, 0) == U' ', "bottom blank after final lf");
+        screen.feed("\x1b[2J");
+        expect(screen.historySize() == 0, "ed2 clears history");
+        expect(at(screen, 0, 0) == U' ', "ed2 clears screen");
+    }
+    {
+        TermScreen screen;
+        screen.resize(20, 4);
+        for (int i = 0; i < 6; ++i)
+            screen.feed(QByteArray(1, char('0' + i)) + "\r\n");
+        screen.feed("\x1b[H\x1b[J");
+        expect(screen.historySize() == 0, "home+ed0 clears history");
+        expect(at(screen, 0, 0) == U' ', "home+ed0 clears screen");
+    }
+    {
+        TermScreen screen;
+        screen.resize(20, 4);
+        for (int i = 0; i < 6; ++i)
+            screen.feed(QByteArray(1, char('0' + i)) + "\r\n");
+        screen.feed("\x1b[?1049h\x1b[2J\x1b[?1049l");
+        expect(screen.historySize() == 3, "alt ed2 keeps history");
+        expect(at(screen, 0, 0) == U'3', "primary screen restored");
+    }
+    {
+        TermScreen screen;
+        screen.resize(20, 4);
+        for (int i = 0; i < 6; ++i)
+            screen.feed(QByteArray(1, char('0' + i)) + "\r\n");
+        screen.feed(QByteArray("\x1b[2J") + "old\r\n" + "older\r\n" + "# ");
+        expect(screen.historySize() == 0, "ed2 drops lines replayed in the same chunk");
+        expect(at(screen, screen.cursorRow(), 0) == U'#', "prompt stays after clear");
+    }
+    {
+        TermScreen screen;
+        screen.resize(20, 4);
+        for (int i = 0; i < 6; ++i)
+            screen.feed(QByteArray(1, char('0' + i)) + "\r\n");
+        screen.feed("\x1b[2J");
+        screen.feed(QByteArray("old\r\n") + "older\r\n");
+        expect(screen.historySize() == 0, "ed2 drops the following replay chunk");
+    }
+    {
+        TermScreen screen;
+        screen.resize(20, 4);
+        for (int i = 0; i < 6; ++i)
+            screen.feed(QByteArray(1, char('0' + i)) + "\r\n");
+        screen.feed(QByteArray(4, '\n'));
+        expect(screen.historySize() == 0, "newline clear drops history");
+    }
+    {
+        TermScreen screen;
+        screen.resize(20, 4);
+        QByteArray big;
+        for (int i = 0; i < 10; ++i)
+            big += QByteArray(1, char('A' + i)) + "\r\n";
+        screen.feed(big);
+        expect(screen.historySize() > 0, "command output keeps history");
+    }
+    {
+        TermScreen screen;
+        screen.resize(20, 4);
+        for (int i = 0; i < 6; ++i)
+            screen.feed(QByteArray(1, char('0' + i)) + "\r\n");
+        screen.feed("\x1b[3J");
+        expect(screen.historySize() == 0, "ed3 clears history");
+        expect(at(screen, 0, 0) == U' ', "ed3 clears screen");
     }
     {
         TermScreen screen;

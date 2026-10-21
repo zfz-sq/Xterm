@@ -17,7 +17,7 @@ if(WIN32)
     endif()
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets SerialPort)
+find_package(Qt6 REQUIRED COMPONENTS Widgets SerialPort Network)
 
 qt_standard_project_setup()
 
@@ -32,6 +32,10 @@ set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(CRYPTO_BACKEND "WinCNG" CACHE STRING "" FORCE)
 set(ENABLE_ZLIB_COMPRESSION OFF CACHE BOOL "" FORCE)
+# WinCNG 默认只有有限域 DH。OpenSSH 9/10 默认只接受 curve25519 和
+# ecdh-sha2-nistp*，对不上就会报 Unable to exchange encryption keys。
+# ECDSA/ECDH 走 bcrypt，需要 Windows 10 及以上。
+set(ENABLE_ECDSA_WINCNG ON CACHE BOOL "" FORCE)
 add_subdirectory(third_party/libssh2 EXCLUDE_FROM_ALL)
 
 qt_add_executable(Xterm
@@ -43,6 +47,8 @@ qt_add_executable(Xterm
     mainwindow.cpp
     mainwindow.h
     mainwindow.ui
+    agentbridge.cpp
+    agentbridge.h
     serialsession.cpp
     serialsession.h
     transport.h
@@ -63,6 +69,8 @@ qt_add_executable(Xterm
     screenview.h
     sftpclient.cpp
     sftpclient.h
+    hoststats.cpp
+    hoststats.h
     filebrowserdialog.cpp
     filebrowserdialog.h
     transferdialog.cpp
@@ -75,9 +83,14 @@ target_link_libraries(Xterm
     PRIVATE
         Qt6::Widgets
         Qt6::SerialPort
+        Qt6::Network
         libssh2
         ws2_32
         bcrypt
+        shell32
+        ole32
+        shlwapi
+        uuid
 )
 
 install(TARGETS Xterm

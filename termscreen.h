@@ -70,6 +70,8 @@ public:
     bool syncing() const { return m_syncing; }
     bool takeBell();
     void setTitleHandler(std::function<void(const QString &)> title);
+    // 清掉可见内容和滚动历史，光标回到左上角。返回 -1，视图据此跳到空白屏底。
+    int clearDisplay();
     int cursorRow() const { return m_row; }
     int cursorCol() const;
 
@@ -112,6 +114,7 @@ private:
     void insertChars(int n);
     void deleteChars(int n);
     void eraseCells(int row, int c0, int c1);
+    void clearScrollback();
     void writeAt(int row, int col, char32_t cp, int width);
     void clearWide(int row, int col);
     void repairWide(int row);
@@ -154,6 +157,12 @@ private:
     bool m_bell = false;
     bool m_dark = true;
     bool m_histCleared = false;
+    bool m_clearRequested = false; // 本块里出现过清屏（ED），收尾时再丢一次历史
+    int m_clearFollowups = 0;      // 清屏后紧接着的几块若把旧屏滚进历史，也丢掉
+    int m_feedScrolled = 0;        // 本块推进滚动历史的行数
+    int m_feedPrintable = 0;       // 本块写入的非空格字符数
+    int m_rowsErased = 0;          // 本块被整行擦掉的屏幕行数
+    quint8 m_rowErased[200] = {};
     bool m_used = false; // 还没写过内容时，改尺寸不要把空行推进滚动历史
     int m_touchMin = -1;       // 本次 feed 触到的屏幕行范围（收尾补色用），-1 表示无
     int m_touchMax = -1;

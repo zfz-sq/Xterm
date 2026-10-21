@@ -400,6 +400,19 @@
         </spacer>
        </item>
        <item>
+        <widget class="QToolButton" name="mcpBtn">
+         <property name="text">
+          <string>MCP</string>
+         </property>
+         <property name="toolTip">
+          <string>显示 MCP 提示词</string>
+         </property>
+         <property name="toolButtonStyle">
+          <enum>Qt::ToolButtonTextOnly</enum>
+         </property>
+        </widget>
+       </item>
+       <item>
         <widget class="QToolButton" name="modeBtn">
          <property name="toolTip">
           <string>切换串口 / SSH 终端</string>

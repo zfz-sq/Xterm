@@ -23,6 +23,18 @@
         <file>icons/light/serial.png</file>
         <file>icons/light/folder.png</file>
         <file>icons/light/pencil.png</file>
+        <file>icons/light/upload.png</file>
+        <file>icons/light/download.png</file>
+        <file>icons/light/open.png</file>
+        <file>icons/light/edit.png</file>
+        <file>icons/light/rename.png</file>
+        <file>icons/light/props.png</file>
+        <file>icons/light/select_all.png</file>
+        <file>icons/light/invert.png</file>
+        <file>icons/light/move.png</file>
+        <file>icons/light/command.png</file>
+        <file>icons/light/new.png</file>
+        <file>icons/light/name.png</file>
         <file>icons/dark/refresh.png</file>
         <file>icons/dark/connect.png</file>
         <file>icons/dark/disconnect.png</file>
@@ -45,6 +57,18 @@
         <file>icons/dark/serial.png</file>
         <file>icons/dark/folder.png</file>
         <file>icons/dark/pencil.png</file>
+        <file>icons/dark/upload.png</file>
+        <file>icons/dark/download.png</file>
+        <file>icons/dark/open.png</file>
+        <file>icons/dark/edit.png</file>
+        <file>icons/dark/rename.png</file>
+        <file>icons/dark/props.png</file>
+        <file>icons/dark/select_all.png</file>
+        <file>icons/dark/invert.png</file>
+        <file>icons/dark/move.png</file>
+        <file>icons/dark/command.png</file>
+        <file>icons/dark/new.png</file>
+        <file>icons/dark/name.png</file>
         <file>style-dark.qss</file>
         <file>style-light.qss</file>
     </qresource>

@@ -3,17 +3,24 @@
 #include <QAbstractItemModel>
 #include <QAbstractItemView>
 #include <QApplication>
+#include <QClipboard>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QCoreApplication>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
+#include <QFileInfo>
 #include <QEvent>
 #include <QFile>
 #include <QFileDialog>
 #include <QFontMetrics>
+#include <QGuiApplication>
 #include <QIcon>
 #include <QIntValidator>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPlainTextEdit>
 #include <QListView>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -22,9 +29,13 @@
 #include <QStyle>
 #include <QTimer>
 #include <QToolButton>
+#include <QtMath>
+#include <QVBoxLayout>
 
+#include "agentbridge.h"
 #include "commandbar.h"
 #include "filebrowserdialog.h"
+#include "hoststats.h"
 #include "icons.h"
 #include "screenview.h"
 #include "serialsession.h"
@@ -98,6 +109,25 @@ MainWindow::MainWindow(QWidget *parent)
     m_serial = new SerialSession(this);
     m_ssh = new SshSession(this);
     m_store = new CommandStore(this);
+    m_hostStats = new HostStats;
+    m_hostStats->setHostKeyPrompter([this](const QString &host, const QString &stored, const QString &current) {
+        return confirmHostKeyChange(host, stored, current);
+    });
+    connect(m_hostStats, &HostStats::statsUpdated, this,
+            [this](bool cpuOk, int cpuPercent, bool memOk, bool memPercentOk, int memPercent,
+                   qint64 usedKiB, qint64 totalKiB) {
+                if (m_ssh->state() != Transport::Connected)
+                    return;
+                m_hostCpuOk = cpuOk;
+                m_hostCpu = cpuPercent;
+                m_hostMemOk = memOk;
+                m_hostMemPercentOk = memPercentOk;
+                m_hostMemPercent = memPercent;
+                m_hostUsedKiB = usedKiB;
+                m_hostTotalKiB = totalKiB;
+                if (m_mode == Mode::Ssh)
+                    updatePersistentStatus();
+            });
 
     // 配置落盘防抖：浏览下拉/连续输入每一步都会触发保存信号，同步写盘
     // （含 Defender 扫描）会把 UI 拍出一顿一顿的卡顿；内存立即更新，
@@ -132,10 +162,22 @@ MainWindow::MainWindow(QWidget *parent)
     refreshPorts();
     reloadProfiles(m_store->lastProfile());
     setMode(m_store->mode() == QStringLiteral("ssh") ? Mode::Ssh : Mode::Serial, false);
+
+    m_agent = new AgentBridge(this);
+    m_agent->start({
+        [this] { return agentStatus(); },
+        [this](int maxLines) { return agentRecentText(maxLines); },
+        [this](const QString &text) { return agentSendLine(text); },
+    });
 }
 
 MainWindow::~MainWindow()
 {
+    if (m_hostStats) {
+        QObject::disconnect(m_hostStats, nullptr, this, nullptr);
+        delete m_hostStats;
+        m_hostStats = nullptr;
+    }
     delete ui;
 }
 
@@ -252,6 +294,7 @@ void MainWindow::setupTerminal()
     // 切模式只是换一页显示，另一侧继续收发，内容不丢、连接不断。
     // 两页都是格子屏幕模型：串口设备的 top/vim 和 SSH 一样能还原。
     m_serialView = new ScreenView(this);
+    m_serialView->setLocalEcho(true);
     ui->serialTerminalPageLayout->addWidget(m_serialView);
 
     m_sshView = new ScreenView(this);
@@ -343,6 +386,7 @@ void MainWindow::connectSignals()
         m_store->save();
         applyTheme();
     });
+    connect(ui->mcpBtn, &QToolButton::clicked, this, &MainWindow::onMcpClicked);
     connect(ui->modeBtn, &QToolButton::clicked, this, [this] {
         setMode(m_mode == Mode::Serial ? Mode::Ssh : Mode::Serial);
     });
@@ -395,12 +439,16 @@ void MainWindow::connectSignals()
     // ---- SSH 链路 ----
     connect(m_ssh, &SshSession::opened, this, [this] {
         m_sshView->appendSystemMessage(tr("── 已连接 %1 ──").arg(m_ssh->summary()));
+        clearHostStats();
+        m_hostStats->start(m_ssh->target());
         updateConnectionUi();
         updatePersistentStatus();
         if (m_mode == Mode::Ssh)
             m_sshView->setFocus();
     });
     connect(m_ssh, &SshSession::closed, this, [this] {
+        m_hostStats->stop();
+        clearHostStats();
         updateConnectionUi();
         updatePersistentStatus();
     });
@@ -761,7 +809,8 @@ void MainWindow::updatePersistentStatus()
     const char *tint = nullptr; // 状态色：亮/暗主题下都读得清的中性高饱和色
     switch (t->state()) {
     case Transport::Connected:
-        text = tr("● %1 · 已连接").arg(connectionSummary());
+        text = (m_mode == Mode::Ssh) ? sshStatsStatusText()
+                                     : tr("● %1 · 已连接").arg(connectionSummary());
         tint = "#3EA854";
         break;
     case Transport::Connecting:
@@ -794,6 +843,192 @@ void MainWindow::updatePersistentStatus()
         : QString());
 }
 
+QString MainWindow::sshStatsStatusText() const
+{
+    const SshTarget t = m_ssh->target();
+    QString id;
+    if (!t.user.isEmpty())
+        id = t.user + QLatin1Char('@');
+    id += t.host;
+    id += QStringLiteral(":%1").arg(t.port > 0 ? t.port : 22);
+
+    const QString cpu = m_hostCpuOk ? QString::number(m_hostCpu) : QStringLiteral("--");
+    const QString memPct = m_hostMemPercentOk ? QString::number(m_hostMemPercent)
+                                              : QStringLiteral("--");
+    QString mem = QStringLiteral("--/--");
+    if (m_hostMemOk && m_hostTotalKiB > 0) {
+        if (m_hostTotalKiB >= 1024 * 1024) {
+            const auto gib = [](qint64 kib) {
+                return QString::number(double(kib) / (1024.0 * 1024.0), 'f', 1);
+            };
+            mem = QStringLiteral("%1/%2G").arg(gib(m_hostUsedKiB), gib(m_hostTotalKiB));
+        } else {
+            const auto mib = [](qint64 kib) {
+                return QString::number(qRound(double(kib) / 1024.0));
+            };
+            mem = QStringLiteral("%1/%2M").arg(mib(m_hostUsedKiB), mib(m_hostTotalKiB));
+        }
+    }
+    return id + QStringLiteral("      ·     CPU ") + cpu
+           + QStringLiteral("% · 内存 ") + memPct
+           + QStringLiteral("% · ") + mem;
+}
+
+void MainWindow::clearHostStats()
+{
+    m_hostCpuOk = false;
+    m_hostCpu = 0;
+    m_hostMemOk = false;
+    m_hostMemPercentOk = false;
+    m_hostMemPercent = 0;
+    m_hostUsedKiB = 0;
+    m_hostTotalKiB = 0;
+}
+
+bool MainWindow::confirmHostKeyChange(const QString &host, const QString &stored, const QString &current)
+{
+    const auto show = [](const QString &hex) {
+        QString b64 = QString::fromLatin1(QByteArray::fromHex(hex.toLatin1()).toBase64());
+        while (b64.endsWith(QLatin1Char('=')))
+            b64.chop(1);
+        return QStringLiteral("SHA256:") + b64;
+    };
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("主机密钥已变化"));
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *intro = new QLabel(tr("主机 %1 的密钥指纹和上次记下的不一致。CPU 和内存采样需要这条连接。").arg(host), &dialog);
+    intro->setWordWrap(true);
+    layout->addWidget(intro);
+
+    auto addLine = [&](const QString &title, const QString &hex) {
+        layout->addWidget(new QLabel(title, &dialog));
+        auto *value = new QLabel(show(hex), &dialog);
+        value->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        layout->addWidget(value);
+    };
+    addLine(tr("上次记录"), stored);
+    addLine(tr("这次连接"), current);
+
+    auto *hint = new QLabel(tr("确认这台机器重装过或换过密钥后，再更新记录并继续。如果这台机器不该换密钥，请取消。"), &dialog);
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, &dialog);
+    buttons->addButton(tr("更新并连接"), QDialogButtonBox::AcceptRole);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    dialog.setMinimumWidth(460);
+    return dialog.exec() == QDialog::Accepted;
+}
+
+// ---------------------------------------------------------------- 本机 MCP
+
+QJsonObject MainWindow::agentStatus() const
+{
+    Transport *t = activeTransport();
+    const ScreenView *view = (m_mode == Mode::Serial) ? m_serialView : m_sshView;
+    QString state = QStringLiteral("disconnected");
+    switch (t->state()) {
+    case Transport::Connected:
+        state = QStringLiteral("connected");
+        break;
+    case Transport::Connecting:
+        state = QStringLiteral("connecting");
+        break;
+    case Transport::Disconnecting:
+        state = QStringLiteral("disconnecting");
+        break;
+    case Transport::Disconnected:
+        break;
+    }
+    QJsonObject obj;
+    obj.insert(QStringLiteral("mode"),
+               m_mode == Mode::Serial ? QStringLiteral("serial") : QStringLiteral("ssh"));
+    obj.insert(QStringLiteral("connected"), t->state() == Transport::Connected);
+    obj.insert(QStringLiteral("state"), state);
+    obj.insert(QStringLiteral("summary"), connectionSummary());
+    obj.insert(QStringLiteral("alt_screen"), view && view->usingAltScreen());
+    return obj;
+}
+
+QString MainWindow::agentRecentText(int maxLines) const
+{
+    const ScreenView *view = (m_mode == Mode::Serial) ? m_serialView : m_sshView;
+    return view ? view->recentText(maxLines) : QString();
+}
+
+QString MainWindow::agentSendLine(const QString &text)
+{
+    if (text.trimmed() == QLatin1String("clear -a")) {
+        ScreenView *view = (m_mode == Mode::Serial) ? m_serialView : m_sshView;
+        if (view) {
+            view->rememberSentLine(text.trimmed());
+            view->clearLocalDisplay();
+        }
+        return QString();
+    }
+    Transport *t = activeTransport();
+    if (!t || t->state() != Transport::Connected)
+        return tr("未连接");
+    QByteArray bytes = text.toUtf8();
+    while (bytes.endsWith('\n') || bytes.endsWith('\r'))
+        bytes.chop(1);
+    bytes.append(m_mode == Mode::Serial ? '\n' : '\r');
+    ScreenView *view = (m_mode == Mode::Serial) ? m_serialView : m_sshView;
+    if (view) {
+        view->rememberSentLine(QString::fromUtf8(bytes.chopped(1)));
+        view->showOutbound(bytes);
+    }
+    return t->send(bytes);
+}
+
+void MainWindow::onMcpClicked()
+{
+    QString script = QDir(QCoreApplication::applicationDirPath())
+                         .absoluteFilePath(QStringLiteral("../../tools/xterm_mcp/server.py"));
+    script = QDir::cleanPath(script);
+    if (!QFileInfo::exists(script))
+        script = QStringLiteral("tools/xterm_mcp/server.py");
+    script = QDir::fromNativeSeparators(script);
+
+    const QString config = QStringLiteral(
+                               "{\n"
+                               "  \"mcpServers\": {\n"
+                               "    \"xterm\": {\n"
+                               "      \"command\": \"python\",\n"
+                               "      \"args\": [\"%1\"]\n"
+                               "    }\n"
+                               "  }\n"
+                               "}")
+                               .arg(script);
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("MCP 提示词"));
+    dlg.resize(680, 520);
+    auto *lay = new QVBoxLayout(&dlg);
+    auto *hint = new QLabel(tr("把提示词交给已经接上 Xterm MCP 的 AI。服务程序只连接本机正在运行的这个窗口。"), &dlg);
+    hint->setWordWrap(true);
+    lay->addWidget(hint);
+    auto *edit = new QPlainTextEdit(AgentBridge::instructions(), &dlg);
+    edit->setReadOnly(true);
+    lay->addWidget(edit, 1);
+    lay->addWidget(new QLabel(tr("MCP 配置："), &dlg));
+    auto *cfg = new QPlainTextEdit(config, &dlg);
+    cfg->setReadOnly(true);
+    cfg->setFixedHeight(140);
+    lay->addWidget(cfg);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+    auto *copy = buttons->addButton(tr("复制提示词"), QDialogButtonBox::ActionRole);
+    connect(copy, &QPushButton::clicked, &dlg, [edit] {
+        QGuiApplication::clipboard()->setText(edit->toPlainText());
+    });
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    lay->addWidget(buttons);
+    dlg.exec();
+}
+
 // ---------------------------------------------------------------- 发送
 
 void MainWindow::sendRaw(const QByteArray &bytes)
@@ -817,6 +1052,17 @@ void MainWindow::sendRaw(const QByteArray &bytes)
 
 void MainWindow::sendLine(const QString &line)
 {
+    if (line.trimmed() == QLatin1String("clear -a")) {
+        ScreenView *view = (m_mode == Mode::Serial) ? m_serialView : m_sshView;
+        if (view) {
+            view->rememberSentLine(line.trimmed());
+            view->clearLocalDisplay();
+        }
+        return;
+    }
+    ScreenView *view = (m_mode == Mode::Serial) ? m_serialView : m_sshView;
+    if (view)
+        view->rememberSentLine(line);
     sendRaw(line.toUtf8() + QByteArrayLiteral("\n"));
 }
 

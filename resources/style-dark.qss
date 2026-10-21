@@ -217,19 +217,72 @@ QToolButton:disabled {
     color: #5A5A5A;
 }
 
+QToolButton#paneTool {
+    background-color: #2C2C30;
+    border: 1px solid #38383E;
+    border-radius: 4px;
+    padding: 2px 6px;
+}
+QToolButton#paneTool:hover {
+    background-color: #35353A;
+    border-color: #4A4A52;
+}
+QToolButton#paneTool:pressed {
+    background-color: #2A2A2E;
+}
+QToolButton#paneTool:disabled {
+    color: #6A6A6A;
+    background-color: #262629;
+    border-color: #303034;
+}
+
+QFrame#pathBar {
+    background-color: #2C2C30;
+    border: 1px solid #38383E;
+    border-radius: 4px;
+}
+QFrame#pathBar QScrollArea, QFrame#pathBar QWidget#pathCrumbs {
+    background: transparent;
+    border: none;
+}
+QFrame#pathBar QLineEdit#pathEdit {
+    border: none;
+    background: transparent;
+    min-height: 0;
+    padding: 0 6px;
+}
+QToolButton#pathCrumb, QToolButton#pathEditBtn {
+    background: transparent;
+    border: none;
+    border-radius: 3px;
+    padding: 1px 4px;
+    color: #D6D6D6;
+}
+QToolButton#pathCrumb {
+    padding: 1px 0px;
+}
+QToolButton#pathCrumb:hover, QToolButton#pathEditBtn:hover {
+    background-color: #3A3A40;
+}
+QLabel#pathSep {
+    color: #6E6E74;
+    padding: 0 1px;
+    background: transparent;
+}
+
 /* 模式切换：当前在哪个终端的主入口，带文字，做出实体按钮感 */
-QToolButton#modeBtn {
+QToolButton#modeBtn, QToolButton#mcpBtn {
     background-color: #2C2C30;
     border: 1px solid #38383E;
     border-radius: 4px;
     padding: 4px 8px;
     font-weight: 600;
 }
-QToolButton#modeBtn:hover {
+QToolButton#modeBtn:hover, QToolButton#mcpBtn:hover {
     background-color: #35353A;
     border-color: #4A4A52;
 }
-QToolButton#modeBtn:pressed {
+QToolButton#modeBtn:pressed, QToolButton#mcpBtn:pressed {
     background-color: #2A2A2E;
 }
 

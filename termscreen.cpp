@@ -4,6 +4,7 @@
 #include <QVector>
 #include <QtGlobal>
 
+#include <cstring>
 #include <utility>
 
 namespace {
@@ -290,6 +291,11 @@ TermLine TermScreen::blankLine() const
 int TermScreen::feed(const QByteArray &data)
 {
     m_histCleared = false;
+    m_clearRequested = false;
+    m_feedScrolled = 0;
+    m_feedPrintable = 0;
+    m_rowsErased = 0;
+    std::memset(m_rowErased, 0, sizeof(m_rowErased));
     for (int i = 0; i < data.size(); ++i)
         feedByte(static_cast<unsigned char>(data.at(i)));
     return finishFeed();
@@ -357,6 +363,27 @@ int TermScreen::resize(int cols, int rows)
 int TermScreen::finishFeed()
 {
     paintTouchedLines();
+    // 清屏经常和「把旧屏推进历史」写在同一块里，而且 ConPTY 会把 ESC[2J 改写成
+    // 整屏换行。中途清掉的历史会被后面的换行填回来，所以等本块解析完再丢。
+    if (!m_alt) {
+        int textRows = 0;
+        for (int r = 0; r < m_rows; ++r) {
+            if (lineHasText(r))
+                ++textRows;
+        }
+        const bool mostlyBlank = textRows <= 2;
+        // 整屏换行只有在几乎没写字时才算 clear。普通命令输出换行很多，但不能把历史清掉。
+        const bool scrolledClear = m_feedScrolled >= m_rows && m_feedPrintable <= m_cols * 2;
+        const bool erasedClear = m_rowsErased >= m_rows && mostlyBlank;
+        if (m_clearRequested || (mostlyBlank && scrolledClear) || erasedClear) {
+            clearScrollback();
+            m_clearFollowups = 2;
+        } else if (m_clearFollowups > 0) {
+            if (mostlyBlank)
+                clearScrollback();
+            --m_clearFollowups;
+        }
+    }
     if (m_histCleared) {
         m_histCleared = false;
         return -1;
@@ -850,23 +877,28 @@ void TermScreen::handleCsi(char finalByte)
         return;
     }
     case 'J': {
+        if (m_priv)
+            return; // DECSED，选择性擦除，不是 clear
         const int col = qMin(m_col, m_cols - 1);
         const int mode = arg(0, 0);
         if (mode == 1) {
             for (int r = 0; r < m_row; ++r)
                 eraseCells(r, 0, m_cols);
             eraseCells(m_row, 0, col + 1);
-        } else if (mode == 2) {
+        } else if (mode == 2 || mode == 3) {
+            // ESC[2J 擦可见区，ESC[3J 在 xterm 里只擦历史。设备上的 clear
+            // 经常只到其中一条，窗口里的字和滚动历史一起丢掉。
             for (int r = 0; r < m_rows; ++r)
                 m_lines[size_t(r)] = blankLine();
-        } else if (mode == 3) {
-            m_hist.clear();
-            m_histCleared = true;
-            m_unscannedHist = 0;
+            if (!m_alt)
+                m_clearRequested = true;
         } else {
             eraseCells(m_row, col, m_cols);
             for (int r = m_row + 1; r < m_rows; ++r)
                 eraseCells(r, 0, m_cols);
+            // BusyBox clear 是 ESC[H ESC[J：光标在左上角再擦到结尾。
+            if (!m_alt && m_row == 0 && col == 0)
+                m_clearRequested = true;
         }
         m_wrapPending = false;
         return;
@@ -1038,6 +1070,8 @@ void TermScreen::putCp(char32_t cp)
     int width = glyphCols(cp);
     if (width <= 0)
         return;
+    if (cp != U' ' && cp != U'\u00A0')
+        ++m_feedPrintable;
 
     if (m_wrapPending || m_col >= m_cols) {
         if (m_autowrap) {
@@ -1135,8 +1169,10 @@ void TermScreen::scrollUp(int n)
         for (int r = m_scrollTop; r < m_scrollBottom; ++r)
             m_lines[size_t(r)] = std::move(m_lines[size_t(r + 1)]);
         m_lines[size_t(m_scrollBottom)] = blankLine();
-        if (toHist)
+        if (toHist) {
             m_hist.push_back(std::move(leaving));
+            ++m_feedScrolled;
+        }
     }
 }
 
@@ -1217,6 +1253,32 @@ void TermScreen::deleteChars(int n)
     m_wrapPending = false;
 }
 
+int TermScreen::clearDisplay()
+{
+    m_hist.clear();
+    m_histCleared = true;
+    m_unscannedHist = 0;
+    m_primary.clear();
+    m_alt = false;
+    m_lines.assign(size_t(qMax(1, m_rows)), blankLine());
+    m_row = 0;
+    m_col = 0;
+    m_wrapPending = false;
+    m_scrollTop = 0;
+    m_scrollBottom = m_rows - 1;
+    touchAll();
+    return -1;
+}
+
+void TermScreen::clearScrollback()
+{
+    if (m_alt)
+        return;
+    m_hist.clear();
+    m_histCleared = true;
+    m_unscannedHist = 0;
+}
+
 void TermScreen::eraseCells(int row, int c0, int c1)
 {
     if (row < 0 || row >= m_rows)
@@ -1227,6 +1289,12 @@ void TermScreen::eraseCells(int row, int c0, int c1)
         cells.resize(size_t(m_cols), blankCell());
     c0 = qBound(0, c0, m_cols);
     c1 = qBound(0, c1, m_cols);
+    if (c0 == 0 && c1 >= m_cols && row < int(sizeof(m_rowErased))) {
+        if (!m_rowErased[row]) {
+            m_rowErased[row] = 1;
+            ++m_rowsErased;
+        }
+    }
     if (c0 > 0 && (cells[size_t(c0)].flags & FlagWideCont))
         cells[size_t(c0 - 1)] = erasedCell();
     for (int c = c0; c < c1; ++c)

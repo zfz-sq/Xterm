@@ -66,8 +66,8 @@ TransferDialog::TransferDialog(SftpClient *client, QWidget *parent)
     connect(m_client, &SftpClient::transferFinished, this, &TransferDialog::onFinished);
 }
 
-void TransferDialog::enqueue(bool upload, const QString &localPath,
-                             const QString &remotePath, qint64 size)
+int TransferDialog::enqueue(bool upload, const QString &localPath,
+                            const QString &remotePath, qint64 size, bool reveal)
 {
     Job job;
     job.id = m_nextId++;
@@ -82,10 +82,13 @@ void TransferDialog::enqueue(bool upload, const QString &localPath,
     for (int c = 0; c < 5; ++c)
         m_table->setItem(row, c, new QTableWidgetItem);
     updateRow(row);
-    show();
-    raise();
-    activateWindow();
+    if (reveal) {
+        show();
+        raise();
+        activateWindow();
+    }
     pump();
+    return job.id;
 }
 
 void TransferDialog::pump()

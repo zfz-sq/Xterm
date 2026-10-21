@@ -1,10 +1,14 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+#include <QJsonObject>
 #include <QMainWindow>
 
 #include "commandstore.h"
 #include "completionengine.h"
+
+class AgentBridge;
+class HostStats;
 
 class CommandBar;
 class QLabel;
@@ -62,6 +66,11 @@ private:
     void onConnectionParamChanged();
     void browsePrivateKey();
     void onFilesClicked();          // 打开 SFTP 文件管理器（SSH 会话的独立第二连接）
+    void onMcpClicked();            // 弹出 MCP 提示词
+
+    QJsonObject agentStatus() const;
+    QString agentRecentText(int maxLines) const;
+    QString agentSendLine(const QString &text);
 
     void sendRaw(const QByteArray &bytes);       // 唯一发送汇聚点 → 当前链路
     void sendLine(const QString &line);          // 预设命令按钮用
@@ -74,6 +83,9 @@ private:
     void updateConnectionUi();
     void updatePersistentStatus();
     QString connectionSummary() const;
+    QString sshStatsStatusText() const;
+    void clearHostStats();
+    bool confirmHostKeyChange(const QString &host, const QString &stored, const QString &current);
     void applyTheme();
 
     Ui::MainWindow *ui;
@@ -87,6 +99,15 @@ private:
     QLabel *m_statusLabel = nullptr;
     QTimer *m_saveTimer = nullptr; // 配置保存防抖（单发，见 scheduleProfileSave）
     class FileBrowserDialog *m_fileBrowser = nullptr; // SFTP 双栏窗口，存在期间独立于终端会话
+    AgentBridge *m_agent = nullptr;
+    HostStats *m_hostStats = nullptr;
+    bool m_hostCpuOk = false;
+    int m_hostCpu = 0;
+    bool m_hostMemOk = false;
+    bool m_hostMemPercentOk = false;
+    int m_hostMemPercent = 0;
+    qint64 m_hostUsedKiB = 0;
+    qint64 m_hostTotalKiB = 0;
 
     Mode m_mode = Mode::Serial;
     QString m_currentProfile;

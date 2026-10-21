@@ -240,6 +240,125 @@ def draw_toolbar(theme, c):
     d.polygon([(160, 36), (188, 64), (148, 104), (120, 76)], fill=neutral)
     save(img, theme, "pencil.png")
 
+    # ---- 文件浏览器工具栏（上传/下载/编辑/权限/选择） ----
+    def tray(draw, color):
+        rpoly(draw, [(58, 156), (58, 208), (198, 208), (198, 156)], 18, color, close=False)
+
+    def arrow_head_up(draw, cx, tip_y, color):
+        draw.polygon([(cx, tip_y), (cx - 30, tip_y + 42), (cx + 30, tip_y + 42)], fill=color)
+
+    def arrow_head_down(draw, cx, tip_y, color):
+        draw.polygon([(cx, tip_y), (cx - 30, tip_y - 42), (cx + 30, tip_y - 42)], fill=color)
+
+    # upload: 箭头向上送出托盘
+    img, d = canvas()
+    tray(d, neutral)
+    rline(d, (128, 148), (128, 78), 20, neutral)
+    arrow_head_up(d, 128, 36, neutral)
+    save(img, theme, "upload.png")
+
+    # download: 箭头向下落入托盘
+    img, d = canvas()
+    tray(d, neutral)
+    rline(d, (128, 36), (128, 108), 20, neutral)
+    arrow_head_down(d, 128, 168, neutral)
+    save(img, theme, "download.png")
+
+    # open: 方框 + 向外的箭头
+    img, d = canvas()
+    d.rounded_rectangle([36, 84, 156, 212], radius=16, outline=neutral, width=16)
+    rline(d, (124, 128), (196, 56), 18, neutral)
+    d.polygon([(214, 40), (154, 52), (176, 96)], fill=neutral)
+    rline(d, (168, 48), (214, 48), 16, neutral)
+    rline(d, (206, 40), (206, 86), 16, neutral)
+    save(img, theme, "open.png")
+
+    # edit: 文档 + 铅笔
+    img, d = canvas()
+    d.rounded_rectangle([40, 32, 156, 224], radius=14, outline=neutral, width=16)
+    rline(d, (68, 80), (128, 80), 12, neutral)
+    rline(d, (68, 116), (128, 116), 12, neutral)
+    d.polygon([(148, 132), (214, 198), (190, 222), (124, 156)], fill=neutral)
+    d.polygon([(196, 100), (226, 130), (196, 160), (166, 130)], fill=neutral)
+    save(img, theme, "edit.png")
+
+    # rename: 文本行 + 插入光标
+    img, d = canvas()
+    rline(d, (44, 72), (176, 72), 16, neutral)
+    rline(d, (44, 128), (132, 128), 16, neutral)
+    rline(d, (44, 184), (196, 184), 16, neutral)
+    rline(d, (156, 100), (156, 156), 14, accent)
+    save(img, theme, "rename.png")
+
+    # props: 信息卡（属性 / chmod）
+    img, d = canvas()
+    d.rounded_rectangle([36, 28, 168, 228], radius=18, outline=neutral, width=16)
+    rline(d, (64, 76), (140, 76), 14, neutral)
+    rline(d, (64, 114), (140, 114), 14, neutral)
+    rline(d, (64, 152), (112, 152), 14, neutral)
+    d.ellipse([148, 140, 224, 216], outline=neutral, width=16)
+    d.ellipse([178, 158, 194, 174], fill=neutral)
+    rline(d, (186, 180), (186, 198), 12, neutral)
+    save(img, theme, "props.png")
+
+    def checkbox(draw, x, y, size, color, checked):
+        draw.rounded_rectangle([x, y, x + size, y + size], radius=10, outline=color, width=14)
+        if checked:
+            rpoly(draw,
+                  [(x + size * 0.22, y + size * 0.52),
+                   (x + size * 0.42, y + size * 0.74),
+                   (x + size * 0.80, y + size * 0.28)],
+                  12, color, close=False)
+
+    # select all: 四格全选
+    img, d = canvas()
+    box = 78
+    gap = 20
+    origin = 40
+    for row in range(2):
+        for col in range(2):
+            checkbox(d, origin + col * (box + gap), origin + row * (box + gap), box, neutral, True)
+    save(img, theme, "select_all.png")
+
+    # invert: 对角两格选中
+    img, d = canvas()
+    for row in range(2):
+        for col in range(2):
+            checkbox(d, origin + col * (box + gap), origin + row * (box + gap),
+                     box, neutral, row == col)
+    save(img, theme, "invert.png")
+
+    # move: 箭头指向文件夹
+    img, d = canvas()
+    rline(d, (28, 140), (92, 140), 18, neutral)
+    d.polygon([(118, 140), (78, 114), (78, 166)], fill=neutral)
+    d.polygon([(124, 78), (168, 78), (184, 102), (228, 102)], fill=neutral)
+    d.polygon([(124, 102), (124, 186), (228, 186), (228, 102)], fill=neutral)
+    save(img, theme, "move.png")
+
+    # command: 提示符 >_
+    img, d = canvas()
+    rpoly(d, [(44, 68), (108, 128), (44, 188)], 20, neutral, close=False)
+    rline(d, (128, 180), (214, 180), 20, neutral)
+    save(img, theme, "command.png")
+
+    # new: 文件夹 + 加号
+    img, d = canvas()
+    d.polygon([(32, 72), (96, 72), (116, 96), (176, 96)], fill=neutral)
+    d.polygon([(32, 96), (32, 196), (176, 196), (176, 96)], fill=neutral)
+    d.ellipse([138, 118, 224, 204], fill=accent)
+    rline(d, (158, 161), (204, 161), 14, on_green)
+    rline(d, (181, 138), (181, 184), 14, on_green)
+    save(img, theme, "new.png")
+
+    # name: 文件名（高亮的一行字）
+    img, d = canvas()
+    d.rounded_rectangle([40, 36, 216, 220], radius=16, outline=neutral, width=16)
+    rline(d, (68, 84), (188, 84), 14, neutral)
+    d.rounded_rectangle([64, 112, 192, 148], radius=8, fill=accent)
+    rline(d, (68, 180), (156, 180), 14, neutral)
+    save(img, theme, "name.png")
+
 
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)

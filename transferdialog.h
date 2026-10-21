@@ -25,8 +25,10 @@ public:
     explicit TransferDialog(SftpClient *client, QWidget *parent = nullptr);
 
     // 加入队列并尝试启动。upload=true 表示本地→远程。
-    void enqueue(bool upload, const QString &localPath, const QString &remotePath,
-                 qint64 size);
+    // reveal=false 时只入队，不把队列窗口抢到前台（编辑回传用）。
+    // 返回任务 id，调用方据此认出自己的传输。
+    int enqueue(bool upload, const QString &localPath, const QString &remotePath,
+                qint64 size, bool reveal = true);
 
 private slots:
     void onProgress(int id, qint64 done, qint64 total);

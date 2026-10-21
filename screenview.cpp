@@ -237,6 +237,13 @@ void ScreenView::afterOutput(int dropped)
         if (m_follow)
             m_origin = m_screen.historySize();
     }
+    if (m_editOn && !m_editRedraw) {
+        if (dropped < 0) {
+            m_editAbs = m_screen.historySize() + m_screen.cursorRow();
+            m_editCol = m_screen.cursorCol();
+        }
+        redrawLocalEdit();
+    }
     if (m_screen.takeBell()) {
         m_bell = true;
         m_bellTimer->start(140);
@@ -302,6 +309,16 @@ void ScreenView::pasteClipboard()
         text.truncate(1000000);
     text.replace(QLatin1String("\r\n"), QLatin1String("\n"));
     text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+    if (m_localEcho && !m_screen.altScreen()) {
+        const QStringList parts = text.split(QLatin1Char('\n'));
+        for (int i = 0; i < parts.size(); ++i) {
+            if (!parts.at(i).isEmpty())
+                localInsert(parts.at(i));
+            if (i + 1 < parts.size())
+                commitLocalLine();
+        }
+        return;
+    }
     text.replace(QLatin1Char('\n'), QLatin1Char('\r'));
     QByteArray bytes = text.toUtf8();
     bytes.replace('\0', "");
@@ -309,7 +326,7 @@ void ScreenView::pasteClipboard()
         return;
     if (m_screen.bracketedPaste())
         bytes = QByteArray("\x1b[200~") + bytes + QByteArray("\x1b[201~");
-    emit sendData(bytes);
+    emitInput(bytes);
 }
 
 void ScreenView::copySelection()
@@ -577,6 +594,298 @@ void ScreenView::showEvent(QShowEvent *)
     updateGrid();
 }
 
+void ScreenView::echoLocal(const QByteArray &bytes)
+{
+    if (!m_localEcho || bytes.isEmpty() || bytes.contains('\x1b'))
+        return;
+    QByteArray shown;
+    shown.reserve(bytes.size() * 3);
+    for (unsigned char b : bytes) {
+        if (b == '\n' || b == '\r')
+            shown += "\r\n";
+        else if (b == 0x7f || b == '\b')
+            shown += "\b \b";
+        else if (b == '\t' || b >= 0x20)
+            shown += char(b);
+    }
+    if (!shown.isEmpty())
+        receiveData(shown);
+}
+
+void ScreenView::showOutbound(const QByteArray &bytes)
+{
+    echoLocal(bytes);
+}
+
+void ScreenView::emitInput(const QByteArray &bytes)
+{
+    if (bytes.isEmpty())
+        return;
+    emit sendData(bytes);
+    echoLocal(bytes);
+}
+
+bool ScreenView::localLineMode() const
+{
+    return m_localEcho && !m_screen.altScreen();
+}
+
+static int stepCursor(const QString &text, int pos, int dir)
+{
+    if (dir < 0) {
+        if (pos <= 0)
+            return 0;
+        int prev = pos - 1;
+        if (prev > 0 && text.at(prev).isLowSurrogate())
+            --prev;
+        return prev;
+    }
+    if (pos >= text.size())
+        return text.size();
+    int next = pos + 1;
+    if (text.at(pos).isHighSurrogate() && next < text.size())
+        ++next;
+    return next;
+}
+
+static int displayCols(const QString &text)
+{
+    int cols = 0;
+    const QList<uint> cps = text.toUcs4();
+    for (uint cp : cps) {
+        if (cp < 0x20 || (cp >= 0x7F && cp < 0xA0))
+            continue;
+        cols += (cp >= 0x1100) ? 2 : 1;
+    }
+    return cols;
+}
+
+void ScreenView::beginLocalEdit()
+{
+    if (m_editOn)
+        return;
+    m_editOn = true;
+    m_editAbs = m_screen.historySize() + m_screen.cursorRow();
+    m_editCol = m_screen.cursorCol();
+    m_edit.clear();
+    m_editPos = 0;
+}
+
+void ScreenView::redrawLocalEdit()
+{
+    if (!m_editOn || m_editRedraw)
+        return;
+    const int screenRow = m_editAbs - m_screen.historySize();
+    if (screenRow < 0 || screenRow >= m_screen.rows())
+        return;
+    const int prefix = displayCols(m_edit.left(m_editPos));
+    const int cursorCol = qBound(1, m_editCol + prefix + 1, m_screen.cols());
+    QByteArray seq;
+    seq += "\x1b[" + QByteArray::number(screenRow + 1) + ";"
+           + QByteArray::number(m_editCol + 1) + "H";
+    seq += m_edit.toUtf8();
+    seq += "\x1b[K";
+    seq += "\x1b[" + QByteArray::number(screenRow + 1) + ";"
+           + QByteArray::number(cursorCol) + "H";
+    m_editRedraw = true;
+    receiveData(seq);
+    m_editRedraw = false;
+}
+
+void ScreenView::localInsert(const QString &text)
+{
+    if (text.isEmpty())
+        return;
+    beginLocalEdit();
+    m_edit.insert(m_editPos, text);
+    m_editPos += text.size();
+    resetCompletionCycle();
+    redrawLocalEdit();
+}
+
+void ScreenView::rememberSentLine(const QString &line)
+{
+    if (line.isEmpty())
+        return;
+    if (!m_sentHist.isEmpty() && m_sentHist.last() == line)
+        return;
+    m_sentHist.append(line);
+    if (m_sentHist.size() > 200)
+        m_sentHist.removeFirst();
+    m_histBrowse = -1;
+}
+
+void ScreenView::recallSent(int direction)
+{
+    if (m_sentHist.isEmpty())
+        return;
+    beginLocalEdit();
+    if (direction < 0) {
+        if (m_histBrowse < 0) {
+            m_histDraft = m_edit;
+            m_histBrowse = m_sentHist.size() - 1;
+        } else if (m_histBrowse > 0) {
+            --m_histBrowse;
+        }
+        m_edit = m_sentHist.at(m_histBrowse);
+    } else {
+        if (m_histBrowse < 0)
+            return;
+        if (m_histBrowse + 1 >= m_sentHist.size()) {
+            m_histBrowse = -1;
+            m_edit = m_histDraft;
+        } else {
+            ++m_histBrowse;
+            m_edit = m_sentHist.at(m_histBrowse);
+        }
+    }
+    m_editPos = m_edit.size();
+    resetCompletionCycle();
+    redrawLocalEdit();
+}
+
+void ScreenView::clearLocalDisplay()
+{
+    m_editOn = false;
+    m_edit.clear();
+    m_editPos = 0;
+    m_histBrowse = -1;
+    m_histDraft.clear();
+    if (m_pump->isActive())
+        m_pump->stop();
+    m_rx.clear();
+    m_rxUsed = 0;
+    clearSelection();
+    m_hitAbs = -1;
+    afterOutput(m_screen.clearDisplay());
+}
+
+void ScreenView::commitLocalLine()
+{
+    const QString line = m_edit;
+    m_edit.clear();
+    m_editPos = 0;
+    m_editOn = false;
+    resetCompletionCycle();
+    if (line.trimmed() == QLatin1String("clear -a")) {
+        rememberSentLine(line.trimmed());
+        clearLocalDisplay();
+        return;
+    }
+    rememberSentLine(line);
+    const QByteArray payload = line.toUtf8() + '\n';
+    emit sendData(payload);
+    receiveData(QByteArray("\r\n"));
+}
+
+void ScreenView::localTab()
+{
+    if (!m_completion)
+        return;
+    beginLocalEdit();
+    int start = m_editPos;
+    while (start > 0 && !m_edit.at(start - 1).isSpace())
+        --start;
+    if (m_cycle.isEmpty() || start != m_cycleStart) {
+        const QString prefix = m_edit.mid(start, m_editPos - start);
+        m_cycle = m_completion->complete(prefix);
+        m_cycleStart = start;
+        m_cycleOriginal = prefix;
+        m_cycleState = -1;
+        m_cycleEnd = m_editPos;
+        if (m_cycle.isEmpty())
+            return;
+    }
+    int nextState = 0;
+    if (m_cycleState >= 0)
+        nextState = (m_cycleState + 1 >= m_cycle.size()) ? -1 : m_cycleState + 1;
+    const QString target = (nextState < 0) ? m_cycleOriginal : m_cycle.at(nextState);
+    m_edit.replace(start, m_editPos - start, target);
+    m_editPos = start + target.size();
+    m_cycleEnd = m_editPos;
+    m_cycleState = nextState;
+    redrawLocalEdit();
+}
+
+bool ScreenView::handleLocalLineKey(QKeyEvent *event)
+{
+    if (!localLineMode())
+        return false;
+    const int key = event->key();
+    const Qt::KeyboardModifiers mods = event->modifiers();
+    if (mods & (Qt::ControlModifier | Qt::AltModifier))
+        return false;
+
+    switch (key) {
+    case Qt::Key_Return:
+    case Qt::Key_Enter:
+        commitLocalLine();
+        event->accept();
+        return true;
+    case Qt::Key_Backspace:
+        if (m_editOn && m_editPos > 0) {
+            const int prev = stepCursor(m_edit, m_editPos, -1);
+            m_edit.remove(prev, m_editPos - prev);
+            m_editPos = prev;
+            resetCompletionCycle();
+            redrawLocalEdit();
+        }
+        event->accept();
+        return true;
+    case Qt::Key_Delete:
+        if (m_editOn && m_editPos < m_edit.size()) {
+            const int next = stepCursor(m_edit, m_editPos, +1);
+            m_edit.remove(m_editPos, next - m_editPos);
+            resetCompletionCycle();
+            redrawLocalEdit();
+        }
+        event->accept();
+        return true;
+    case Qt::Key_Left:
+        if (m_editOn)
+            m_editPos = stepCursor(m_edit, m_editPos, -1);
+        redrawLocalEdit();
+        event->accept();
+        return true;
+    case Qt::Key_Right:
+        if (m_editOn)
+            m_editPos = stepCursor(m_edit, m_editPos, +1);
+        redrawLocalEdit();
+        event->accept();
+        return true;
+    case Qt::Key_Home:
+        m_editPos = 0;
+        redrawLocalEdit();
+        event->accept();
+        return true;
+    case Qt::Key_End:
+        m_editPos = m_edit.size();
+        redrawLocalEdit();
+        event->accept();
+        return true;
+    case Qt::Key_Up:
+        recallSent(-1);
+        event->accept();
+        return true;
+    case Qt::Key_Down:
+        recallSent(+1);
+        event->accept();
+        return true;
+    case Qt::Key_Tab:
+        localTab();
+        event->accept();
+        return true;
+    default:
+        break;
+    }
+    if (!event->text().isEmpty() && event->text().at(0).unicode() >= 0x20) {
+        localInsert(event->text());
+        event->accept();
+        return true;
+    }
+    return false;
+}
+
 void ScreenView::keyPressEvent(QKeyEvent *event)
 {
     const Qt::KeyboardModifiers mods = event->modifiers();
@@ -642,12 +951,12 @@ void ScreenView::keyPressEvent(QKeyEvent *event)
             return;
         }
         if (key >= Qt::Key_A && key <= Qt::Key_Z) {
-            emit sendData(QByteArray(1, char(1 + key - Qt::Key_A)));
+            emitInput(QByteArray(1, char(1 + key - Qt::Key_A)));
             event->accept();
             return;
         }
         if (key == Qt::Key_Space) {
-            emit sendData(QByteArray(1, '\0'));
+            emitInput(QByteArray(1, '\0'));
             event->accept();
             return;
         }
@@ -658,6 +967,9 @@ void ScreenView::keyPressEvent(QKeyEvent *event)
         event->accept();
         return;
     }
+
+    if (handleLocalLineKey(event))
+        return;
 
     QByteArray seq;
     switch (key) {
@@ -752,7 +1064,7 @@ void ScreenView::keyPressEvent(QKeyEvent *event)
         break;
     }
     if (!seq.isEmpty()) {
-        emit sendData(seq);
+        emitInput(seq);
         event->accept();
         return;
     }
@@ -760,12 +1072,12 @@ void ScreenView::keyPressEvent(QKeyEvent *event)
     if (alt && !ctrl && !event->text().isEmpty()) {
         QByteArray bytes(1, '\x1b');
         bytes += event->text().toUtf8();
-        emit sendData(bytes);
+        emitInput(bytes);
         event->accept();
         return;
     }
     if (!ctrl && !event->text().isEmpty()) {
-        emit sendData(event->text().toUtf8());
+        emitInput(event->text().toUtf8());
         event->accept();
         return;
     }
@@ -785,26 +1097,43 @@ void ScreenView::setCompletionEngine(CompletionEngine *engine)
     m_completion = engine;
 }
 
+static QString lineToPlain(const TermLine *line)
+{
+    QString text;
+    if (!line)
+        return text;
+    for (const TermCell &cell : line->cells) {
+        if (cell.flags & TermScreen::FlagWideCont)
+            continue;
+        char32_t cp = cell.cp ? cell.cp : U' ';
+        text.append(QString::fromUcs4(&cp, 1));
+    }
+    while (text.size() > 1 && text.endsWith(QLatin1Char(' ')))
+        text.chop(1);
+    return text;
+}
+
 QString ScreenView::screenText() const
 {
     // 主屏视口从滚动历史之后算起，备用屏行号就是屏幕行
     const int base = m_screen.altScreen() ? 0 : m_screen.historySize();
     QStringList lines;
-    for (int r = 0; r < m_screen.rows(); ++r) {
-        const TermLine *line = m_screen.lineAbsolute(base + r);
-        QString text;
-        if (line) {
-            for (const TermCell &cell : line->cells) {
-                if (cell.flags & TermScreen::FlagWideCont)
-                    continue;
-                char32_t cp = cell.cp;
-                text.append(QString::fromUcs4(&cp, 1));
-            }
-        }
-        while (text.size() > 1 && text.endsWith(QLatin1Char(' ')))
-            text.chop(1);
-        lines << text;
-    }
+    for (int r = 0; r < m_screen.rows(); ++r)
+        lines << lineToPlain(m_screen.lineAbsolute(base + r));
+    while (!lines.isEmpty() && lines.last().isEmpty())
+        lines.removeLast();
+    return lines.join(QLatin1Char('\n'));
+}
+
+QString ScreenView::recentText(int maxLines) const
+{
+    maxLines = qBound(1, maxLines, 400);
+    const bool alt = m_screen.altScreen();
+    const int total = alt ? m_screen.rows() : m_screen.historySize() + m_screen.rows();
+    const int begin = qMax(0, total - maxLines);
+    QStringList lines;
+    for (int abs = begin; abs < total; ++abs)
+        lines << lineToPlain(m_screen.lineAbsolute(abs));
     while (!lines.isEmpty() && lines.last().isEmpty())
         lines.removeLast();
     return lines.join(QLatin1Char('\n'));
@@ -846,7 +1175,7 @@ QString ScreenView::inputLineText(int *cursorColOut) const
 void ScreenView::handleTabCompletion()
 {
     if (!m_completion || m_screen.altScreen()) {
-        emit sendData(QByteArray(1, '\t'));
+        emitInput(QByteArray(1, '\t'));
         return;
     }
 
@@ -879,7 +1208,7 @@ void ScreenView::handleTabCompletion()
     if (m_cycle.isEmpty()) {
         m_cycleEnd = cursorCol;
         // 客户端没有候选时把 Tab 直通给设备，别把服务端补全也一并拦了
-        emit sendData(QByteArray(1, '\t'));
+        emitInput(QByteArray(1, '\t'));
         return;
     }
     if (m_cycle.size() == 1) {
@@ -887,8 +1216,8 @@ void ScreenView::handleTabCompletion()
         const QString &only = m_cycle.first();
         const QString tail = only.mid(prefix.size());
         if (!tail.isEmpty()) {
-            m_cyclePending = tail.size();
-            emit sendData(tail.toUtf8());
+            m_cyclePending = m_localEcho ? 0 : tail.size();
+            emitInput(tail.toUtf8());
         }
         m_cycleEnd = wordStart + only.size();
         m_cycle.clear();
@@ -899,8 +1228,8 @@ void ScreenView::handleTabCompletion()
     const QString lcp = CompletionEngine::longestCommonPrefix(m_cycle);
     if (lcp.size() > prefix.size()) {
         const QString tail = lcp.mid(prefix.size());
-        m_cyclePending = tail.size();
-        emit sendData(tail.toUtf8());
+        m_cyclePending = m_localEcho ? 0 : tail.size();
+        emitInput(tail.toUtf8());
         m_cycleEnd = wordStart + lcp.size();
         m_cycleOriginal = lcp; // LCP 成为新的回绕基准
         return;
@@ -931,11 +1260,11 @@ void ScreenView::advanceCompletionCycle()
     const int oldLen = m_cycleEnd - m_cycleStart;
     const int seenOld = qMax(0, oldLen - m_cyclePending); // 屏上已见旧词长
     if (oldLen > 0)
-        emit sendData(QByteArray(oldLen, '\x7f'));
+        emitInput(QByteArray(oldLen, m_localEcho ? '\b' : '\x7f'));
     if (!target.isEmpty())
-        emit sendData(target.toUtf8());
+        emitInput(target.toUtf8());
     m_cycleEnd = m_cycleStart + target.size();
-    m_cyclePending = qAbs(target.size() - seenOld);
+    m_cyclePending = m_localEcho ? 0 : qAbs(target.size() - seenOld);
     m_cycleState = nextState;
 }
 
@@ -1058,8 +1387,12 @@ void ScreenView::focusOutEvent(QFocusEvent *event)
 
 void ScreenView::inputMethodEvent(QInputMethodEvent *event)
 {
-    if (!event->commitString().isEmpty())
-        emit sendData(event->commitString().toUtf8());
+    if (!event->commitString().isEmpty()) {
+        if (m_localEcho && !m_screen.altScreen())
+            localInsert(event->commitString());
+        else
+            emitInput(event->commitString().toUtf8());
+    }
     event->accept();
 }
 

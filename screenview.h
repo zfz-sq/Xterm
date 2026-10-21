@@ -30,8 +30,20 @@ public:
     void receiveData(const QByteArray &data);
     void appendSystemMessage(const QString &text);
     void setCompletionEngine(CompletionEngine *engine);
+    // 串口本地编辑：键入和粘贴只画在屏幕上，回车才把改完的整行发出去。
+    // SSH 保持关闭，按键仍立刻送给远端。
+    void setLocalEcho(bool on) { m_localEcho = on; }
     // 当前视口的可见文本（逐行去尾空白），测试与诊断辅助
     QString screenText() const;
+    // 滚动历史末尾加上当前屏，供本机控制口读取。maxLines 含当前屏。
+    QString recentText(int maxLines) const;
+    bool usingAltScreen() const { return m_screen.altScreen(); }
+    // 本地回显打开时，把已经发出去的字节画到屏幕上（不再次发送）。
+    void showOutbound(const QByteArray &bytes);
+    // 只清本机画面和滚动历史，不向设备发送任何字节。
+    void clearLocalDisplay();
+    // 记入串口上下键可以翻回的已发送行（命令按钮、本机控制口也走这里）。
+    void rememberSentLine(const QString &line);
     // 字号（pt）。设置成功（有变化）时发 fontSizeChanged；全局设置由主窗口联动两页
     int fontSize() const { return m_font.pointSize(); }
     void setFontSize(int pt);
@@ -91,6 +103,16 @@ private:
     TermCell cellOrBlank(const TermLine *line, int col) const;
     QByteArray arrowKey(char letter) const;
     void paintCursor(QPainter &painter);
+    void emitInput(const QByteArray &bytes);
+    void echoLocal(const QByteArray &bytes);
+    bool localLineMode() const;
+    bool handleLocalLineKey(QKeyEvent *event);
+    void beginLocalEdit();
+    void redrawLocalEdit();
+    void localInsert(const QString &text);
+    void commitLocalLine();
+    void localTab();
+    void recallSent(int direction);
     void handleTabCompletion();
     void advanceCompletionCycle();
     void resetCompletionCycle();
@@ -122,6 +144,16 @@ private:
     int m_origin = 0;
     int m_sentCols = -1;
     int m_sentRows = -1;
+    bool m_localEcho = false;
+    bool m_editOn = false;     // 串口行编辑：未回车的内容还没发给设备
+    bool m_editRedraw = false;
+    int m_editAbs = 0;         // 这一行的绝对行号
+    int m_editCol = 0;         // 行内起始列
+    QString m_edit;
+    int m_editPos = 0;
+    QStringList m_sentHist;
+    int m_histBrowse = -1; // -1 表示正在编辑新行，不是在翻历史
+    QString m_histDraft;
     bool m_follow = true;
     bool m_barLock = false;
     bool m_selecting = false;

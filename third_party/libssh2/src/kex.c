@@ -3159,7 +3159,13 @@ static const LIBSSH2_KEX_METHOD kex_method_diffie_helman_group16_sha512 = {
     LIBSSH2_KEX_METHOD_FLAG_REQ_SIGN_HOSTKEY,
 };
 
+#if defined(LIBSSH2_WINCNG)
+/* 8192 位，CNG 生成不了，不放进协商列表，避免未使用告警。 */
+static const LIBSSH2_KEX_METHOD kex_method_diffie_helman_group18_sha512
+    __attribute__((unused)) = {
+#else
 static const LIBSSH2_KEX_METHOD kex_method_diffie_helman_group18_sha512 = {
+#endif
     "diffie-hellman-group18-sha512",
     kex_method_diffie_hellman_group18_sha512_key_exchange,
     kex_diffie_hellman_cleanup,
@@ -3257,7 +3263,11 @@ static const LIBSSH2_KEX_METHOD *libssh2_kex_methods[] = {
 #endif
     &kex_method_diffie_helman_group_exchange_sha256,
     &kex_method_diffie_helman_group16_sha512,
+    /* CNG 的 BCryptGenerateKeyPair(DH) 最大 4096 位。group18 是 8192 位，
+     * 一旦协商到它，密钥对生成必失败，握手报 Unable to exchange encryption keys。 */
+#if !defined(LIBSSH2_WINCNG)
     &kex_method_diffie_helman_group18_sha512,
+#endif
     &kex_method_diffie_helman_group14_sha256,
     &kex_method_diffie_helman_group14_sha1,
     &kex_method_diffie_helman_group1_sha1,
