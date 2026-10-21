@@ -39,6 +39,7 @@ class TestSshWorker : public QObject
 
 private slots:
     void requestsXtermPtyWithInitialSize();
+    void rejectedEnvironmentDoesNotFailShellOpen();
     void forwardsShellBytesWithoutModification();
     void handlesPartialWritesWithoutDroppingInput();
     void coalescesResizeAndSendsNewestDimensions();
@@ -76,6 +77,27 @@ void TestSshWorker::requestsXtermPtyWithInitialSize()
              QByteArrayLiteral("truecolor"));
     QCOMPARE(api.requestShellCount, 1);
     QCOMPARE(connected.first().at(0).toULongLong(), quint64(7));
+}
+
+void TestSshWorker::rejectedEnvironmentDoesNotFailShellOpen()
+{
+    // env 请求是尽力而为的：有些 sshd（嵌入式板子常见）直接拒绝，
+    // shell 打开流程必须跳过继续，而不是失败断开。
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    FakeLibsshApi api;
+    prepareSuccessfulConnection(api);
+    api.environmentResults = {SSH_ERROR, SSH_ERROR};
+    KnownHostsStore store(api, directory.path());
+    SshWorker worker(api, store);
+    QSignalSpy connected(&worker, &SshWorker::connected);
+    QSignalSpy failed(&worker, &SshWorker::connectionFailed);
+
+    worker.connectToHost(7, target(), 80, 24);
+
+    QTRY_COMPARE(connected.count(), 1);
+    QCOMPARE(failed.count(), 0);
+    QCOMPARE(api.requestShellCount, 1);
 }
 
 void TestSshWorker::forwardsShellBytesWithoutModification()

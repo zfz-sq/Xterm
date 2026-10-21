@@ -118,14 +118,12 @@ ShellChannel::Result ShellChannel::advanceOpening(QString *error)
             m_channel, QByteArrayLiteral("xterm"), m_cols, m_rows);
         break;
     case Step::SetTerm:
-        result = m_api.requestEnvironment(
-            m_channel, QByteArrayLiteral("TERM"),
-            QByteArrayLiteral("xterm"));
+        result = requestEnvBestEffort(QByteArrayLiteral("TERM"),
+                                      QByteArrayLiteral("xterm"));
         break;
     case Step::SetColorTerm:
-        result = m_api.requestEnvironment(
-            m_channel, QByteArrayLiteral("COLORTERM"),
-            QByteArrayLiteral("truecolor"));
+        result = requestEnvBestEffort(QByteArrayLiteral("COLORTERM"),
+                                      QByteArrayLiteral("truecolor"));
         break;
     case Step::RequestShell:
         result = m_api.requestShell(m_channel);
@@ -169,6 +167,17 @@ ShellChannel::Result ShellChannel::advanceOpening(QString *error)
         break;
     }
     return Result::Progress;
+}
+
+// env 请求是尽力而为的（RFC 4254 5.2）：服务器可以拒绝，嵌入式板的
+// 精简 sshd 常见直接回 CHANNEL_FAILURE。拒绝不算打开失败，跳过继续；
+// 只有 SSH_AGAIN 需要下个 tick 重试。
+int ShellChannel::requestEnvBestEffort(const QByteArray &name,
+                                       const QByteArray &value)
+{
+    const int rc =
+        m_api.requestEnvironment(m_channel, name, value);
+    return rc == SSH_AGAIN ? SSH_AGAIN : SSH_OK;
 }
 
 ShellChannel::Result

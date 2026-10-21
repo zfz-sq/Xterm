@@ -54,6 +54,7 @@ private:
     };
 
     Result advanceOpening(QString *error);
+    int requestEnvBestEffort(const QByteArray &name, const QByteArray &value);
     Result advanceReady(QList<QByteArray> *output, QString *error);
     Result advanceClosing(QString *error);
     Result serviceResize(QString *error);
