@@ -56,6 +56,24 @@ public:
     virtual int authPassword(ssh_session session,
                              const QByteArray &password);
 
+    virtual ssh_channel newChannel(ssh_session session);
+    virtual void freeChannel(ssh_channel channel);
+    virtual int openChannelSession(ssh_channel channel);
+    virtual int requestPtySize(ssh_channel channel, const QByteArray &term,
+                               int cols, int rows);
+    virtual int requestEnvironment(ssh_channel channel,
+                                   const QByteArray &name,
+                                   const QByteArray &value);
+    virtual int requestShell(ssh_channel channel);
+    virtual int writeChannel(ssh_channel channel, const char *data,
+                             quint32 size);
+    virtual int readChannelNonblocking(ssh_channel channel, char *data,
+                                       quint32 size, bool stderrStream);
+    virtual int changePtySize(ssh_channel channel, int cols, int rows);
+    virtual bool channelIsEof(ssh_channel channel);
+    virtual int sendChannelEof(ssh_channel channel);
+    virtual int closeChannel(ssh_channel channel);
+
     virtual int sendKeepalive(ssh_session session);
     virtual void disconnect(ssh_session session);
     virtual QString errorString(ssh_session session) const;

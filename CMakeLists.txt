@@ -108,6 +108,10 @@ qt_add_executable(Xterm
     ssh/libsshconnection.h
     ssh/knownhostsstore.cpp
     ssh/knownhostsstore.h
+    ssh/shellchannel.cpp
+    ssh/shellchannel.h
+    ssh/sshworker.cpp
+    ssh/sshworker.h
     ssh/sshtypes.h
     resources/resources.qrc
     ${XTERM_RC_SOURCES}

@@ -1,0 +1,219 @@
+#include "fakes/fakelibsshapi.h"
+#include "ssh/knownhostsstore.h"
+#include "ssh/sshworker.h"
+
+#include <QSignalSpy>
+#include <QTemporaryDir>
+#include <QTimer>
+#include <QtTest>
+
+namespace {
+
+SshTarget target()
+{
+    SshTarget value;
+    value.host = QStringLiteral("shell.test");
+    value.user = QStringLiteral("tester");
+    return value;
+}
+
+void prepareSuccessfulConnection(FakeLibsshApi &api)
+{
+    api.knownState = SSH_KNOWN_HOSTS_OK;
+    api.agentResults = {SSH_AUTH_SUCCESS};
+}
+
+} // namespace
+
+class TestSshWorker : public QObject
+{
+    Q_OBJECT
+
+private slots:
+    void requestsXtermPtyWithInitialSize();
+    void forwardsShellBytesWithoutModification();
+    void handlesPartialWritesWithoutDroppingInput();
+    void coalescesResizeAndSendsNewestDimensions();
+    void shellEofClosesConnectionExactlyOnce();
+    void staleGenerationCommandsAreIgnored();
+    void closeDuringConnectDoesNotEmitConnected();
+    void schedulerReturnsToQtEventLoopOnSshAgain();
+};
+
+void TestSshWorker::requestsXtermPtyWithInitialSize()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    FakeLibsshApi api;
+    prepareSuccessfulConnection(api);
+    KnownHostsStore store(api, directory.path());
+    SshWorker worker(api, store);
+    QSignalSpy connected(&worker, &SshWorker::connected);
+
+    worker.connectToHost(7, target(), 132, 43);
+
+    QTRY_COMPARE(connected.count(), 1);
+    QCOMPARE(api.ptyTerm, QByteArrayLiteral("xterm"));
+    QCOMPARE(api.ptyCols, 132);
+    QCOMPARE(api.ptyRows, 43);
+    QCOMPARE(api.environment.value(QByteArrayLiteral("TERM")),
+             QByteArrayLiteral("xterm"));
+    QCOMPARE(api.environment.value(QByteArrayLiteral("COLORTERM")),
+             QByteArrayLiteral("truecolor"));
+    QCOMPARE(api.requestShellCount, 1);
+    QCOMPARE(connected.first().at(0).toULongLong(), quint64(7));
+}
+
+void TestSshWorker::forwardsShellBytesWithoutModification()
+{
+    QTemporaryDir directory;
+    FakeLibsshApi api;
+    prepareSuccessfulConnection(api);
+    api.readEvents = {
+        {false, QByteArray("\x1b[2Jtitle:\x1b]0;raw\x07", 18)},
+        {true, QByteArray::fromHex("e4b8ad00")},
+        {false, QByteArrayLiteral("\x1b[")},
+        {false, QByteArrayLiteral("31m")}
+    };
+    KnownHostsStore store(api, directory.path());
+    SshWorker worker(api, store);
+    QSignalSpy data(&worker, &SshWorker::shellData);
+
+    worker.connectToHost(9, target(), 80, 24);
+
+    QTRY_VERIFY(data.count() >= 4);
+    QByteArray received;
+    for (const QList<QVariant> &event : data) {
+        QCOMPARE(event.at(0).toULongLong(), quint64(9));
+        received += event.at(1).toByteArray();
+    }
+    const QByteArray expected =
+        QByteArray("\x1b[2Jtitle:\x1b]0;raw\x07", 18)
+        + QByteArray::fromHex("e4b8ad00")
+        + QByteArrayLiteral("\x1b[")
+        + QByteArrayLiteral("31m");
+    QCOMPARE(received, expected);
+}
+
+void TestSshWorker::handlesPartialWritesWithoutDroppingInput()
+{
+    QTemporaryDir directory;
+    FakeLibsshApi api;
+    prepareSuccessfulConnection(api);
+    api.writeResults = {2, SSH_AGAIN, 1, 3};
+    KnownHostsStore store(api, directory.path());
+    SshWorker worker(api, store);
+    QSignalSpy connected(&worker, &SshWorker::connected);
+
+    worker.connectToHost(11, target(), 80, 24);
+    QTRY_COMPARE(connected.count(), 1);
+    worker.writeShell(11, QByteArrayLiteral("abcdef"));
+
+    QTRY_COMPARE(api.acceptedWrites, QByteArrayLiteral("abcdef"));
+    QCOMPARE(api.writeCalls,
+             QList<QByteArray>({QByteArrayLiteral("abcdef"),
+                                QByteArrayLiteral("cdef"),
+                                QByteArrayLiteral("cdef"),
+                                QByteArrayLiteral("def")}));
+}
+
+void TestSshWorker::coalescesResizeAndSendsNewestDimensions()
+{
+    QTemporaryDir directory;
+    FakeLibsshApi api;
+    prepareSuccessfulConnection(api);
+    KnownHostsStore store(api, directory.path());
+    SshWorker worker(api, store);
+    QSignalSpy connected(&worker, &SshWorker::connected);
+
+    worker.connectToHost(13, target(), 80, 24);
+    QTRY_COMPARE(connected.count(), 1);
+    api.resizeCalls.clear();
+    worker.resizeShell(13, 90, 30);
+    worker.resizeShell(13, 100, 40);
+    worker.resizeShell(13, 120, 50);
+
+    QTRY_COMPARE(api.resizeCalls.size(), 1);
+    QCOMPARE(api.resizeCalls.first(), qMakePair(120, 50));
+}
+
+void TestSshWorker::shellEofClosesConnectionExactlyOnce()
+{
+    QTemporaryDir directory;
+    FakeLibsshApi api;
+    prepareSuccessfulConnection(api);
+    KnownHostsStore store(api, directory.path());
+    SshWorker worker(api, store);
+    QSignalSpy connected(&worker, &SshWorker::connected);
+    QSignalSpy closed(&worker, &SshWorker::connectionClosed);
+
+    worker.connectToHost(15, target(), 80, 24);
+    QTRY_COMPARE(connected.count(), 1);
+    api.channelEof = true;
+
+    QTRY_COMPARE(closed.count(), 1);
+    QTest::qWait(20);
+    QCOMPARE(closed.count(), 1);
+    QCOMPARE(api.channelCloseCount, 1);
+    QCOMPARE(api.channelFreeCount, 1);
+    QCOMPARE(api.disconnectCount, 1);
+}
+
+void TestSshWorker::staleGenerationCommandsAreIgnored()
+{
+    QTemporaryDir directory;
+    FakeLibsshApi api;
+    prepareSuccessfulConnection(api);
+    KnownHostsStore store(api, directory.path());
+    SshWorker worker(api, store);
+    QSignalSpy connected(&worker, &SshWorker::connected);
+
+    worker.connectToHost(17, target(), 80, 24);
+    QTRY_COMPARE(connected.count(), 1);
+    api.resizeCalls.clear();
+    worker.writeShell(16, QByteArrayLiteral("stale"));
+    worker.resizeShell(16, 200, 70);
+    worker.closeConnection(16);
+    QTest::qWait(20);
+
+    QVERIFY(api.writeCalls.isEmpty());
+    QVERIFY(api.resizeCalls.isEmpty());
+    QCOMPARE(api.disconnectCount, 0);
+}
+
+void TestSshWorker::closeDuringConnectDoesNotEmitConnected()
+{
+    QTemporaryDir directory;
+    FakeLibsshApi api;
+    api.connectResults = {SSH_AGAIN, SSH_AGAIN};
+    KnownHostsStore store(api, directory.path());
+    SshWorker worker(api, store);
+    QSignalSpy connected(&worker, &SshWorker::connected);
+    QSignalSpy closed(&worker, &SshWorker::connectionClosed);
+
+    worker.connectToHost(19, target(), 80, 24);
+    worker.closeConnection(19);
+
+    QTRY_COMPARE(closed.count(), 1);
+    QCOMPARE(connected.count(), 0);
+}
+
+void TestSshWorker::schedulerReturnsToQtEventLoopOnSshAgain()
+{
+    QTemporaryDir directory;
+    FakeLibsshApi api;
+    api.connectResults.fill(SSH_AGAIN, 100);
+    KnownHostsStore store(api, directory.path());
+    SshWorker worker(api, store);
+    bool eventLoopRan = false;
+
+    worker.connectToHost(21, target(), 80, 24);
+    QTimer::singleShot(0, this, [&eventLoopRan] { eventLoopRan = true; });
+
+    QTRY_VERIFY(eventLoopRan);
+    QVERIFY(api.calls.count(QStringLiteral("connect")) < 100);
+    worker.closeConnection(21);
+}
+
+QTEST_MAIN(TestSshWorker)
+#include "test_sshworker.moc"

@@ -260,6 +260,74 @@ int LibsshApi::authPassword(ssh_session session,
     return ssh_userauth_password(session, nullptr, password.constData());
 }
 
+ssh_channel LibsshApi::newChannel(ssh_session session)
+{
+    return ssh_channel_new(session);
+}
+
+void LibsshApi::freeChannel(ssh_channel channel)
+{
+    ssh_channel_free(channel);
+}
+
+int LibsshApi::openChannelSession(ssh_channel channel)
+{
+    return ssh_channel_open_session(channel);
+}
+
+int LibsshApi::requestPtySize(ssh_channel channel, const QByteArray &term,
+                              int cols, int rows)
+{
+    return ssh_channel_request_pty_size(channel, term.constData(), cols,
+                                        rows);
+}
+
+int LibsshApi::requestEnvironment(ssh_channel channel,
+                                  const QByteArray &name,
+                                  const QByteArray &value)
+{
+    return ssh_channel_request_env(channel, name.constData(),
+                                   value.constData());
+}
+
+int LibsshApi::requestShell(ssh_channel channel)
+{
+    return ssh_channel_request_shell(channel);
+}
+
+int LibsshApi::writeChannel(ssh_channel channel, const char *data,
+                            quint32 size)
+{
+    return ssh_channel_write(channel, data, size);
+}
+
+int LibsshApi::readChannelNonblocking(ssh_channel channel, char *data,
+                                      quint32 size, bool stderrStream)
+{
+    return ssh_channel_read_nonblocking(channel, data, size,
+                                        stderrStream ? 1 : 0);
+}
+
+int LibsshApi::changePtySize(ssh_channel channel, int cols, int rows)
+{
+    return ssh_channel_change_pty_size(channel, cols, rows);
+}
+
+bool LibsshApi::channelIsEof(ssh_channel channel)
+{
+    return ssh_channel_is_eof(channel) != 0;
+}
+
+int LibsshApi::sendChannelEof(ssh_channel channel)
+{
+    return ssh_channel_send_eof(channel);
+}
+
+int LibsshApi::closeChannel(ssh_channel channel)
+{
+    return ssh_channel_close(channel);
+}
+
 int LibsshApi::sendKeepalive(ssh_session session)
 {
     return ssh_send_ignore(session, nullptr);

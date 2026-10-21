@@ -48,3 +48,31 @@ set_target_properties(test_libsshconnection PROPERTIES
 )
 
 add_test(NAME test_libsshconnection COMMAND test_libsshconnection)
+
+add_executable(test_sshworker
+    test_sshworker.cpp
+    "${CMAKE_SOURCE_DIR}/ssh/libsshapi.cpp"
+    "${CMAKE_SOURCE_DIR}/ssh/libsshconnection.cpp"
+    "${CMAKE_SOURCE_DIR}/ssh/knownhostsstore.cpp"
+    "${CMAKE_SOURCE_DIR}/ssh/shellchannel.cpp"
+    "${CMAKE_SOURCE_DIR}/ssh/sshworker.cpp"
+)
+
+target_include_directories(test_sshworker
+    PRIVATE
+        "${CMAKE_SOURCE_DIR}"
+)
+
+target_link_libraries(test_sshworker
+    PRIVATE
+        Qt6::Test
+        ssh
+)
+
+xterm_deploy_ssh_runtime(test_sshworker)
+
+set_target_properties(test_sshworker PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)
+
+add_test(NAME test_sshworker COMMAND test_sshworker)

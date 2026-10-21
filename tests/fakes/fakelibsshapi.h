@@ -8,6 +8,8 @@
 #include <QList>
 #include <QStringList>
 
+#include <cstring>
+
 class FakeLibsshApi final : public LibsshApi
 {
 public:
@@ -199,6 +201,98 @@ public:
         return take(passwordResults, int(SSH_AUTH_DENIED));
     }
 
+    ssh_channel newChannel(ssh_session) override
+    {
+        calls.append(QStringLiteral("newChannel"));
+        return reinterpret_cast<ssh_channel>(quintptr(2));
+    }
+
+    void freeChannel(ssh_channel) override
+    {
+        calls.append(QStringLiteral("freeChannel"));
+        ++channelFreeCount;
+    }
+
+    int openChannelSession(ssh_channel) override
+    {
+        calls.append(QStringLiteral("openChannelSession"));
+        return take(openChannelResults, SSH_OK);
+    }
+
+    int requestPtySize(ssh_channel, const QByteArray &term, int cols,
+                       int rows) override
+    {
+        calls.append(QStringLiteral("requestPty"));
+        ptyTerm = term;
+        ptyCols = cols;
+        ptyRows = rows;
+        return take(ptyResults, SSH_OK);
+    }
+
+    int requestEnvironment(ssh_channel, const QByteArray &name,
+                           const QByteArray &value) override
+    {
+        calls.append(QStringLiteral("environment:%1")
+                         .arg(QString::fromLatin1(name)));
+        environment[name] = value;
+        return take(environmentResults, SSH_OK);
+    }
+
+    int requestShell(ssh_channel) override
+    {
+        calls.append(QStringLiteral("requestShell"));
+        ++requestShellCount;
+        return take(shellResults, SSH_OK);
+    }
+
+    int writeChannel(ssh_channel, const char *data, quint32 size) override
+    {
+        const QByteArray offered(data, qsizetype(size));
+        writeCalls.append(offered);
+        const int result = take(writeResults, int(size));
+        if (result > 0) {
+            acceptedWrites.append(data, qMin(result, int(size)));
+        }
+        return result;
+    }
+
+    int readChannelNonblocking(ssh_channel, char *data, quint32 size,
+                               bool stderrStream) override
+    {
+        if (readEvents.isEmpty()
+            || readEvents.first().stderrStream != stderrStream) {
+            return SSH_AGAIN;
+        }
+        ReadEvent &event = readEvents.first();
+        const int count = qMin(int(size), event.data.size());
+        memcpy(data, event.data.constData(), size_t(count));
+        event.data.remove(0, count);
+        if (event.data.isEmpty()) {
+            readEvents.removeFirst();
+        }
+        return count;
+    }
+
+    int changePtySize(ssh_channel, int cols, int rows) override
+    {
+        resizeCalls.append(qMakePair(cols, rows));
+        return take(resizeResults, SSH_OK);
+    }
+
+    bool channelIsEof(ssh_channel) override { return channelEof; }
+
+    int sendChannelEof(ssh_channel) override
+    {
+        ++channelEofCount;
+        return SSH_OK;
+    }
+
+    int closeChannel(ssh_channel) override
+    {
+        ++channelCloseCount;
+        return SSH_OK;
+    }
+
     int sendKeepalive(ssh_session) override
     {
         calls.append(QStringLiteral("keepalive"));
@@ -250,6 +344,29 @@ public:
     QList<int> passwordResults;
     QList<SshAuthPrompt> prompts;
     QStringList answers;
+    struct ReadEvent {
+        bool stderrStream = false;
+        QByteArray data;
+    };
+    QList<int> openChannelResults;
+    QList<int> ptyResults;
+    QList<int> environmentResults;
+    QList<int> shellResults;
+    QList<int> writeResults;
+    QList<int> resizeResults;
+    QList<ReadEvent> readEvents;
+    QByteArray ptyTerm;
+    int ptyCols = 0;
+    int ptyRows = 0;
+    QHash<QByteArray, QByteArray> environment;
+    int requestShellCount = 0;
+    QList<QByteArray> writeCalls;
+    QByteArray acceptedWrites;
+    QList<QPair<int, int>> resizeCalls;
+    bool channelEof = false;
+    int channelEofCount = 0;
+    int channelCloseCount = 0;
+    int channelFreeCount = 0;
     int keepaliveResult = SSH_OK;
     QString errorText = QStringLiteral("scripted libssh failure");
     QString explicitKeyErrorText;
