@@ -1,0 +1,20 @@
+{
+  "builtin-baseline": "7bb3ef7c1aebcb18a9ad7f5d7c6e3ea3be006196",
+  "dependencies": [
+    {
+      "name": "libssh",
+      "default-features": false
+    }
+  ],
+  "overrides": [
+    {
+      "name": "libssh",
+      "version": "0.12.2"
+    },
+    {
+      "name": "openssl",
+      "version": "3.6.5",
+      "port-version": 1
+    }
+  ]
+}

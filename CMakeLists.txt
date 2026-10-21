@@ -5,6 +5,21 @@ project(Xterm VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+set(XTERM_SSH_DEPS_ROOT
+    "${CMAKE_CURRENT_SOURCE_DIR}/.deps/vcpkg_installed/x64-mingw-dynamic"
+    CACHE PATH "Root of dynamic libssh/OpenSSL dependencies")
+list(PREPEND CMAKE_PREFIX_PATH "${XTERM_SSH_DEPS_ROOT}")
+find_package(libssh CONFIG REQUIRED)
+
+function(xterm_deploy_ssh_runtime target)
+    add_custom_command(TARGET ${target} POST_BUILD
+        COMMAND "${CMAKE_COMMAND}"
+            -DSOURCE_DIR="${XTERM_SSH_DEPS_ROOT}/bin"
+            -DDEST_DIR="$<TARGET_FILE_DIR:${target}>"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/DeploySshRuntime.cmake"
+        VERBATIM)
+endfunction()
+
 # Windows 可执行文件图标: 从编译器同级目录找 windres（Qt 的 llvm-mingw 工具链不在 PATH）
 set(XTERM_RC_SOURCES "")
 if(WIN32)
@@ -92,6 +107,8 @@ target_link_libraries(Xterm
         shlwapi
         uuid
 )
+
+xterm_deploy_ssh_runtime(Xterm)
 
 install(TARGETS Xterm
     BUNDLE  DESTINATION .
