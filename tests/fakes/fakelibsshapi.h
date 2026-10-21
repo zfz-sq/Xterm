@@ -1,0 +1,188 @@
+#pragma once
+
+#include "ssh/libsshapi.h"
+
+#include <QHash>
+#include <QList>
+#include <QStringList>
+
+class FakeLibsshApi final : public LibsshApi
+{
+public:
+    ssh_session newSession() override
+    {
+        calls.append(QStringLiteral("newSession"));
+        return reinterpret_cast<ssh_session>(quintptr(1));
+    }
+
+    void freeSession(ssh_session) override { calls.append(QStringLiteral("freeSession")); }
+
+    int setOptionString(ssh_session, enum ssh_options_e option,
+                        const QString &value) override
+    {
+        calls.append(QStringLiteral("string:%1=%2").arg(int(option)).arg(value));
+        stringOptions[option] = value;
+        return takeOptionResult(option);
+    }
+
+    int setOptionUnsigned(ssh_session, enum ssh_options_e option,
+                          unsigned int value) override
+    {
+        calls.append(QStringLiteral("unsigned:%1=%2").arg(int(option)).arg(value));
+        unsignedOptions[option] = value;
+        return takeOptionResult(option);
+    }
+
+    int setOptionBool(ssh_session, enum ssh_options_e option, bool value) override
+    {
+        calls.append(QStringLiteral("bool:%1=%2").arg(int(option)).arg(value));
+        boolOptions[option] = value;
+        return takeOptionResult(option);
+    }
+
+    int parseConfig(ssh_session) override
+    {
+        calls.append(QStringLiteral("parseConfig"));
+        return parseConfigResult;
+    }
+
+    void setBlocking(ssh_session, bool blocking) override
+    {
+        calls.append(QStringLiteral("blocking:%1").arg(blocking));
+    }
+
+    int connect(ssh_session) override
+    {
+        calls.append(QStringLiteral("connect"));
+        return take(connectResults, SSH_OK);
+    }
+
+    enum ssh_known_hosts_e knownHostState(ssh_session) override
+    {
+        calls.append(QStringLiteral("knownHostState"));
+        return knownState;
+    }
+
+    int updateKnownHosts(ssh_session) override
+    {
+        calls.append(QStringLiteral("updateKnownHosts"));
+        ++updateKnownHostsCount;
+        return updateKnownHostsResult;
+    }
+
+    QString serverFingerprintSha256(ssh_session) override
+    {
+        calls.append(QStringLiteral("serverFingerprint"));
+        return serverFingerprint;
+    }
+
+    QString knownHostFingerprintSha256(ssh_session) override
+    {
+        calls.append(QStringLiteral("knownHostFingerprint"));
+        return oldFingerprint;
+    }
+
+    int authAgent(ssh_session) override
+    {
+        calls.append(QStringLiteral("authAgent"));
+        return take(agentResults, int(SSH_AUTH_DENIED));
+    }
+
+    int authExplicitKey(ssh_session, const QString &path,
+                        const QByteArray &passphrase) override
+    {
+        Q_UNUSED(passphrase);
+        calls.append(QStringLiteral("authExplicit:%1").arg(path));
+        return take(explicitKeyResults, int(SSH_AUTH_DENIED));
+    }
+
+    int authAutomaticPublicKey(ssh_session,
+                               const QByteArray &passphrase) override
+    {
+        Q_UNUSED(passphrase);
+        calls.append(QStringLiteral("authAuto"));
+        return take(autoKeyResults, int(SSH_AUTH_DENIED));
+    }
+
+    int authKeyboardInteractive(ssh_session) override
+    {
+        calls.append(QStringLiteral("authKeyboard"));
+        return take(keyboardResults, int(SSH_AUTH_DENIED));
+    }
+
+    QList<SshAuthPrompt> keyboardInteractivePrompts(ssh_session) override
+    {
+        calls.append(QStringLiteral("keyboardPrompts"));
+        return prompts;
+    }
+
+    int setKeyboardInteractiveAnswer(ssh_session, unsigned int index,
+                                     const QByteArray &answer) override
+    {
+        calls.append(QStringLiteral("keyboardAnswer:%1").arg(index));
+        answers.append(QString::fromUtf8(answer));
+        return SSH_OK;
+    }
+
+    int authPassword(ssh_session, const QByteArray &password) override
+    {
+        Q_UNUSED(password);
+        calls.append(QStringLiteral("authPassword"));
+        return take(passwordResults, int(SSH_AUTH_DENIED));
+    }
+
+    int sendKeepalive(ssh_session) override
+    {
+        calls.append(QStringLiteral("keepalive"));
+        return keepaliveResult;
+    }
+
+    void disconnect(ssh_session) override
+    {
+        calls.append(QStringLiteral("disconnect"));
+        ++disconnectCount;
+    }
+
+    QString errorString(ssh_session) const override { return errorText; }
+    int errorCode(ssh_session) const override { return errorNumber; }
+
+    template<typename T>
+    static T take(QList<T> &values, T fallback)
+    {
+        if (values.isEmpty()) {
+            return fallback;
+        }
+        return values.takeFirst();
+    }
+
+    QStringList calls;
+    QHash<enum ssh_options_e, QString> stringOptions;
+    QHash<enum ssh_options_e, unsigned int> unsignedOptions;
+    QHash<enum ssh_options_e, bool> boolOptions;
+    QHash<enum ssh_options_e, QList<int>> optionResults;
+    int parseConfigResult = SSH_OK;
+    QList<int> connectResults;
+    enum ssh_known_hosts_e knownState = SSH_KNOWN_HOSTS_OK;
+    int updateKnownHostsResult = SSH_OK;
+    int updateKnownHostsCount = 0;
+    QString serverFingerprint = QStringLiteral("new-sha256");
+    QString oldFingerprint = QStringLiteral("old-sha256");
+    QList<int> agentResults;
+    QList<int> explicitKeyResults;
+    QList<int> autoKeyResults;
+    QList<int> keyboardResults;
+    QList<int> passwordResults;
+    QList<SshAuthPrompt> prompts;
+    QStringList answers;
+    int keepaliveResult = SSH_OK;
+    QString errorText = QStringLiteral("scripted libssh failure");
+    int errorNumber = SSH_ERROR;
+    int disconnectCount = 0;
+
+private:
+    int takeOptionResult(enum ssh_options_e option)
+    {
+        auto it = optionResults.find(option);
+        return it == optionResults.end() ? SSH_OK : take(it.value(), SSH_OK);
+    }
+};

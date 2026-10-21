@@ -1,0 +1,198 @@
+#include "libsshapi.h"
+
+#include <QByteArray>
+
+namespace {
+
+QString fingerprintForKey(ssh_key key)
+{
+    if (key == nullptr) {
+        return {};
+    }
+
+    unsigned char *hash = nullptr;
+    size_t length = 0;
+    if (ssh_get_publickey_hash(key, SSH_PUBLICKEY_HASH_SHA256, &hash,
+                               &length) != SSH_OK) {
+        return {};
+    }
+    const QString fingerprint = QString::fromLatin1(
+        QByteArray(reinterpret_cast<const char *>(hash),
+                   qsizetype(length)).toHex());
+    ssh_clean_pubkey_hash(&hash);
+    return fingerprint;
+}
+
+} // namespace
+
+ssh_session LibsshApi::newSession()
+{
+    return ssh_new();
+}
+
+void LibsshApi::freeSession(ssh_session session)
+{
+    ssh_free(session);
+}
+
+int LibsshApi::setOptionString(ssh_session session,
+                               enum ssh_options_e option,
+                               const QString &value)
+{
+    const QByteArray bytes = value.toUtf8();
+    return ssh_options_set(session, option, bytes.constData());
+}
+
+int LibsshApi::setOptionUnsigned(ssh_session session,
+                                 enum ssh_options_e option,
+                                 unsigned int value)
+{
+    return ssh_options_set(session, option, &value);
+}
+
+int LibsshApi::setOptionBool(ssh_session session, enum ssh_options_e option,
+                             bool value)
+{
+    const int enabled = value ? 1 : 0;
+    return ssh_options_set(session, option, &enabled);
+}
+
+int LibsshApi::parseConfig(ssh_session session)
+{
+    return ssh_options_parse_config(session, nullptr);
+}
+
+void LibsshApi::setBlocking(ssh_session session, bool blocking)
+{
+    ssh_set_blocking(session, blocking ? 1 : 0);
+}
+
+int LibsshApi::connect(ssh_session session)
+{
+    return ssh_connect(session);
+}
+
+enum ssh_known_hosts_e LibsshApi::knownHostState(ssh_session session)
+{
+    return ssh_session_is_known_server(session);
+}
+
+int LibsshApi::updateKnownHosts(ssh_session session)
+{
+    return ssh_session_update_known_hosts(session);
+}
+
+QString LibsshApi::serverFingerprintSha256(ssh_session session)
+{
+    ssh_key key = nullptr;
+    if (ssh_get_server_publickey(session, &key) != SSH_OK) {
+        return {};
+    }
+    const QString fingerprint = fingerprintForKey(key);
+    ssh_key_free(key);
+    return fingerprint;
+}
+
+QString LibsshApi::knownHostFingerprintSha256(ssh_session session)
+{
+    struct ssh_knownhosts_entry *entry = nullptr;
+    ssh_session_get_known_hosts_entry(session, &entry);
+    if (entry == nullptr) {
+        return {};
+    }
+    const QString fingerprint = fingerprintForKey(entry->publickey);
+    ssh_knownhosts_entry_free(entry);
+    return fingerprint;
+}
+
+int LibsshApi::authAgent(ssh_session session)
+{
+    return ssh_userauth_agent(session, nullptr);
+}
+
+int LibsshApi::authExplicitKey(ssh_session session, const QString &path,
+                               const QByteArray &passphrase)
+{
+    const QByteArray pathBytes = path.toUtf8();
+    ssh_key privateKey = nullptr;
+    const int importResult = ssh_pki_import_privkey_file(
+        pathBytes.constData(),
+        passphrase.isEmpty() ? nullptr : passphrase.constData(),
+        nullptr, nullptr, &privateKey);
+    if (importResult != SSH_OK || privateKey == nullptr) {
+        if (privateKey != nullptr) {
+            ssh_key_free(privateKey);
+        }
+        return SSH_AUTH_DENIED;
+    }
+    const int result = ssh_userauth_publickey(session, nullptr, privateKey);
+    ssh_key_free(privateKey);
+    return result;
+}
+
+int LibsshApi::authAutomaticPublicKey(ssh_session session,
+                                      const QByteArray &passphrase)
+{
+    return ssh_userauth_publickey_auto(
+        session, nullptr,
+        passphrase.isEmpty() ? nullptr : passphrase.constData());
+}
+
+int LibsshApi::authKeyboardInteractive(ssh_session session)
+{
+    return ssh_userauth_kbdint(session, nullptr, nullptr);
+}
+
+QList<SshAuthPrompt>
+LibsshApi::keyboardInteractivePrompts(ssh_session session)
+{
+    QList<SshAuthPrompt> prompts;
+    const int count = ssh_userauth_kbdint_getnprompts(session);
+    if (count <= 0) {
+        return prompts;
+    }
+    prompts.reserve(count);
+    for (int i = 0; i < count; ++i) {
+        char echo = 0;
+        const char *text = ssh_userauth_kbdint_getprompt(
+            session, static_cast<unsigned int>(i), &echo);
+        prompts.append(
+            {QString::fromUtf8(text == nullptr ? "" : text), echo != 0});
+    }
+    return prompts;
+}
+
+int LibsshApi::setKeyboardInteractiveAnswer(ssh_session session,
+                                            unsigned int index,
+                                            const QByteArray &answer)
+{
+    return ssh_userauth_kbdint_setanswer(session, index,
+                                         answer.constData());
+}
+
+int LibsshApi::authPassword(ssh_session session,
+                            const QByteArray &password)
+{
+    return ssh_userauth_password(session, nullptr, password.constData());
+}
+
+int LibsshApi::sendKeepalive(ssh_session session)
+{
+    return ssh_send_ignore(session, nullptr);
+}
+
+void LibsshApi::disconnect(ssh_session session)
+{
+    ssh_disconnect(session);
+}
+
+QString LibsshApi::errorString(ssh_session session) const
+{
+    const char *message = ssh_get_error(session);
+    return QString::fromUtf8(message == nullptr ? "" : message);
+}
+
+int LibsshApi::errorCode(ssh_session session) const
+{
+    return ssh_get_error_code(session);
+}

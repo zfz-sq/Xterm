@@ -102,15 +102,25 @@ qt_add_executable(Xterm
     filebrowserdialog.h
     transferdialog.cpp
     transferdialog.h
+    ssh/libsshapi.cpp
+    ssh/libsshapi.h
+    ssh/libsshconnection.cpp
+    ssh/libsshconnection.h
+    ssh/knownhostsstore.cpp
+    ssh/knownhostsstore.h
+    ssh/sshtypes.h
     resources/resources.qrc
     ${XTERM_RC_SOURCES}
 )
+
+target_include_directories(Xterm PRIVATE "${CMAKE_SOURCE_DIR}")
 
 target_link_libraries(Xterm
     PRIVATE
         Qt6::Widgets
         Qt6::SerialPort
         Qt6::Network
+        ssh
         libssh2
         ws2_32
         bcrypt

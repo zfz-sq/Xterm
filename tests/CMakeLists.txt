@@ -23,3 +23,29 @@ set_target_properties(test_knownhosts PROPERTIES
 )
 
 add_test(NAME test_knownhosts COMMAND test_knownhosts)
+
+add_executable(test_libsshconnection
+    test_libsshconnection.cpp
+    "${CMAKE_SOURCE_DIR}/ssh/libsshapi.cpp"
+    "${CMAKE_SOURCE_DIR}/ssh/libsshconnection.cpp"
+    "${CMAKE_SOURCE_DIR}/ssh/knownhostsstore.cpp"
+)
+
+target_include_directories(test_libsshconnection
+    PRIVATE
+        "${CMAKE_SOURCE_DIR}"
+)
+
+target_link_libraries(test_libsshconnection
+    PRIVATE
+        Qt6::Test
+        ssh
+)
+
+xterm_deploy_ssh_runtime(test_libsshconnection)
+
+set_target_properties(test_libsshconnection PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)
+
+add_test(NAME test_libsshconnection COMMAND test_libsshconnection)
