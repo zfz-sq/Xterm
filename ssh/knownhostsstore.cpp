@@ -3,11 +3,10 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QStandardPaths>
-
-#include <libssh/libssh.h>
 
 #include <utility>
 
@@ -128,14 +127,15 @@ bool hostPatternsMatch(const QString &patternsField,
     return hasPositiveMatch;
 }
 
-bool standardFileHasMatchingKey(const QString &path, const QString &host,
-                                quint16 port, const QString &fingerprint,
+QString standardFileFingerprint(const QString &path,
+                                const KnownHostKeyValidator &keyValidator,
+                                const QString &host, quint16 port,
                                 QString *error)
 {
     QByteArray contents;
     if (!readFileContents(path, QStringLiteral("known_hosts"), &contents,
                           error)) {
-        return false;
+        return {};
     }
 
     const QString expectedPattern =
@@ -158,48 +158,30 @@ bool standardFileHasMatchingKey(const QString &path, const QString &host,
         }
 
         const QByteArray declaredType = fields.at(1).toLatin1();
-        const enum ssh_keytypes_e keyType =
-            ssh_key_type_from_name(declaredType.constData());
-        if (keyType == SSH_KEYTYPE_UNKNOWN) {
-            continue;
-        }
-
         const QByteArray encodedBlob = fields.at(2).toLatin1();
         const auto decoded = QByteArray::fromBase64Encoding(
             encodedBlob, QByteArray::AbortOnBase64DecodingErrors);
         if (!decoded
-            || !wireBlobAlgorithmMatches(decoded.decoded, declaredType)) {
+            || !wireBlobAlgorithmMatches(decoded.decoded, declaredType)
+            || !keyValidator.validateKnownHostKey(declaredType,
+                                                  encodedBlob)) {
             continue;
         }
-
-        ssh_key parsedKey = nullptr;
-        const int importResult = ssh_pki_import_pubkey_base64(
-            encodedBlob.constData(), keyType, &parsedKey);
-        if (importResult != SSH_OK || parsedKey == nullptr) {
-            if (parsedKey != nullptr) {
-                ssh_key_free(parsedKey);
-            }
-            continue;
-        }
-        ssh_key_free(parsedKey);
 
         const QByteArray hash =
             QCryptographicHash::hash(decoded.decoded,
                                      QCryptographicHash::Sha256)
                 .toHex();
-        if (QString::fromLatin1(hash).compare(fingerprint,
-                                              Qt::CaseInsensitive)
-            == 0) {
-            return true;
-        }
+        setError(error, {});
+        return QString::fromLatin1(hash);
     }
 
     setError(error,
-             QStringLiteral("No matching OpenSSH host key for %1:%2 in %3")
+             QStringLiteral("No valid OpenSSH host key for %1:%2 in %3")
                  .arg(host)
                  .arg(port)
                  .arg(path));
-    return false;
+    return {};
 }
 
 } // namespace
@@ -231,8 +213,10 @@ bool rollbackMigrationRename(const QString &currentPath,
 
 } // namespace KnownHostsStoreDetail
 
-KnownHostsStore::KnownHostsStore(QString rootDirectory)
-    : m_rootDirectory(rootDirectory.isEmpty()
+KnownHostsStore::KnownHostsStore(KnownHostKeyValidator &keyValidator,
+                                 QString rootDirectory)
+    : m_keyValidator(keyValidator),
+      m_rootDirectory(rootDirectory.isEmpty()
                           ? QStandardPaths::writableLocation(
                                 QStandardPaths::AppConfigLocation)
                           : std::move(rootDirectory))
@@ -249,6 +233,11 @@ QString KnownHostsStore::legacyPath() const
     return QDir(m_rootDirectory).filePath(QStringLiteral("known_hosts.legacy"));
 }
 
+QString KnownHostsStore::globalPath() const
+{
+    return QDir(m_rootDirectory).filePath(QStringLiteral("known_hosts.global"));
+}
+
 bool KnownHostsStore::prepareMigration(QString *error)
 {
     setError(error, {});
@@ -258,6 +247,18 @@ bool KnownHostsStore::prepareMigration(QString *error)
         setError(error, QStringLiteral("Cannot create known_hosts directory %1")
                             .arg(m_rootDirectory));
         return false;
+    }
+
+    QFile global(globalPath());
+    const QFileInfo globalInfo(globalPath());
+    if (!globalInfo.isFile() || globalInfo.size() != 0) {
+        if (!global.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            setError(error,
+                     QStringLiteral(
+                         "Cannot maintain empty global known_hosts file %1: %2")
+                         .arg(globalPath(), global.errorString()));
+            return false;
+        }
     }
 
     if (!QFile::exists(path())) {
@@ -323,6 +324,15 @@ QString KnownHostsStore::legacyFingerprint(const QString &host,
     return {};
 }
 
+QString KnownHostsStore::standardFingerprint(const QString &host,
+                                             quint16 port,
+                                             QString *error) const
+{
+    setError(error, {});
+    return standardFileFingerprint(path(), m_keyValidator, host, port,
+                                   error);
+}
+
 bool KnownHostsStore::rememberLegacyMatch(const QString &host, quint16 port,
                                           const QString &fingerprint,
                                           QString *error)
@@ -361,7 +371,17 @@ bool KnownHostsStore::rememberLegacyMatch(const QString &host, quint16 port,
         return false;
     }
 
-    if (!standardFileHasMatchingKey(path(), host, port, fingerprint, error)) {
+    const QString standard =
+        standardFingerprint(host, port, error);
+    if (standard.isEmpty()
+        || standard.compare(fingerprint, Qt::CaseInsensitive) != 0) {
+        if (!standard.isEmpty()) {
+            setError(error,
+                     QStringLiteral(
+                         "OpenSSH host key fingerprint mismatch for %1:%2")
+                         .arg(host)
+                         .arg(port));
+        }
         return false;
     }
 

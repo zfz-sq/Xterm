@@ -19,7 +19,11 @@ LibsshConnection::~LibsshConnection()
 
 void LibsshConnection::begin(const SshTarget &target)
 {
-    releaseSession();
+    if (m_session != nullptr && !m_finished) {
+        close();
+    } else {
+        releaseSession();
+    }
     clearSecrets();
 
     m_target = target;
@@ -108,9 +112,6 @@ void LibsshConnection::advance()
             m_pendingPrompts =
                 m_api.keyboardInteractivePrompts(m_session);
             if (m_pendingPrompts.isEmpty()) {
-                fail(SshError::Domain::Authentication,
-                     QStringLiteral(
-                         "Keyboard-interactive requested no prompts"));
                 return;
             }
             m_pendingRequestId = m_nextRequestId++;
@@ -298,7 +299,10 @@ void LibsshConnection::configure()
     // Configuration was parsed explicitly above. Disable the implicit second
     // parse during ssh_connect(), otherwise it could overwrite UI values.
     if (!setBoolOption(SSH_OPTIONS_PROCESS_CONFIG, false)
-        || !setStringOption(SSH_OPTIONS_KNOWNHOSTS, m_knownHosts.path())) {
+        || !setBoolOption(SSH_OPTIONS_STRICTHOSTKEYCHECK, true)
+        || !setStringOption(SSH_OPTIONS_KNOWNHOSTS, m_knownHosts.path())
+        || !setStringOption(SSH_OPTIONS_GLOBAL_KNOWNHOSTS,
+                            m_knownHosts.globalPath())) {
         return;
     }
 
@@ -319,15 +323,33 @@ void LibsshConnection::verifyHost()
         return;
     }
 
+    const QString legacyFingerprint =
+        m_knownHosts.legacyFingerprint(
+            m_target.host, static_cast<quint16>(m_target.port));
     if (state == SSH_KNOWN_HOSTS_OK) {
+        if (!legacyFingerprint.isEmpty()) {
+            if (legacyFingerprint.compare(m_currentFingerprint,
+                                          Qt::CaseInsensitive) != 0) {
+                m_pendingRequestId = m_nextRequestId++;
+                m_step = Step::WaitForHostDecision;
+                emit hostKeyDecisionRequired(
+                    {m_pendingRequestId, m_target.host,
+                     legacyFingerprint, m_currentFingerprint});
+                return;
+            }
+            QString migrationError;
+            if (!m_knownHosts.rememberLegacyMatch(
+                    m_target.host, static_cast<quint16>(m_target.port),
+                    m_currentFingerprint, &migrationError)) {
+                fail(SshError::Domain::HostKey, migrationError);
+                return;
+            }
+        }
         m_step = Step::AuthAgent;
         setPhase(SshPhase::Authenticating);
         return;
     }
 
-    const QString legacyFingerprint =
-        m_knownHosts.legacyFingerprint(
-            m_target.host, static_cast<quint16>(m_target.port));
     if (state == SSH_KNOWN_HOSTS_UNKNOWN
         || state == SSH_KNOWN_HOSTS_NOT_FOUND) {
         if (legacyFingerprint.isEmpty()) {
@@ -374,12 +396,20 @@ void LibsshConnection::verifyHost()
 
     if (state == SSH_KNOWN_HOSTS_CHANGED
         || state == SSH_KNOWN_HOSTS_OTHER) {
+        QString fingerprintError;
+        const QString oldFingerprint =
+            m_knownHosts.standardFingerprint(
+                m_target.host, static_cast<quint16>(m_target.port),
+                &fingerprintError);
+        if (oldFingerprint.isEmpty()) {
+            fail(SshError::Domain::HostKey, fingerprintError);
+            return;
+        }
         m_pendingRequestId = m_nextRequestId++;
         m_step = Step::WaitForHostDecision;
         emit hostKeyDecisionRequired(
             {m_pendingRequestId, m_target.host,
-             m_api.knownHostFingerprintSha256(m_session),
-             m_currentFingerprint});
+             oldFingerprint, m_currentFingerprint});
         return;
     }
 

@@ -25,6 +25,26 @@ QString fingerprintForKey(ssh_key key)
 
 } // namespace
 
+bool LibsshApi::validateKnownHostKey(
+    const QByteArray &algorithm,
+    const QByteArray &encodedKey) const
+{
+    const enum ssh_keytypes_e keyType =
+        ssh_key_type_from_name(algorithm.constData());
+    if (keyType == SSH_KEYTYPE_UNKNOWN) {
+        return false;
+    }
+
+    ssh_key key = nullptr;
+    const int result = ssh_pki_import_pubkey_base64(
+        encodedKey.constData(), keyType, &key);
+    const bool valid = result == SSH_OK && key != nullptr;
+    if (key != nullptr) {
+        ssh_key_free(key);
+    }
+    return valid;
+}
+
 ssh_session LibsshApi::newSession()
 {
     return ssh_new();
@@ -93,18 +113,6 @@ QString LibsshApi::serverFingerprintSha256(ssh_session session)
     return fingerprint;
 }
 
-QString LibsshApi::knownHostFingerprintSha256(ssh_session session)
-{
-    struct ssh_knownhosts_entry *entry = nullptr;
-    ssh_session_get_known_hosts_entry(session, &entry);
-    if (entry == nullptr) {
-        return {};
-    }
-    const QString fingerprint = fingerprintForKey(entry->publickey);
-    ssh_knownhosts_entry_free(entry);
-    return fingerprint;
-}
-
 int LibsshApi::authAgent(ssh_session session)
 {
     return ssh_userauth_agent(session, nullptr);
@@ -123,7 +131,7 @@ int LibsshApi::authExplicitKey(ssh_session session, const QString &path,
         if (privateKey != nullptr) {
             ssh_key_free(privateKey);
         }
-        return SSH_AUTH_DENIED;
+        return SSH_AUTH_ERROR;
     }
     const int result = ssh_userauth_publickey(session, nullptr, privateKey);
     ssh_key_free(privateKey);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "knownhostsstore.h"
 #include "sshtypes.h"
 
 #include <QByteArray>
@@ -8,10 +9,14 @@
 
 #include <libssh/libssh.h>
 
-class LibsshApi
+class LibsshApi : public KnownHostKeyValidator
 {
 public:
     virtual ~LibsshApi() = default;
+
+    bool validateKnownHostKey(
+        const QByteArray &algorithm,
+        const QByteArray &encodedKey) const override;
 
     virtual ssh_session newSession();
     virtual void freeSession(ssh_session session);
@@ -31,7 +36,6 @@ public:
     virtual enum ssh_known_hosts_e knownHostState(ssh_session session);
     virtual int updateKnownHosts(ssh_session session);
     virtual QString serverFingerprintSha256(ssh_session session);
-    virtual QString knownHostFingerprintSha256(ssh_session session);
 
     virtual int authAgent(ssh_session session);
     virtual int authExplicitKey(ssh_session session, const QString &path,

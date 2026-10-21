@@ -9,6 +9,16 @@
 class FakeLibsshApi final : public LibsshApi
 {
 public:
+    bool validateKnownHostKey(const QByteArray &algorithm,
+                              const QByteArray &encodedKey) const override
+    {
+        calls.append(
+            QStringLiteral("validateKnownHostKey:%1")
+                .arg(QString::fromLatin1(algorithm)));
+        Q_UNUSED(encodedKey);
+        return take(keyValidationResults, true);
+    }
+
     ssh_session newSession() override
     {
         calls.append(QStringLiteral("newSession"));
@@ -74,12 +84,6 @@ public:
     {
         calls.append(QStringLiteral("serverFingerprint"));
         return serverFingerprint;
-    }
-
-    QString knownHostFingerprintSha256(ssh_session) override
-    {
-        calls.append(QStringLiteral("knownHostFingerprint"));
-        return oldFingerprint;
     }
 
     int authAgent(ssh_session) override
@@ -155,7 +159,7 @@ public:
         return values.takeFirst();
     }
 
-    QStringList calls;
+    mutable QStringList calls;
     QHash<enum ssh_options_e, QString> stringOptions;
     QHash<enum ssh_options_e, unsigned int> unsignedOptions;
     QHash<enum ssh_options_e, bool> boolOptions;
@@ -166,7 +170,7 @@ public:
     int updateKnownHostsResult = SSH_OK;
     int updateKnownHostsCount = 0;
     QString serverFingerprint = QStringLiteral("new-sha256");
-    QString oldFingerprint = QStringLiteral("old-sha256");
+    mutable QList<bool> keyValidationResults;
     QList<int> agentResults;
     QList<int> explicitKeyResults;
     QList<int> autoKeyResults;

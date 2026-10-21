@@ -59,6 +59,24 @@ QByteArray readFile(const QString &path)
     return file.readAll();
 }
 
+class FakeKnownHostKeyValidator final : public KnownHostKeyValidator
+{
+public:
+    bool validateKnownHostKey(const QByteArray &algorithm,
+                              const QByteArray &encodedKey) const override
+    {
+        ++calls;
+        const auto decoded = QByteArray::fromBase64Encoding(
+            encodedKey, QByteArray::AbortOnBase64DecodingErrors);
+        return accept && decoded
+            && algorithm == QByteArrayLiteral("ssh-ed25519")
+            && decoded.decoded.size() == 51;
+    }
+
+    mutable int calls = 0;
+    bool accept = true;
+};
+
 } // namespace
 
 class TestKnownHosts : public QObject
@@ -70,6 +88,8 @@ private slots:
     void readsLegacySha256ForHostAndPort();
     void ignoresMalformedLegacyRows();
     void standardKnownHostsPathStaysInsideAppConfig();
+    void createsAndMaintainsEmptyGlobalKnownHosts();
+    void readsStrictStandardFingerprintThroughValidator();
     void atomicRewritePreservesUnrelatedHosts();
     void requiresMatchingStandardKeyBeforeConsumingLegacy();
     void unreadableStandardFileDoesNotConsumeLegacy();
@@ -81,13 +101,16 @@ private slots:
     void migrationReadFailureLeavesPathUntouched();
     void migrationRollbackRestoresOriginalFile();
     void migrationRollbackFailureReportsActualState();
+
+private:
+    FakeKnownHostKeyValidator m_validator;
 };
 
 void TestKnownHosts::migratesLegacyFileWithoutLosingIt()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    KnownHostsStore store(directory.path());
+    KnownHostsStore store(m_validator, directory.path());
     const QByteArray legacyContents =
         "# retained comment\nexample.test:2222 " + QByteArray(kFingerprint) + "\n";
     QVERIFY(writeFile(store.path(), legacyContents));
@@ -102,7 +125,7 @@ void TestKnownHosts::readsLegacySha256ForHostAndPort()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    KnownHostsStore store(directory.path());
+    KnownHostsStore store(m_validator, directory.path());
     const QByteArray upperFingerprint = QByteArray(kFingerprint).toUpper();
     QVERIFY(writeFile(store.legacyPath(),
                       "alpha.test:22 " + upperFingerprint + "\n"
@@ -119,7 +142,7 @@ void TestKnownHosts::ignoresMalformedLegacyRows()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    KnownHostsStore store(directory.path());
+    KnownHostsStore store(m_validator, directory.path());
     QVERIFY(writeFile(store.legacyPath(),
                       "# comment\n"
                       "\n"
@@ -135,24 +158,70 @@ void TestKnownHosts::ignoresMalformedLegacyRows()
 
 void TestKnownHosts::standardKnownHostsPathStaysInsideAppConfig()
 {
-    KnownHostsStore defaultStore;
+    KnownHostsStore defaultStore(m_validator);
     const QString configRoot =
         QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
     QCOMPARE(defaultStore.path(), configRoot + QStringLiteral("/known_hosts"));
     QCOMPARE(defaultStore.legacyPath(),
              configRoot + QStringLiteral("/known_hosts.legacy"));
+    QCOMPARE(defaultStore.globalPath(),
+             configRoot + QStringLiteral("/known_hosts.global"));
 
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    KnownHostsStore injectedStore(directory.path());
+    KnownHostsStore injectedStore(m_validator, directory.path());
     QCOMPARE(injectedStore.path(), directory.path() + QStringLiteral("/known_hosts"));
+    QCOMPARE(injectedStore.globalPath(),
+             directory.path() + QStringLiteral("/known_hosts.global"));
+}
+
+void TestKnownHosts::createsAndMaintainsEmptyGlobalKnownHosts()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    KnownHostsStore store(m_validator, directory.path());
+    QVERIFY(writeFile(store.globalPath(), QByteArrayLiteral("untrusted key\n")));
+
+    QString error;
+    QVERIFY2(store.prepareMigration(&error), qPrintable(error));
+
+    QVERIFY(QFile::exists(store.path()));
+    QVERIFY(QFile::exists(store.globalPath()));
+    QCOMPARE(readFile(store.globalPath()), QByteArray());
+}
+
+void TestKnownHosts::readsStrictStandardFingerprintThroughValidator()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    KnownHostsStore store(m_validator, directory.path());
+    const QByteArray blob = ed25519Blob('f');
+    const QString expected =
+        QString::fromLatin1(fingerprintForBlob(blob));
+    QVERIFY(writeFile(store.path(),
+                      "[target.test]:2200 ssh-ed25519 "
+                          + blob.toBase64() + "\n"));
+    m_validator.calls = 0;
+
+    QString error;
+    QCOMPARE(store.standardFingerprint(QStringLiteral("target.test"), 2200,
+                                       &error),
+             expected);
+    QVERIFY(error.isEmpty());
+    QCOMPARE(m_validator.calls, 1);
+
+    m_validator.accept = false;
+    QVERIFY(store.standardFingerprint(QStringLiteral("target.test"), 2200,
+                                      &error).isEmpty());
+    QVERIFY(!error.isEmpty());
+    m_validator.accept = true;
 }
 
 void TestKnownHosts::atomicRewritePreservesUnrelatedHosts()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    KnownHostsStore store(directory.path());
+    KnownHostsStore store(m_validator, directory.path());
     const QByteArray keyBlob = ed25519Blob('t');
     const QByteArray fingerprint = fingerprintForBlob(keyBlob);
     const QByteArray standardContents =
@@ -189,7 +258,7 @@ void TestKnownHosts::requiresMatchingStandardKeyBeforeConsumingLegacy()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    KnownHostsStore store(directory.path());
+    KnownHostsStore store(m_validator, directory.path());
     const QByteArray keyBlob = ed25519Blob('e');
     const QByteArray fingerprint = fingerprintForBlob(keyBlob);
     const QByteArray legacyContents =
@@ -225,7 +294,7 @@ void TestKnownHosts::unreadableStandardFileDoesNotConsumeLegacy()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    KnownHostsStore store(directory.path());
+    KnownHostsStore store(m_validator, directory.path());
     const QByteArray keyBlob = ed25519Blob('e');
     const QByteArray fingerprint = fingerprintForBlob(keyBlob);
     const QByteArray legacyContents =
@@ -245,7 +314,7 @@ void TestKnownHosts::rejectsMalformedOrMismatchedStandardKeys()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    KnownHostsStore store(directory.path());
+    KnownHostsStore store(m_validator, directory.path());
 
     QByteArray truncatedBlob;
     appendSshString(&truncatedBlob, QByteArrayLiteral("ssh-ed25519"));
@@ -279,7 +348,7 @@ void TestKnownHosts::rejectsNegatedHostPatterns()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    KnownHostsStore store(directory.path());
+    KnownHostsStore store(m_validator, directory.path());
     const QByteArray keyBlob = ed25519Blob('n');
     const QByteArray fingerprint = fingerprintForBlob(keyBlob);
     const QByteArray legacyContents =
@@ -310,7 +379,7 @@ void TestKnownHosts::matchesStandardHostPatternsAndPorts()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    KnownHostsStore store(directory.path());
+    KnownHostsStore store(m_validator, directory.path());
     const QByteArray defaultBlob = ed25519Blob('d');
     const QByteArray alternateBlob = ed25519Blob('a');
     const QByteArray defaultFingerprint = fingerprintForBlob(defaultBlob);
@@ -341,7 +410,7 @@ void TestKnownHosts::standardFileIsNotMigrated()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    KnownHostsStore store(directory.path());
+    KnownHostsStore store(m_validator, directory.path());
     const QByteArray standardContents =
         "example.test ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey\n";
     QVERIFY(writeFile(store.path(), standardContents));
@@ -356,7 +425,7 @@ void TestKnownHosts::migrationRefusesLegacyConflict()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    KnownHostsStore store(directory.path());
+    KnownHostsStore store(m_validator, directory.path());
     const QByteArray currentLegacy =
         "new.test:22 " + QByteArray(kFingerprint) + "\n";
     const QByteArray preservedLegacy =
@@ -375,7 +444,7 @@ void TestKnownHosts::migrationReadFailureLeavesPathUntouched()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    KnownHostsStore store(directory.path());
+    KnownHostsStore store(m_validator, directory.path());
     QVERIFY(QDir().mkdir(store.path()));
 
     QString error;
@@ -389,7 +458,7 @@ void TestKnownHosts::migrationRollbackRestoresOriginalFile()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    KnownHostsStore store(directory.path());
+    KnownHostsStore store(m_validator, directory.path());
     const QByteArray legacyContents =
         "target.test:22 " + QByteArray(kFingerprint) + "\n";
     QVERIFY(writeFile(store.legacyPath(), legacyContents));
@@ -409,7 +478,7 @@ void TestKnownHosts::migrationRollbackFailureReportsActualState()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    KnownHostsStore store(directory.path());
+    KnownHostsStore store(m_validator, directory.path());
     QVERIFY(writeFile(store.path(), QByteArray("blocking current file")));
     QVERIFY(writeFile(store.legacyPath(), QByteArray("preserved legacy file")));
 

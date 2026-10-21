@@ -67,8 +67,13 @@ private slots:
     void changedHostKeyWaitsForDecision();
     void rejectedChangedKeyDisconnects();
     void triesAgentThenExplicitKeyThenAutoKeyThenKeyboardInteractiveThenPassword();
+    void explicitKeyLocalErrorStopsAuthentication();
     void keyboardInteractivePublishesAllPromptsAndResumes();
+    void keyboardInteractiveZeroPromptsContinuesWithoutUi();
+    void changedKnownHostReadsOldFingerprintFromPrivateStore();
+    void knownLegacyMatchRecoversInterruptedConsumption();
     void cancellationCompletesOnce();
+    void reentrantBeginCancelsPreviousOperationOnce();
     void keepaliveFailureBecomesRetryableNetworkError();
 };
 
@@ -76,8 +81,8 @@ void TestLibsshConnection::explicitUiOptionsOverrideParsedConfig()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    KnownHostsStore store(directory.path());
     FakeLibsshApi api;
+    KnownHostsStore store(api, directory.path());
     api.connectResults = {SSH_AGAIN, SSH_OK};
     api.agentResults = {SSH_AUTH_SUCCESS};
     LibsshConnection connection(api, store);
@@ -99,7 +104,12 @@ void TestLibsshConnection::explicitUiOptionsOverrideParsedConfig()
     QCOMPARE(api.unsignedOptions.value(SSH_OPTIONS_PORT), 2200u);
     QCOMPARE(api.unsignedOptions.value(SSH_OPTIONS_TIMEOUT), 17u);
     QCOMPARE(api.stringOptions.value(SSH_OPTIONS_KNOWNHOSTS), store.path());
+    QCOMPARE(api.stringOptions.value(SSH_OPTIONS_GLOBAL_KNOWNHOSTS),
+             store.globalPath());
+    QVERIFY(api.boolOptions.value(SSH_OPTIONS_STRICTHOSTKEYCHECK));
     QVERIFY(!api.boolOptions.value(SSH_OPTIONS_PROCESS_CONFIG));
+    QVERIFY(QFile::exists(store.globalPath()));
+    QCOMPARE(QFile(store.globalPath()).size(), qint64(0));
     QVERIFY(api.calls.contains(QStringLiteral("blocking:0")));
 
     connection.advance();
@@ -113,8 +123,8 @@ void TestLibsshConnection::unknownHostUsesTofuAndWritesFullKey()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    KnownHostsStore store(directory.path());
     FakeLibsshApi api;
+    KnownHostsStore store(api, directory.path());
     api.knownState = SSH_KNOWN_HOSTS_UNKNOWN;
     api.agentResults = {SSH_AUTH_SUCCESS};
     LibsshConnection connection(api, store);
@@ -132,7 +142,8 @@ void TestLibsshConnection::matchingLegacyFingerprintMigratesToFullKey()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
-    KnownHostsStore store(directory.path());
+    FakeLibsshApi api;
+    KnownHostsStore store(api, directory.path());
     QVERIFY(store.prepareMigration());
     const QByteArray blob = ed25519Blob();
     const QByteArray fingerprint =
@@ -142,7 +153,6 @@ void TestLibsshConnection::matchingLegacyFingerprintMigratesToFullKey()
     QVERIFY(writeFile(store.path(),
                       "[alias.test]:2200 ssh-ed25519 " + blob.toBase64() + "\n"));
 
-    FakeLibsshApi api;
     api.knownState = SSH_KNOWN_HOSTS_UNKNOWN;
     api.serverFingerprint = QString::fromLatin1(fingerprint);
     api.agentResults = {SSH_AUTH_SUCCESS};
@@ -160,12 +170,12 @@ void TestLibsshConnection::matchingLegacyFingerprintMigratesToFullKey()
 void TestLibsshConnection::changedHostKeyWaitsForDecision()
 {
     QTemporaryDir directory;
-    KnownHostsStore store(directory.path());
     FakeLibsshApi api;
+    KnownHostsStore store(api, directory.path());
     api.knownState = SSH_KNOWN_HOSTS_UNKNOWN;
-    api.oldFingerprint = QString(64, QLatin1Char('a'));
+    const QString oldFingerprint(64, QLatin1Char('a'));
     QVERIFY(writeFile(store.legacyPath(),
-                      "alias.test:2200 " + api.oldFingerprint.toLatin1()
+                      "alias.test:2200 " + oldFingerprint.toLatin1()
                           + "\n"));
     api.agentResults = {SSH_AUTH_SUCCESS};
     LibsshConnection connection(api, store);
@@ -180,7 +190,7 @@ void TestLibsshConnection::changedHostKeyWaitsForDecision()
     QCOMPARE(decision.count(), 1);
     const SshHostKeyChange change =
         qvariant_cast<SshHostKeyChange>(decision.first().first());
-    QCOMPARE(change.oldFingerprint, api.oldFingerprint);
+    QCOMPARE(change.oldFingerprint, oldFingerprint);
     QCOMPARE(change.newFingerprint, api.serverFingerprint);
     connection.advance();
     QCOMPARE(decision.count(), 1);
@@ -198,8 +208,12 @@ void TestLibsshConnection::changedHostKeyWaitsForDecision()
 void TestLibsshConnection::rejectedChangedKeyDisconnects()
 {
     QTemporaryDir directory;
-    KnownHostsStore store(directory.path());
     FakeLibsshApi api;
+    KnownHostsStore store(api, directory.path());
+    const QByteArray oldBlob = ed25519Blob();
+    QVERIFY(writeFile(store.path(),
+                      "[alias.test]:2200 ssh-ed25519 "
+                          + oldBlob.toBase64() + "\n"));
     api.knownState = SSH_KNOWN_HOSTS_OTHER;
     LibsshConnection connection(api, store);
     QSignalSpy decision(&connection,
@@ -224,8 +238,8 @@ void TestLibsshConnection::
     triesAgentThenExplicitKeyThenAutoKeyThenKeyboardInteractiveThenPassword()
 {
     QTemporaryDir directory;
-    KnownHostsStore store(directory.path());
     FakeLibsshApi api;
+    KnownHostsStore store(api, directory.path());
     api.agentResults = {SSH_AUTH_DENIED};
     api.explicitKeyResults = {SSH_AUTH_DENIED};
     api.autoKeyResults = {SSH_AUTH_DENIED};
@@ -252,11 +266,32 @@ void TestLibsshConnection::
     QCOMPARE(finished.count(), 1);
 }
 
+void TestLibsshConnection::explicitKeyLocalErrorStopsAuthentication()
+{
+    QTemporaryDir directory;
+    FakeLibsshApi api;
+    KnownHostsStore store(api, directory.path());
+    api.agentResults = {SSH_AUTH_DENIED};
+    api.explicitKeyResults = {SSH_AUTH_ERROR};
+    LibsshConnection connection(api, store);
+    QSignalSpy finished(&connection, &LibsshConnection::finished);
+
+    connection.begin(target());
+    advanceUntilFinished(connection, finished);
+
+    QCOMPARE(finished.count(), 1);
+    QCOMPARE(qvariant_cast<SshError>(finished.first().first()).domain,
+             SshError::Domain::Authentication);
+    QVERIFY(!api.calls.contains(QStringLiteral("authAuto")));
+    QVERIFY(!api.calls.contains(QStringLiteral("authKeyboard")));
+    QVERIFY(!api.calls.contains(QStringLiteral("authPassword")));
+}
+
 void TestLibsshConnection::keyboardInteractivePublishesAllPromptsAndResumes()
 {
     QTemporaryDir directory;
-    KnownHostsStore store(directory.path());
     FakeLibsshApi api;
+    KnownHostsStore store(api, directory.path());
     api.agentResults = {SSH_AUTH_DENIED};
     api.explicitKeyResults = {SSH_AUTH_DENIED};
     api.autoKeyResults = {SSH_AUTH_DENIED};
@@ -292,11 +327,101 @@ void TestLibsshConnection::keyboardInteractivePublishesAllPromptsAndResumes()
     QCOMPARE(finished.count(), 1);
 }
 
+void TestLibsshConnection::keyboardInteractiveZeroPromptsContinuesWithoutUi()
+{
+    QTemporaryDir directory;
+    FakeLibsshApi api;
+    KnownHostsStore store(api, directory.path());
+    api.agentResults = {SSH_AUTH_DENIED};
+    api.explicitKeyResults = {SSH_AUTH_DENIED};
+    api.autoKeyResults = {SSH_AUTH_DENIED};
+    api.keyboardResults = {SSH_AUTH_INFO, SSH_AUTH_SUCCESS};
+    LibsshConnection connection(api, store);
+    QSignalSpy requested(&connection, &LibsshConnection::authAnswersRequired);
+    QSignalSpy finished(&connection, &LibsshConnection::finished);
+
+    connection.begin(target());
+    advanceUntilFinished(connection, finished);
+
+    QCOMPARE(requested.count(), 0);
+    QCOMPARE(api.calls.count(QStringLiteral("authKeyboard")), 2);
+    QCOMPARE(finished.count(), 1);
+    QVERIFY(!qvariant_cast<SshError>(finished.first().first()).isError());
+}
+
+void TestLibsshConnection::
+    changedKnownHostReadsOldFingerprintFromPrivateStore()
+{
+    QTemporaryDir directory;
+    FakeLibsshApi api;
+    KnownHostsStore store(api, directory.path());
+    const QByteArray oldBlob = ed25519Blob();
+    const QString oldFingerprint = QString::fromLatin1(
+        QCryptographicHash::hash(oldBlob, QCryptographicHash::Sha256).toHex());
+    QVERIFY(writeFile(store.path(),
+                      "[alias.test]:2200 ssh-ed25519 "
+                          + oldBlob.toBase64() + "\n"));
+    api.knownState = SSH_KNOWN_HOSTS_CHANGED;
+    api.serverFingerprint = QString(64, QLatin1Char('b'));
+    LibsshConnection connection(api, store);
+    QSignalSpy decision(&connection,
+                        &LibsshConnection::hostKeyDecisionRequired);
+
+    connection.begin(target());
+    for (int i = 0; i < 10 && decision.isEmpty(); ++i) {
+        connection.advance();
+    }
+
+    QCOMPARE(decision.count(), 1);
+    const SshHostKeyChange change =
+        qvariant_cast<SshHostKeyChange>(decision.first().first());
+    QCOMPARE(change.oldFingerprint, oldFingerprint);
+    QCOMPARE(change.newFingerprint, api.serverFingerprint);
+    QVERIFY(!api.calls.contains(QStringLiteral("knownHostFingerprint")));
+}
+
+void TestLibsshConnection::knownLegacyMatchRecoversInterruptedConsumption()
+{
+    QTemporaryDir directory;
+    FakeLibsshApi api;
+    KnownHostsStore store(api, directory.path());
+    const QByteArray blob = ed25519Blob();
+    const QByteArray fingerprint =
+        QCryptographicHash::hash(blob, QCryptographicHash::Sha256).toHex();
+    QVERIFY(writeFile(store.path(),
+                      "[alias.test]:2200 ssh-ed25519 " + blob.toBase64() + "\n"));
+    QVERIFY(writeFile(store.legacyPath(),
+                      "alias.test:2200 " + fingerprint + "\n"));
+    api.knownState = SSH_KNOWN_HOSTS_UNKNOWN;
+    api.serverFingerprint = QString::fromLatin1(fingerprint);
+    api.keyValidationResults = {false, true};
+    api.agentResults = {SSH_AUTH_SUCCESS};
+    LibsshConnection first(api, store);
+    QSignalSpy firstFinished(&first, &LibsshConnection::finished);
+
+    first.begin(target());
+    advanceUntilFinished(first, firstFinished);
+    QCOMPARE(firstFinished.count(), 1);
+    QCOMPARE(qvariant_cast<SshError>(firstFinished.first().first()).domain,
+             SshError::Domain::HostKey);
+    QVERIFY(QFile(store.legacyPath()).size() > 0);
+
+    api.knownState = SSH_KNOWN_HOSTS_OK;
+    LibsshConnection retry(api, store);
+    QSignalSpy retryFinished(&retry, &LibsshConnection::finished);
+    retry.begin(target());
+    advanceUntilFinished(retry, retryFinished);
+
+    QCOMPARE(retryFinished.count(), 1);
+    QVERIFY(!qvariant_cast<SshError>(retryFinished.first().first()).isError());
+    QCOMPARE(QFile(store.legacyPath()).size(), qint64(0));
+}
+
 void TestLibsshConnection::cancellationCompletesOnce()
 {
     QTemporaryDir directory;
-    KnownHostsStore store(directory.path());
     FakeLibsshApi api;
+    KnownHostsStore store(api, directory.path());
     api.connectResults = {SSH_AGAIN};
     LibsshConnection connection(api, store);
     QSignalSpy finished(&connection, &LibsshConnection::finished);
@@ -314,11 +439,32 @@ void TestLibsshConnection::cancellationCompletesOnce()
     QCOMPARE(api.disconnectCount, 1);
 }
 
+void TestLibsshConnection::reentrantBeginCancelsPreviousOperationOnce()
+{
+    QTemporaryDir directory;
+    FakeLibsshApi api;
+    KnownHostsStore store(api, directory.path());
+    api.connectResults = {SSH_AGAIN};
+    LibsshConnection connection(api, store);
+    QSignalSpy finished(&connection, &LibsshConnection::finished);
+
+    connection.begin(target());
+    connection.advance();
+    connection.advance();
+    connection.begin(target());
+
+    QCOMPARE(finished.count(), 1);
+    QCOMPARE(qvariant_cast<SshError>(finished.first().first()).domain,
+             SshError::Domain::Cancelled);
+    QCOMPARE(api.calls.count(QStringLiteral("newSession")), 2);
+    QCOMPARE(api.disconnectCount, 1);
+}
+
 void TestLibsshConnection::keepaliveFailureBecomesRetryableNetworkError()
 {
     QTemporaryDir directory;
-    KnownHostsStore store(directory.path());
     FakeLibsshApi api;
+    KnownHostsStore store(api, directory.path());
     api.agentResults = {SSH_AUTH_SUCCESS};
     api.keepaliveResult = SSH_ERROR;
     LibsshConnection connection(api, store);
