@@ -1,5 +1,6 @@
 #include "knownhostsstore.h"
 
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QRegularExpression>
@@ -52,6 +53,26 @@ void setError(QString *error, const QString &message)
     }
 }
 
+bool readFileContents(const QString &path, const QString &description,
+                      QByteArray *contents, QString *error)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        setError(error, QStringLiteral("Cannot read %1 file %2: %3")
+                            .arg(description, path, file.errorString()));
+        return false;
+    }
+
+    *contents = file.readAll();
+    if (file.error() != QFileDevice::NoError) {
+        setError(error, QStringLiteral("Cannot read %1 file %2: %3")
+                            .arg(description, path, file.errorString()));
+        contents->clear();
+        return false;
+    }
+    return true;
+}
+
 bool createEmptyFile(const QString &path, QString *error)
 {
     QFile file(path);
@@ -63,7 +84,87 @@ bool createEmptyFile(const QString &path, QString *error)
     return true;
 }
 
+bool standardFileHasMatchingKey(const QString &path, const QString &host,
+                                quint16 port, const QString &fingerprint,
+                                QString *error)
+{
+    QByteArray contents;
+    if (!readFileContents(path, QStringLiteral("known_hosts"), &contents,
+                          error)) {
+        return false;
+    }
+
+    const QString expectedPattern =
+        port == 22
+            ? host
+            : QStringLiteral("[%1]:%2").arg(host).arg(port);
+    const QList<QByteArray> lines = contents.split('\n');
+    for (const QByteArray &line : lines) {
+        const QString trimmed = QString::fromUtf8(line).trimmed();
+        if (trimmed.isEmpty() || trimmed.startsWith(QLatin1Char('#'))) {
+            continue;
+        }
+
+        const QStringList fields =
+            trimmed.split(QRegularExpression(QStringLiteral("\\s+")),
+                          Qt::SkipEmptyParts);
+        if (fields.size() < 3
+            || !fields.at(0).split(QLatin1Char(',')).contains(expectedPattern)) {
+            continue;
+        }
+
+        const auto decoded = QByteArray::fromBase64Encoding(
+            fields.at(2).toLatin1(), QByteArray::AbortOnBase64DecodingErrors);
+        if (!decoded) {
+            continue;
+        }
+        const QByteArray hash =
+            QCryptographicHash::hash(decoded.decoded,
+                                     QCryptographicHash::Sha256)
+                .toHex();
+        if (QString::fromLatin1(hash).compare(fingerprint,
+                                              Qt::CaseInsensitive)
+            == 0) {
+            return true;
+        }
+    }
+
+    setError(error,
+             QStringLiteral("No matching OpenSSH host key for %1:%2 in %3")
+                 .arg(host)
+                 .arg(port)
+                 .arg(path));
+    return false;
+}
+
 } // namespace
+
+namespace KnownHostsStoreDetail {
+
+bool rollbackMigrationRename(const QString &currentPath,
+                             const QString &legacyPath,
+                             const QString &creationError, QString *error)
+{
+    if (QFile::rename(legacyPath, currentPath)) {
+        setError(error,
+                 QStringLiteral("%1; migration rolled back from %2 to %3")
+                     .arg(creationError, legacyPath, currentPath));
+        return false;
+    }
+
+    setError(error,
+             QStringLiteral(
+                 "%1; rollback from %2 to %3 failed "
+                 "(current exists=%4, legacy exists=%5)")
+                 .arg(creationError, legacyPath, currentPath,
+                      QFile::exists(currentPath) ? QStringLiteral("true")
+                                                 : QStringLiteral("false"),
+                      QFile::exists(legacyPath) ? QStringLiteral("true")
+                                                : QStringLiteral("false")));
+    return false;
+}
+
+} // namespace KnownHostsStoreDetail
 
 KnownHostsStore::KnownHostsStore(QString rootDirectory)
     : m_rootDirectory(rootDirectory.isEmpty()
@@ -94,20 +195,20 @@ bool KnownHostsStore::prepareMigration(QString *error)
         return false;
     }
 
-    QFile current(path());
-    if (!current.exists()) {
+    if (!QFile::exists(path())) {
         return createEmptyFile(path(), error);
     }
-    if (!current.open(QIODevice::ReadOnly)) {
-        setError(error, QStringLiteral("Cannot read known_hosts file %1: %2")
-                            .arg(path(), current.errorString()));
+
+    QByteArray currentContents;
+    if (!readFileContents(path(), QStringLiteral("known_hosts"),
+                          &currentContents, error)) {
         return false;
     }
 
     bool hasLegacyRecord = false;
     bool hasUnknownRecord = false;
-    while (!current.atEnd()) {
-        const QByteArray line = current.readLine();
+    const QList<QByteArray> lines = currentContents.split('\n');
+    for (const QByteArray &line : lines) {
         if (isIgnoredLegacyLine(line)) {
             continue;
         }
@@ -115,10 +216,8 @@ bool KnownHostsStore::prepareMigration(QString *error)
             hasLegacyRecord = true;
         } else {
             hasUnknownRecord = true;
-            break;
         }
     }
-    current.close();
 
     if (!hasLegacyRecord || hasUnknownRecord) {
         return true;
@@ -134,7 +233,12 @@ bool KnownHostsStore::prepareMigration(QString *error)
                             .arg(path(), legacyPath()));
         return false;
     }
-    return createEmptyFile(path(), error);
+    QString creationError;
+    if (createEmptyFile(path(), &creationError)) {
+        return true;
+    }
+    return KnownHostsStoreDetail::rollbackMigrationRename(
+        path(), legacyPath(), creationError, error);
 }
 
 QString KnownHostsStore::legacyFingerprint(const QString &host,
@@ -160,19 +264,11 @@ bool KnownHostsStore::rememberLegacyMatch(const QString &host, quint16 port,
 {
     setError(error, {});
 
-    QFile legacy(legacyPath());
-    if (!legacy.open(QIODevice::ReadOnly)) {
-        setError(error, QStringLiteral("Cannot read legacy known_hosts file %1: %2")
-                            .arg(legacyPath(), legacy.errorString()));
+    QByteArray contents;
+    if (!readFileContents(legacyPath(), QStringLiteral("legacy known_hosts"),
+                          &contents, error)) {
         return false;
     }
-    const QByteArray contents = legacy.readAll();
-    if (legacy.error() != QFileDevice::NoError) {
-        setError(error, QStringLiteral("Cannot read legacy known_hosts file %1: %2")
-                            .arg(legacyPath(), legacy.errorString()));
-        return false;
-    }
-    legacy.close();
 
     QByteArray rewritten;
     rewritten.reserve(contents.size());
@@ -197,6 +293,10 @@ bool KnownHostsStore::rememberLegacyMatch(const QString &host, quint16 port,
                  QStringLiteral("No matching legacy fingerprint for %1:%2")
                      .arg(host)
                      .arg(port));
+        return false;
+    }
+
+    if (!standardFileHasMatchingKey(path(), host, port, fingerprint, error)) {
         return false;
     }
 
