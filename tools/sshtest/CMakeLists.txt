@@ -7,6 +7,7 @@ qt_add_executable(sshtest
     "${CMAKE_SOURCE_DIR}/ssh/libsshconnection.cpp"
     "${CMAKE_SOURCE_DIR}/ssh/knownhostsstore.cpp"
     "${CMAKE_SOURCE_DIR}/ssh/shellchannel.cpp"
+    "${CMAKE_SOURCE_DIR}/ssh/sftpchannel.cpp"
     "${CMAKE_SOURCE_DIR}/ssh/sshworker.cpp"
 )
 

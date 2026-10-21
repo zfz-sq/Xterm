@@ -138,6 +138,7 @@ target_link_libraries(Xterm
 xterm_deploy_ssh_runtime(Xterm)
 
 add_subdirectory(tools/sshtest)
+add_subdirectory(tools/sftptest)
 
 if(BUILD_TESTING)
     add_subdirectory(tests)

@@ -101,7 +101,7 @@ private:
     CompletionEngine *m_completion = nullptr;
     QLabel *m_statusLabel = nullptr;
     QTimer *m_saveTimer = nullptr; // 配置保存防抖（单发，见 scheduleProfileSave）
-    class FileBrowserDialog *m_fileBrowser = nullptr; // SFTP 双栏窗口，存在期间独立于终端会话
+    class FileBrowserDialog *m_fileBrowser = nullptr; // SFTP 双栏窗口，挂在共享 SshSession 上
     AgentBridge *m_agent = nullptr;
     HostStats *m_hostStats = nullptr;
     bool m_hostCpuOk = false;

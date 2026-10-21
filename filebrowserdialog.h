@@ -21,6 +21,7 @@ class QToolButton;
 class QTreeWidget;
 class QTreeWidgetItem;
 class QTreeView;
+class SshSession;
 class TransferDialog;
 
 // 文件自定义命令。! 当前文件，!& 全部选中，!/ 当前目录。
@@ -37,21 +38,18 @@ struct FileCommand
  * 左栏本地、右栏远程，各自有工具栏和右键菜单。
  * 上次打开的本地/远程目录只记一份，写在
  * AppConfigLocation/filebrowser.json。主机 IP 变化后仍回到该目录。
- * 与终端会话各自独立：这里走 libssh2 的第二条连接。
+ * 直接复用终端的 SshSession（同一条 SSH 连接上的共享 SFTP 通道）：
+ * 会话断开时本窗口一并关闭；关闭窗口只取消文件请求，shell 不受影响。
  */
 class FileBrowserDialog : public QDialog
 {
     Q_OBJECT
 
 public:
-    explicit FileBrowserDialog(const SshTarget &target, QWidget *parent = nullptr);
+    explicit FileBrowserDialog(SshSession *session, QWidget *parent = nullptr);
     ~FileBrowserDialog() override;
 
 private slots:
-    void onConnected(const QString &homePath, const QString &fingerprint);
-    void onConnectFailed(const QString &error);
-    bool confirmHostKeyChange(const QString &host, const QString &stored, const QString &current);
-    void onSftpDisconnected();
     void onListed(const QString &path, const QVector<SftpEntry> &entries);
     void onListedFailed(const QString &path, const QString &error);
     void onOpFinished(const QString &op, const QString &arg, bool ok, const QString &error);
@@ -149,8 +147,9 @@ private:
     QStringList selectedLocalPaths() const;
     QVector<RemoteItem> selectedRemote() const;
 
-    SshTarget m_target;
-    SftpClient *m_client = nullptr;
+    SshSession *m_session = nullptr;   // 共享的终端会话，不拥有
+    SshTarget m_target;                // 会话目标的副本，仅用于标题/路径键/URL
+    SftpClient *m_client = nullptr;    // 会话之上的 GUI 适配器（parent=this）
     TransferDialog *m_transfer = nullptr;
 
     QFileSystemModel *m_fsModel = nullptr;

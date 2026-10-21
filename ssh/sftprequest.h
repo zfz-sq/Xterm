@@ -1,11 +1,27 @@
 #pragma once
 
-#include "sftpclient.h"
 #include "sshtypes.h"
 
 #include <QMetaType>
 #include <QString>
 #include <QVector>
+
+/*
+ * SftpEntry: 远程目录里的一条文件/子目录信息。
+ * 定义在这里（ssh/ 侧），GUI 头文件 sftpclient.h 只做转发包含。
+ */
+struct SftpEntry
+{
+    QString name;
+    quint64 size = 0;          // 字节数（目录为 0）
+    qint64 mtime = 0;          // epoch 秒
+    quint32 permissions = 0;   // POSIX 权限位（0644 之类）
+    bool isDir = false;
+    bool isSymlink = false;
+};
+
+Q_DECLARE_METATYPE(SftpEntry)
+Q_DECLARE_METATYPE(QVector<SftpEntry>)
 
 enum class SftpOp {
     List,

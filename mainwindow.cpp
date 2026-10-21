@@ -618,14 +618,17 @@ void MainWindow::browsePrivateKey()
 
 void MainWindow::onFilesClicked()
 {
+    if (m_ssh->state() != Transport::Connected)
+        return; // 按钮只在已连接时可用，这里再挡一层
     if (m_fileBrowser) {
         m_fileBrowser->show();
         m_fileBrowser->raise();
         m_fileBrowser->activateWindow();
         return;
     }
-    // 用会话实际参数建第二条连接；窗口关闭即断开（终端会话不受影响）
-    m_fileBrowser = new FileBrowserDialog(m_ssh->target(), this);
+    // 直接复用终端的 SshSession（同一条 SSH 连接上的共享 SFTP 通道）；
+    // 关闭窗口只取消文件请求，终端会话不受影响。
+    m_fileBrowser = new FileBrowserDialog(m_ssh, this);
     m_fileBrowser->setAttribute(Qt::WA_DeleteOnClose);
     connect(m_fileBrowser, &QObject::destroyed, this, [this] { m_fileBrowser = nullptr; });
     m_fileBrowser->show();

@@ -1,6 +1,7 @@
 #include "filebrowserdialog.h"
 
 #include "icons.h"
+#include "sshsession.h"
 #include "transferdialog.h"
 
 #include <QAction>
@@ -750,22 +751,20 @@ private:
     bool m_editing = false;
 };
 
-FileBrowserDialog::FileBrowserDialog(const SshTarget &target, QWidget *parent)
+FileBrowserDialog::FileBrowserDialog(SshSession *session, QWidget *parent)
     : QDialog(parent)
-    , m_target(target)
+    , m_session(session)
+    , m_target(session->target())
 {
     setWindowTitle(tr("文件管理 - %1@%2").arg(
-        target.user.isEmpty() ? QStringLiteral("root") : target.user, target.host));
+        m_target.user.isEmpty() ? QStringLiteral("root") : m_target.user, m_target.host));
     // 跟终端主窗口对齐，避免文件管理比终端宽一截。
     if (parent && parent->width() >= 640 && parent->height() >= 400)
         resize(parent->size());
     else
         resize(1040, 680);
 
-    m_client = new SftpClient();
-    m_client->setHostKeyPrompter([this](const QString &host, const QString &stored, const QString &current) {
-        return confirmHostKeyChange(host, stored, current);
-    });
+    m_client = new SftpClient(m_session, this);
     m_transfer = new TransferDialog(m_client, this);
     m_editWatcher = new QFileSystemWatcher(this);
     m_editTimer = new QTimer(this);
@@ -896,7 +895,7 @@ FileBrowserDialog::FileBrowserDialog(const SshTarget &target, QWidget *parent)
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 1);
 
-    m_status = new QLabel(tr("连接中..."), this);
+    m_status = new QLabel(tr("正在打开主目录..."), this);
     auto *queueBtn = new QPushButton(tr("传输队列..."), this);
     queueBtn->setAutoDefault(false);
     queueBtn->setDefault(false);
@@ -917,13 +916,13 @@ FileBrowserDialog::FileBrowserDialog(const SshTarget &target, QWidget *parent)
     else
         setLocalPath(QDir::homePath());
 
-    connect(m_client, &SftpClient::connected, this, &FileBrowserDialog::onConnected);
-    connect(m_client, &SftpClient::connectFailed, this, &FileBrowserDialog::onConnectFailed);
-    connect(m_client, &SftpClient::disconnected, this, &FileBrowserDialog::onSftpDisconnected);
     connect(m_client, &SftpClient::listed, this, &FileBrowserDialog::onListed);
     connect(m_client, &SftpClient::listedFailed, this, &FileBrowserDialog::onListedFailed);
     connect(m_client, &SftpClient::opFinished, this, &FileBrowserDialog::onOpFinished);
     connect(m_client, &SftpClient::transferFinished, this, &FileBrowserDialog::onTransferFinished);
+    // 共享会话断了，文件管理器没有独立生命，跟着收摊。
+    // 关闭只销毁适配器并取消文件请求，不影响 shell 本身。
+    connect(m_session, &SshSession::closed, this, &QDialog::close);
     connect(m_localView, &QTreeView::doubleClicked, this, &FileBrowserDialog::onLocalActivated);
     connect(m_remoteTree, &QTreeWidget::itemActivated, this, &FileBrowserDialog::onRemoteItemActivated);
     m_localPathBar->onJump = [this](const QString &path) { setLocalPath(path); };
@@ -980,13 +979,13 @@ FileBrowserDialog::FileBrowserDialog(const SshTarget &target, QWidget *parent)
     connect(f2Remote, &QShortcut::activated, this, &FileBrowserDialog::renameRemote);
 
     updateActionStates();
-    m_client->connectToHost(m_target);
+    // 会话已连接（MainWindow 只在 Connected 时放行），先取主目录再列目录。
+    m_client->realPath(QStringLiteral("."));
 }
 
 FileBrowserDialog::~FileBrowserDialog()
 {
     saveBrowserState();
-    delete m_client;
 }
 
 QToolButton *FileBrowserDialog::makePaneButton(const QString &iconName, const QString &text)
@@ -1114,74 +1113,6 @@ void FileBrowserDialog::saveBrowserState() const
         plain.write(payload);
 }
 
-void FileBrowserDialog::onConnected(const QString &homePath, const QString &fingerprint)
-{
-    m_connected = true;
-    m_homePath = homePath.isEmpty() ? QStringLiteral("/") : homePath;
-    updateActionStates();
-    if (!m_savedRemote.isEmpty()) {
-        m_remoteRestorePending = true;
-        m_status->setText(tr("已连接，正在打开上次目录（指纹 SHA256:%1...）").arg(fingerprint.left(16)));
-        setRemotePath(m_savedRemote);
-    } else {
-        m_status->setText(tr("已连接（指纹 SHA256:%1...）").arg(fingerprint.left(16)));
-        setRemotePath(m_homePath);
-    }
-}
-
-bool FileBrowserDialog::confirmHostKeyChange(const QString &host, const QString &stored, const QString &current)
-{
-    const auto show = [](const QString &hex) {
-        QString b64 = QString::fromLatin1(QByteArray::fromHex(hex.toLatin1()).toBase64());
-        while (b64.endsWith(QLatin1Char('=')))
-            b64.chop(1);
-        return QStringLiteral("SHA256:") + b64;
-    };
-
-    QDialog dialog(this);
-    dialog.setWindowTitle(tr("主机密钥已变化"));
-    auto *layout = new QVBoxLayout(&dialog);
-    auto *intro = new QLabel(tr("主机 %1 的密钥指纹和上次记下的不一致。").arg(host), &dialog);
-    intro->setWordWrap(true);
-    layout->addWidget(intro);
-
-    auto addLine = [&](const QString &title, const QString &hex) {
-        layout->addWidget(new QLabel(title, &dialog));
-        auto *value = new QLabel(show(hex), &dialog);
-        value->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        layout->addWidget(value);
-    };
-    addLine(tr("上次记录"), stored);
-    addLine(tr("这次连接"), current);
-
-    auto *hint = new QLabel(tr("确认这台机器重装过或换过密钥后，再更新记录并继续。如果这台机器不该换密钥，请取消。"), &dialog);
-    hint->setWordWrap(true);
-    layout->addWidget(hint);
-
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, &dialog);
-    buttons->addButton(tr("更新并连接"), QDialogButtonBox::AcceptRole);
-    layout->addWidget(buttons);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    dialog.setMinimumWidth(460);
-    return dialog.exec() == QDialog::Accepted;
-}
-
-void FileBrowserDialog::onConnectFailed(const QString &error)
-{
-    m_connected = false;
-    m_status->setText(tr("连接失败"));
-    updateActionStates();
-    QMessageBox::critical(this, tr("SFTP 连接失败"), error);
-}
-
-void FileBrowserDialog::onSftpDisconnected()
-{
-    m_connected = false;
-    m_status->setText(tr("连接已断开"));
-    updateActionStates();
-}
-
 void FileBrowserDialog::onListed(const QString &path, const QVector<SftpEntry> &entries)
 {
     if (path != m_remotePath)
@@ -1239,7 +1170,24 @@ void FileBrowserDialog::onOpFinished(const QString &op, const QString &arg, bool
     }
     if (op == QLatin1String("realpath")) {
         if (!ok) {
+            if (m_homePath.isEmpty())
+                m_status->setText(tr("读取主目录失败"));
             QMessageBox::warning(this, tr("操作失败"), tr("%1\n%2").arg(arg, error));
+            return;
+        }
+        if (m_homePath.isEmpty()) {
+            // 开窗后的第一次 realpath：定位主目录，等同旧的“已连接”。
+            m_homePath = arg.isEmpty() ? QStringLiteral("/") : arg;
+            m_connected = true;
+            updateActionStates();
+            if (!m_savedRemote.isEmpty()) {
+                m_remoteRestorePending = true;
+                m_status->setText(tr("已连接，正在打开上次目录"));
+                setRemotePath(m_savedRemote);
+            } else {
+                m_status->setText(tr("已连接"));
+                setRemotePath(m_homePath);
+            }
             return;
         }
         setRemotePath(arg);

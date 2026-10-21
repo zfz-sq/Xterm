@@ -141,3 +141,37 @@ set_target_properties(test_sftpchannel PROPERTIES
 )
 
 add_test(NAME test_sftpchannel COMMAND test_sftpchannel)
+
+add_executable(test_sftpclient
+    test_sftpclient.cpp
+    "${CMAKE_SOURCE_DIR}/sftpclient.cpp"
+    "${CMAKE_SOURCE_DIR}/sftpclient.h"
+    "${CMAKE_SOURCE_DIR}/sshsession.cpp"
+    "${CMAKE_SOURCE_DIR}/sshsession.h"
+    "${CMAKE_SOURCE_DIR}/transport.h"
+    "${CMAKE_SOURCE_DIR}/ssh/libsshapi.cpp"
+    "${CMAKE_SOURCE_DIR}/ssh/libsshconnection.cpp"
+    "${CMAKE_SOURCE_DIR}/ssh/knownhostsstore.cpp"
+    "${CMAKE_SOURCE_DIR}/ssh/shellchannel.cpp"
+    "${CMAKE_SOURCE_DIR}/ssh/sftpchannel.cpp"
+    "${CMAKE_SOURCE_DIR}/ssh/sshworker.cpp"
+)
+
+target_include_directories(test_sftpclient
+    PRIVATE
+        "${CMAKE_SOURCE_DIR}"
+)
+
+target_link_libraries(test_sftpclient
+    PRIVATE
+        Qt6::Test
+        ssh
+)
+
+xterm_deploy_ssh_runtime(test_sftpclient)
+
+set_target_properties(test_sftpclient PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)
+
+add_test(NAME test_sftpclient COMMAND test_sftpclient)
