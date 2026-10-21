@@ -6,6 +6,7 @@
 
 #include <QMetaType>
 #include <QThread>
+#include <QVector>
 
 #include <libssh/libssh.h>
 
@@ -46,6 +47,9 @@ void SshSession::setupWorker(LibsshApi &api, KnownHostsStore &knownHosts)
         qRegisterMetaType<SshPhase>();
         qRegisterMetaType<SshRequestId>();
         qRegisterMetaType<QList<SshAuthPrompt>>();
+        qRegisterMetaType<SftpRequest>();
+        qRegisterMetaType<SftpResult>();
+        qRegisterMetaType<QVector<SftpEntry>>();
         return 0;
     }();
     Q_UNUSED(registered);
@@ -66,6 +70,10 @@ void SshSession::setupWorker(LibsshApi &api, KnownHostsStore &knownHosts)
             &SshWorker::submitHostKeyDecision, Qt::QueuedConnection);
     connect(this, &SshSession::requestAuthAnswers, m_worker,
             &SshWorker::submitAuthAnswers, Qt::QueuedConnection);
+    connect(this, &SshSession::requestSftp, m_worker,
+            &SshWorker::submitSftpRequest, Qt::QueuedConnection);
+    connect(this, &SshSession::requestSftpCancel, m_worker,
+            &SshWorker::cancelSftpRequest, Qt::QueuedConnection);
 
     connect(m_worker, &SshWorker::connected, this,
             &SshSession::handleWorkerConnected, Qt::QueuedConnection);
@@ -81,6 +89,8 @@ void SshSession::setupWorker(LibsshApi &api, KnownHostsStore &knownHosts)
             &SshSession::handleWorkerFailed, Qt::QueuedConnection);
     connect(m_worker, &SshWorker::connectionClosed, this,
             &SshSession::handleWorkerClosed, Qt::QueuedConnection);
+    connect(m_worker, &SshWorker::sftpResult, this,
+            &SshSession::handleWorkerSftpResult, Qt::QueuedConnection);
 
     m_thread->start();
 }
@@ -213,6 +223,123 @@ void SshSession::answerAuthentication(SshRequestId requestId,
     emit requestAuthAnswers(m_generation, requestId, answers);
 }
 
+void SshSession::listDir(SshRequestId requestId, const QString &path)
+{
+    SftpRequest request;
+    request.requestId = requestId;
+    request.op = SftpOp::List;
+    request.path = path;
+    emit requestSftp(m_generation, request);
+}
+
+void SshSession::realPath(SshRequestId requestId, const QString &path)
+{
+    SftpRequest request;
+    request.requestId = requestId;
+    request.op = SftpOp::RealPath;
+    request.path = path;
+    emit requestSftp(m_generation, request);
+}
+
+void SshSession::uploadFile(SshRequestId requestId, const QString &localPath,
+                            const QString &remotePath)
+{
+    SftpRequest request;
+    request.requestId = requestId;
+    request.op = SftpOp::Upload;
+    request.localPath = localPath;
+    request.remotePath = remotePath;
+    emit requestSftp(m_generation, request);
+}
+
+void SshSession::downloadFile(SshRequestId requestId, const QString &remotePath,
+                              const QString &localPath)
+{
+    SftpRequest request;
+    request.requestId = requestId;
+    request.op = SftpOp::Download;
+    request.remotePath = remotePath;
+    request.localPath = localPath;
+    emit requestSftp(m_generation, request);
+}
+
+void SshSession::cancelTransfer(SshRequestId requestId)
+{
+    emit requestSftpCancel(m_generation, requestId);
+}
+
+void SshSession::makeDir(SshRequestId requestId, const QString &path)
+{
+    SftpRequest request;
+    request.requestId = requestId;
+    request.op = SftpOp::Mkdir;
+    request.path = path;
+    emit requestSftp(m_generation, request);
+}
+
+void SshSession::createFile(SshRequestId requestId, const QString &path)
+{
+    SftpRequest request;
+    request.requestId = requestId;
+    request.op = SftpOp::Create;
+    request.path = path;
+    emit requestSftp(m_generation, request);
+}
+
+void SshSession::removeEntry(SshRequestId requestId, const QString &path,
+                             bool isDir)
+{
+    SftpRequest request;
+    request.requestId = requestId;
+    request.op = SftpOp::Delete;
+    request.path = path;
+    request.isDir = isDir;
+    emit requestSftp(m_generation, request);
+}
+
+void SshSession::renameEntry(SshRequestId requestId, const QString &from,
+                             const QString &to)
+{
+    SftpRequest request;
+    request.requestId = requestId;
+    request.op = SftpOp::Rename;
+    request.path = from;
+    request.dest = to;
+    emit requestSftp(m_generation, request);
+}
+
+void SshSession::copyRemote(SshRequestId requestId, const QString &from,
+                            const QString &to, bool isDir)
+{
+    SftpRequest request;
+    request.requestId = requestId;
+    request.op = SftpOp::Copy;
+    request.path = from;
+    request.dest = to;
+    request.isDir = isDir;
+    emit requestSftp(m_generation, request);
+}
+
+void SshSession::setPermissions(SshRequestId requestId, const QString &path,
+                                quint32 mode)
+{
+    SftpRequest request;
+    request.requestId = requestId;
+    request.op = SftpOp::Chmod;
+    request.path = path;
+    request.mode = mode;
+    emit requestSftp(m_generation, request);
+}
+
+void SshSession::execCommand(SshRequestId requestId, const QString &command)
+{
+    SftpRequest request;
+    request.requestId = requestId;
+    request.op = SftpOp::Exec;
+    request.command = command;
+    emit requestSftp(m_generation, request);
+}
+
 void SshSession::handleWorkerConnected(quint64 generation)
 {
     if (generation != m_generation || m_openedEmitted
@@ -264,6 +391,31 @@ void SshSession::handleWorkerAuth(quint64 generation,
     if (generation != m_generation || state() != Connecting)
         return;
     emit authAnswersRequired(requestId, prompts);
+}
+
+void SshSession::handleWorkerSftpResult(quint64 generation,
+                                        const SftpResult &result)
+{
+    if (generation != m_generation)
+        return;
+    switch (result.kind) {
+    case SftpResult::Kind::Listed:
+        emit sftpListed(result.requestId, result.path, result.entries);
+        break;
+    case SftpResult::Kind::ListedFailed:
+        emit sftpListedFailed(result.requestId, result.path, result.error);
+        break;
+    case SftpResult::Kind::Progress:
+        emit sftpTransferProgress(result.requestId, result.done, result.total);
+        break;
+    case SftpResult::Kind::TransferFinished:
+        emit sftpTransferFinished(result.requestId, result.ok, result.error);
+        break;
+    case SftpResult::Kind::OpFinished:
+        emit sftpOpFinished(result.requestId, result.op, result.arg, result.ok,
+                            result.error);
+        break;
+    }
 }
 
 void SshSession::handleWorkerClosed(quint64 generation)

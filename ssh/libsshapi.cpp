@@ -348,3 +348,150 @@ int LibsshApi::errorCode(ssh_session session) const
 {
     return ssh_get_error_code(session);
 }
+
+int LibsshApi::requestExec(ssh_channel channel, const QByteArray &command)
+{
+    return ssh_channel_request_exec(channel, command.constData());
+}
+
+int LibsshApi::channelGetExitStatus(ssh_channel channel)
+{
+    uint32_t exitCode = 0;
+    if (ssh_channel_get_exit_state(channel, &exitCode, nullptr, nullptr)
+        != SSH_OK) {
+        return -1;
+    }
+    return int(exitCode);
+}
+
+sftp_session LibsshApi::sftpNew(ssh_session session)
+{
+    return sftp_new(session);
+}
+
+void LibsshApi::sftpFree(sftp_session sftp)
+{
+    sftp_free(sftp);
+}
+
+int LibsshApi::sftpInit(sftp_session sftp)
+{
+    return sftp_init(sftp);
+}
+
+int LibsshApi::sftpGetError(sftp_session sftp) const
+{
+    return sftp_get_error(sftp);
+}
+
+sftp_dir LibsshApi::sftpOpendir(sftp_session sftp, const QByteArray &path)
+{
+    return sftp_opendir(sftp, path.constData());
+}
+
+sftp_attributes LibsshApi::sftpReaddir(sftp_session sftp, sftp_dir dir)
+{
+    return sftp_readdir(sftp, dir);
+}
+
+int LibsshApi::sftpDirEof(sftp_dir dir)
+{
+    return sftp_dir_eof(dir);
+}
+
+int LibsshApi::sftpClosedir(sftp_dir dir)
+{
+    return sftp_closedir(dir);
+}
+
+void LibsshApi::sftpAttributesFree(sftp_attributes attrs)
+{
+    sftp_attributes_free(attrs);
+}
+
+int LibsshApi::sftpCanonicalizePath(sftp_session sftp, const QByteArray &path,
+                                    QString *out)
+{
+    char *resolved = sftp_canonicalize_path(sftp, path.constData());
+    if (resolved == nullptr) {
+        return SSH_ERROR;
+    }
+    if (out != nullptr) {
+        *out = QString::fromUtf8(resolved);
+    }
+    ssh_string_free_char(resolved);
+    return SSH_OK;
+}
+
+int LibsshApi::sftpMkdir(sftp_session sftp, const QByteArray &path, mode_t mode)
+{
+    return sftp_mkdir(sftp, path.constData(), mode);
+}
+
+int LibsshApi::sftpUnlink(sftp_session sftp, const QByteArray &path)
+{
+    return sftp_unlink(sftp, path.constData());
+}
+
+int LibsshApi::sftpRmdir(sftp_session sftp, const QByteArray &path)
+{
+    return sftp_rmdir(sftp, path.constData());
+}
+
+int LibsshApi::sftpRename(sftp_session sftp, const QByteArray &from,
+                          const QByteArray &to)
+{
+    return sftp_rename(sftp, from.constData(), to.constData());
+}
+
+int LibsshApi::sftpChmod(sftp_session sftp, const QByteArray &path, mode_t mode)
+{
+    return sftp_chmod(sftp, path.constData(), mode);
+}
+
+sftp_file LibsshApi::sftpOpen(sftp_session sftp, const QByteArray &path,
+                              int accesstype, mode_t mode)
+{
+    return sftp_open(sftp, path.constData(), accesstype, mode);
+}
+
+int LibsshApi::sftpCloseFile(sftp_file file)
+{
+    return sftp_close(file);
+}
+
+sftp_attributes LibsshApi::sftpFstat(sftp_file file)
+{
+    return sftp_fstat(file);
+}
+
+void LibsshApi::sftpFileSetNonblocking(sftp_file file)
+{
+    sftp_file_set_nonblocking(file);
+}
+
+ssize_t LibsshApi::sftpAioBeginRead(sftp_file file, size_t len, sftp_aio *aio)
+{
+    return sftp_aio_begin_read(file, len, aio);
+}
+
+ssize_t LibsshApi::sftpAioWaitRead(sftp_aio *aio, void *buf, size_t bufSize)
+{
+    return sftp_aio_wait_read(aio, buf, bufSize);
+}
+
+ssize_t LibsshApi::sftpAioBeginWrite(sftp_file file, const void *buf, size_t len,
+                                     sftp_aio *aio)
+{
+    return sftp_aio_begin_write(file, buf, len, aio);
+}
+
+ssize_t LibsshApi::sftpAioWaitWrite(sftp_aio *aio)
+{
+    return sftp_aio_wait_write(aio);
+}
+
+void LibsshApi::sftpAioFree(sftp_aio aio)
+{
+    sftp_aio_free(aio);
+}

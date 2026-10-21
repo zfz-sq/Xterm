@@ -9,6 +9,7 @@
 #include <QString>
 
 #include <libssh/libssh.h>
+#include <libssh/sftp.h>
 
 class LibsshApi : public KnownHostKeyValidator
 {
@@ -78,6 +79,46 @@ public:
     virtual void disconnect(ssh_session session);
     virtual QString errorString(ssh_session session) const;
     virtual int errorCode(ssh_session session) const;
+
+    virtual int requestExec(ssh_channel channel, const QByteArray &command);
+    virtual int channelGetExitStatus(ssh_channel channel);
+
+    virtual sftp_session sftpNew(ssh_session session);
+    virtual void sftpFree(sftp_session sftp);
+    virtual int sftpInit(sftp_session sftp);
+    virtual int sftpGetError(sftp_session sftp) const;
+
+    virtual sftp_dir sftpOpendir(sftp_session sftp, const QByteArray &path);
+    virtual sftp_attributes sftpReaddir(sftp_session sftp, sftp_dir dir);
+    virtual int sftpDirEof(sftp_dir dir);
+    virtual int sftpClosedir(sftp_dir dir);
+    virtual void sftpAttributesFree(sftp_attributes attrs);
+
+    virtual int sftpCanonicalizePath(sftp_session sftp, const QByteArray &path,
+                                     QString *out);
+
+    virtual int sftpMkdir(sftp_session sftp, const QByteArray &path,
+                          mode_t mode);
+    virtual int sftpUnlink(sftp_session sftp, const QByteArray &path);
+    virtual int sftpRmdir(sftp_session sftp, const QByteArray &path);
+    virtual int sftpRename(sftp_session sftp, const QByteArray &from,
+                           const QByteArray &to);
+    virtual int sftpChmod(sftp_session sftp, const QByteArray &path,
+                          mode_t mode);
+
+    virtual sftp_file sftpOpen(sftp_session sftp, const QByteArray &path,
+                               int accesstype, mode_t mode);
+    virtual int sftpCloseFile(sftp_file file);
+    virtual sftp_attributes sftpFstat(sftp_file file);
+    virtual void sftpFileSetNonblocking(sftp_file file);
+
+    virtual ssize_t sftpAioBeginRead(sftp_file file, size_t len,
+                                     sftp_aio *aio);
+    virtual ssize_t sftpAioWaitRead(sftp_aio *aio, void *buf, size_t bufSize);
+    virtual ssize_t sftpAioBeginWrite(sftp_file file, const void *buf,
+                                      size_t len, sftp_aio *aio);
+    virtual ssize_t sftpAioWaitWrite(sftp_aio *aio);
+    virtual void sftpAioFree(sftp_aio aio);
 
 private:
     QHash<ssh_session, QString> m_authenticationErrors;

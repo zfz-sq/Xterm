@@ -3,14 +3,25 @@
 #include "knownhostsstore.h"
 #include "libsshapi.h"
 #include "libsshconnection.h"
+#include "sftpchannel.h"
 #include "shellchannel.h"
 
+#include <QMetaType>
 #include <QThread>
+#include <QVector>
 
 SshWorker::SshWorker(LibsshApi &api, KnownHostsStore &knownHosts,
                      QObject *parent)
     : QObject(parent), m_api(api), m_knownHosts(knownHosts)
 {
+    static const int registered = [] {
+        qRegisterMetaType<SftpRequest>();
+        qRegisterMetaType<SftpResult>();
+        qRegisterMetaType<QVector<SftpEntry>>();
+        return 0;
+    }();
+    Q_UNUSED(registered);
+
     m_timer = new QTimer(this);
     m_timer->setSingleShot(true);
     connect(m_timer, &QTimer::timeout, this, &SshWorker::advance);
@@ -200,6 +211,50 @@ void SshWorker::submitAuthAnswers(quint64 generation,
     schedule();
 }
 
+void SshWorker::submitSftpRequest(quint64 generation,
+                                  const SftpRequest &request)
+{
+    if (!isOwnerThread()) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, generation, request] {
+                submitSftpRequest(generation, request);
+            },
+            Qt::QueuedConnection);
+        return;
+    }
+    assertOwnerThread();
+    if (generation != m_generation || m_state != State::Ready
+        || m_connection == nullptr) {
+        return;
+    }
+    if (m_sftp == nullptr) {
+        m_sftp = std::make_unique<SftpChannel>(
+            m_api, m_connection->sessionForWorker());
+    }
+    m_sftp->enqueue(request);
+    schedule();
+}
+
+void SshWorker::cancelSftpRequest(quint64 generation, SshRequestId requestId)
+{
+    if (!isOwnerThread()) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, generation, requestId] {
+                cancelSftpRequest(generation, requestId);
+            },
+            Qt::QueuedConnection);
+        return;
+    }
+    assertOwnerThread();
+    if (generation != m_generation || m_sftp == nullptr) {
+        return;
+    }
+    m_sftp->cancel(requestId);
+    schedule();
+}
+
 void SshWorker::advance()
 {
     assertOwnerThread();
@@ -233,6 +288,10 @@ void SshWorker::advance()
         m_shell->advance(&output, &errorMessage);
     for (const QByteArray &bytes : output) {
         emit shellData(m_generation, bytes);
+    }
+
+    if (m_state == State::Ready) {
+        serviceSftp();
     }
 
     switch (result) {
@@ -352,6 +411,12 @@ void SshWorker::requestClose(bool notify)
     m_state = State::Closing;
     m_timer->stop();
     resetBackoff();
+    if (m_sftp != nullptr) {
+        QList<SftpResult> results;
+        m_sftp->close(&results);
+        emitSftpResults(results);
+        m_sftp.reset();
+    }
     if (m_shell != nullptr) {
         m_shell->close();
         schedule();
@@ -370,6 +435,12 @@ void SshWorker::forceCloseCurrent(bool notify)
 
     const quint64 closingGeneration = m_generation;
     m_timer->stop();
+    if (m_sftp != nullptr) {
+        QList<SftpResult> results;
+        m_sftp->close(&results);
+        emitSftpResults(results);
+        m_sftp.reset();
+    }
     m_shell.reset();
     if (m_connection != nullptr) {
         disconnect(m_connection.get(), nullptr, this, nullptr);
@@ -383,4 +454,21 @@ void SshWorker::forceCloseCurrent(bool notify)
         emit connectionClosed(closingGeneration);
     }
     m_notifyOnClose = false;
+}
+
+void SshWorker::serviceSftp()
+{
+    if (m_sftp == nullptr) {
+        return;
+    }
+    QList<SftpResult> results;
+    m_sftp->advance(&results);
+    emitSftpResults(results);
+}
+
+void SshWorker::emitSftpResults(const QList<SftpResult> &results)
+{
+    for (const SftpResult &result : results) {
+        emit sftpResult(m_generation, result);
+    }
 }

@@ -8,6 +8,7 @@
 #include <QString>
 #include <QStringList>
 
+#include "ssh/sftprequest.h"
 #include "ssh/sshtypes.h"
 #include "sshtarget.h"
 #include "transport.h"
@@ -40,6 +41,24 @@ public:
 
     void setPtySize(int cols, int rows);
 
+    void listDir(SshRequestId requestId, const QString &path);
+    void realPath(SshRequestId requestId, const QString &path);
+    void uploadFile(SshRequestId requestId, const QString &localPath,
+                    const QString &remotePath);
+    void downloadFile(SshRequestId requestId, const QString &remotePath,
+                      const QString &localPath);
+    void cancelTransfer(SshRequestId requestId);
+    void makeDir(SshRequestId requestId, const QString &path);
+    void createFile(SshRequestId requestId, const QString &path);
+    void removeEntry(SshRequestId requestId, const QString &path, bool isDir);
+    void renameEntry(SshRequestId requestId, const QString &from,
+                     const QString &to);
+    void copyRemote(SshRequestId requestId, const QString &from,
+                    const QString &to, bool isDir);
+    void setPermissions(SshRequestId requestId, const QString &path,
+                        quint32 mode);
+    void execCommand(SshRequestId requestId, const QString &command);
+
     QString open(const SshTarget &target);
     void close() override;
     QString send(const QByteArray &data) override;
@@ -59,9 +78,20 @@ signals:
     void unknownHostKeyRecorded(const QString &host);
     void authAnswersRequired(SshRequestId requestId,
                              const QList<SshAuthPrompt> &prompts);
+    void sftpListed(SshRequestId requestId, const QString &path,
+                    const QVector<SftpEntry> &entries);
+    void sftpListedFailed(SshRequestId requestId, const QString &path,
+                          const QString &error);
+    void sftpTransferProgress(SshRequestId requestId, qint64 done,
+                              qint64 total);
+    void sftpTransferFinished(SshRequestId requestId, bool ok,
+                              const QString &error);
+    void sftpOpFinished(SshRequestId requestId, const QString &op,
+                        const QString &arg, bool ok, const QString &error);
 
 private:
     friend class TestSshSession;
+    friend class TestSftpChannel;
 
     void setupWorker(LibsshApi &api, KnownHostsStore &knownHosts);
     void teardownWorker();
@@ -78,6 +108,7 @@ private slots:
     void handleWorkerUnknownHostKey(quint64 generation, const QString &host);
     void handleWorkerAuth(quint64 generation, SshRequestId requestId,
                           const QList<SshAuthPrompt> &prompts);
+    void handleWorkerSftpResult(quint64 generation, const SftpResult &result);
 
 signals:
     void requestConnect(quint64 generation, const SshTarget &target,
@@ -89,6 +120,8 @@ signals:
                                 bool accept);
     void requestAuthAnswers(quint64 generation, SshRequestId requestId,
                             const QStringList &answers);
+    void requestSftp(quint64 generation, const SftpRequest &request);
+    void requestSftpCancel(quint64 generation, SshRequestId requestId);
 
 private:
     std::unique_ptr<LibsshApi> m_ownedApi;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ssh/libsshapi.h"
+#include "ssh/sftprequest.h"
 
 #include <QCryptographicHash>
 #include <QFile>
@@ -9,6 +10,7 @@
 #include <QStringList>
 
 #include <cstring>
+#include <fcntl.h>
 
 class FakeLibsshApi final : public LibsshApi
 {
@@ -211,6 +213,7 @@ public:
     {
         calls.append(QStringLiteral("freeChannel"));
         ++channelFreeCount;
+        readingExec = false;
     }
 
     int openChannelSession(ssh_channel) override
@@ -260,6 +263,17 @@ public:
                                bool stderrStream) override
     {
         ++readCallCount;
+        if (readingExec) {
+            QByteArray &source =
+                stderrStream ? execStderrRemaining : execStdoutRemaining;
+            if (source.isEmpty()) {
+                return SSH_AGAIN;
+            }
+            const int count = qMin(int(size), source.size());
+            memcpy(data, source.constData(), size_t(count));
+            source.remove(0, count);
+            return count;
+        }
         QList<int> &script =
             stderrStream ? stderrReadResults : stdoutReadResults;
         if (!script.isEmpty()) {
@@ -285,7 +299,14 @@ public:
         return take(resizeResults, SSH_OK);
     }
 
-    bool channelIsEof(ssh_channel) override { return channelEof; }
+    bool channelIsEof(ssh_channel) override
+    {
+        if (readingExec) {
+            return execStdoutRemaining.isEmpty()
+                && execStderrRemaining.isEmpty();
+        }
+        return channelEof;
+    }
 
     int sendChannelEof(ssh_channel) override
     {
@@ -315,6 +336,262 @@ public:
 
     QString errorString(ssh_session) const override { return errorText; }
     int errorCode(ssh_session) const override { return errorNumber; }
+
+    int requestExec(ssh_channel, const QByteArray &command) override
+    {
+        execCommands.append(command);
+        readingExec = true;
+        execStdoutRemaining = execStdout;
+        execStderrRemaining = execStderr;
+        return take(execResults, SSH_OK);
+    }
+
+    int channelGetExitStatus(ssh_channel) override
+    {
+        return execExitStatus;
+    }
+
+    sftp_session sftpNew(ssh_session) override
+    {
+        ++sftpNewCount;
+        return reinterpret_cast<sftp_session>(quintptr(10 + sftpNewCount));
+    }
+
+    void sftpFree(sftp_session) override
+    {
+        ++sftpFreeCount;
+    }
+
+    int sftpInit(sftp_session) override
+    {
+        ++sftpInitCount;
+        return take(sftpInitResults, SSH_OK);
+    }
+
+    int sftpGetError(sftp_session) const override { return sftpError; }
+
+    sftp_dir sftpOpendir(sftp_session, const QByteArray &path) override
+    {
+        const QString key = QString::fromUtf8(path);
+        if (!opendirResults.isEmpty()) {
+            return take(opendirResults, static_cast<sftp_dir>(nullptr));
+        }
+        FakeDir dir;
+        dir.path = key;
+        dir.entries = directoryEntries.value(key);
+        const sftp_dir handle =
+            reinterpret_cast<sftp_dir>(quintptr(++nextHandle));
+        dirs.insert(handle, dir);
+        return handle;
+    }
+
+    sftp_attributes sftpReaddir(sftp_session, sftp_dir dir) override
+    {
+        auto it = dirs.find(dir);
+        if (it == dirs.end() || it->entries.isEmpty()) {
+            if (it != dirs.end()) {
+                it->eof = true;
+            }
+            return nullptr;
+        }
+        const SftpEntry entry = it->entries.takeFirst();
+        return makeAttributes(entry);
+    }
+
+    int sftpDirEof(sftp_dir dir) override
+    {
+        return dirs.value(dir).eof ? 1 : 0;
+    }
+
+    int sftpClosedir(sftp_dir dir) override
+    {
+        dirs.remove(dir);
+        return SSH_OK;
+    }
+
+    void sftpAttributesFree(sftp_attributes attrs) override
+    {
+        if (attrs == nullptr) {
+            return;
+        }
+        delete[] attrs->name;
+        delete attrs;
+    }
+
+    int sftpCanonicalizePath(sftp_session, const QByteArray &path,
+                             QString *out) override
+    {
+        const QString key = QString::fromUtf8(path);
+        if (out != nullptr) {
+            *out = realPaths.value(key, key);
+        }
+        return SSH_OK;
+    }
+
+    int sftpMkdir(sftp_session, const QByteArray &path, mode_t) override
+    {
+        mkdirPaths.append(QString::fromUtf8(path));
+        return take(mkdirResults, SSH_OK);
+    }
+
+    int sftpUnlink(sftp_session, const QByteArray &path) override
+    {
+        const QString key = QString::fromUtf8(path);
+        unlinkedPaths.append(key);
+        remoteContents.remove(key);
+        return SSH_OK;
+    }
+
+    int sftpRmdir(sftp_session, const QByteArray &path) override
+    {
+        rmdirPaths.append(QString::fromUtf8(path));
+        return SSH_OK;
+    }
+
+    int sftpRename(sftp_session, const QByteArray &from,
+                   const QByteArray &to) override
+    {
+        renames.append(qMakePair(QString::fromUtf8(from),
+                                 QString::fromUtf8(to)));
+        return SSH_OK;
+    }
+
+    int sftpChmod(sftp_session, const QByteArray &path, mode_t mode) override
+    {
+        chmodPaths.append(QString::fromUtf8(path));
+        chmodModes.append(quint32(mode));
+        return SSH_OK;
+    }
+
+    sftp_file sftpOpen(sftp_session, const QByteArray &path, int accesstype,
+                       mode_t) override
+    {
+        const QString key = QString::fromUtf8(path);
+        if ((accesstype & O_CREAT) && (accesstype & O_EXCL)) {
+            createdPaths.append(key);
+        }
+        if ((accesstype & O_WRONLY) || (accesstype & O_RDWR)) {
+            if (accesstype & O_TRUNC) {
+                remoteContents[key] = QByteArray();
+            } else if (!remoteContents.contains(key)) {
+                remoteContents.insert(key, QByteArray());
+            }
+        }
+        FakeFile file;
+        file.path = key;
+        file.flags = accesstype;
+        file.remaining = remoteContents.value(key);
+        const sftp_file handle =
+            reinterpret_cast<sftp_file>(quintptr(++nextHandle));
+        files.insert(handle, file);
+        return handle;
+    }
+
+    int sftpCloseFile(sftp_file file) override
+    {
+        files.remove(file);
+        return SSH_OK;
+    }
+
+    sftp_attributes sftpFstat(sftp_file file) override
+    {
+        SftpEntry entry;
+        const FakeFile fake = files.value(file);
+        entry.size = quint64(remoteContents.value(fake.path).size());
+        entry.permissions = 0644;
+        return makeAttributes(entry);
+    }
+
+    void sftpFileSetNonblocking(sftp_file) override {}
+
+    ssize_t sftpAioBeginRead(sftp_file file, size_t len, sftp_aio *aio) override
+    {
+        ++aioBeginReadCount;
+        const ssize_t scripted = take(aioBeginReadResults, ssize_t(len));
+        if (scripted == SSH_AGAIN || scripted == SSH_ERROR) {
+            return scripted;
+        }
+        FakeFile &fake = files[file];
+        const int count = qMin(int(qMax(ssize_t(0), scripted)),
+                               fake.remaining.size());
+        auto *state = new FakeAio;
+        state->file = file;
+        state->reading = true;
+        state->data = fake.remaining.left(count);
+        state->requested = count;
+        fake.remaining.remove(0, count);
+        *aio = reinterpret_cast<sftp_aio>(state);
+        return count;
+    }
+
+    ssize_t sftpAioWaitRead(sftp_aio *aio, void *buf, size_t bufSize) override
+    {
+        ++aioWaitReadCount;
+        auto *state = reinterpret_cast<FakeAio *>(*aio);
+        const ssize_t scripted =
+            take(aioWaitReadResults, ssize_t(state->requested));
+        if (scripted == SSH_AGAIN) {
+            return SSH_AGAIN;
+        }
+        if (scripted == SSH_ERROR) {
+            delete state;
+            *aio = nullptr;
+            return SSH_ERROR;
+        }
+        const int count = qMin(int(qMax(ssize_t(0), scripted)),
+                               qMin(state->data.size(), int(bufSize)));
+        if (count > 0 && buf != nullptr) {
+            memcpy(buf, state->data.constData(), size_t(count));
+        }
+        delete state;
+        *aio = nullptr;
+        return count;
+    }
+
+    ssize_t sftpAioBeginWrite(sftp_file file, const void *buf, size_t len,
+                              sftp_aio *aio) override
+    {
+        ++aioBeginWriteCount;
+        const ssize_t scripted = take(aioBeginWriteResults, ssize_t(len));
+        if (scripted == SSH_AGAIN || scripted == SSH_ERROR) {
+            return scripted;
+        }
+        const int count = qMin(int(qMax(ssize_t(0), scripted)), int(len));
+        auto *state = new FakeAio;
+        state->file = file;
+        state->reading = false;
+        state->data = QByteArray(static_cast<const char *>(buf), count);
+        state->requested = count;
+        *aio = reinterpret_cast<sftp_aio>(state);
+        return count;
+    }
+
+    ssize_t sftpAioWaitWrite(sftp_aio *aio) override
+    {
+        ++aioWaitWriteCount;
+        auto *state = reinterpret_cast<FakeAio *>(*aio);
+        const ssize_t scripted =
+            take(aioWaitWriteResults, ssize_t(state->requested));
+        if (scripted == SSH_AGAIN) {
+            return SSH_AGAIN;
+        }
+        if (scripted == SSH_ERROR) {
+            delete state;
+            *aio = nullptr;
+            return SSH_ERROR;
+        }
+        const FakeFile fake = files.value(state->file);
+        remoteContents[fake.path].append(state->data);
+        const ssize_t written = state->requested;
+        delete state;
+        *aio = nullptr;
+        return written;
+    }
+
+    void sftpAioFree(sftp_aio aio) override
+    {
+        delete reinterpret_cast<FakeAio *>(aio);
+    }
 
     template<typename T>
     static T take(QList<T> &values, T fallback)
@@ -388,7 +665,89 @@ public:
     int errorNumber = SSH_ERROR;
     int disconnectCount = 0;
 
+    int sftpNewCount = 0;
+    int sftpInitCount = 0;
+    int sftpFreeCount = 0;
+    int sftpError = 0;
+    QList<int> sftpInitResults;
+    QList<sftp_dir> opendirResults;
+    QHash<QString, QVector<SftpEntry>> directoryEntries;
+    QHash<QString, QString> realPaths;
+    QStringList mkdirPaths;
+    QList<int> mkdirResults;
+    QStringList createdPaths;
+    QStringList unlinkedPaths;
+    QStringList rmdirPaths;
+    QList<QPair<QString, QString>> renames;
+    QStringList chmodPaths;
+    QList<quint32> chmodModes;
+    QHash<QString, QByteArray> remoteContents;
+    QList<QByteArray> execCommands;
+    QList<int> execResults;
+    QByteArray execStdout;
+    QByteArray execStderr;
+    int execExitStatus = 0;
+    int aioBeginReadCount = 0;
+    int aioWaitReadCount = 0;
+    int aioBeginWriteCount = 0;
+    int aioWaitWriteCount = 0;
+    QList<ssize_t> aioBeginReadResults;
+    QList<ssize_t> aioWaitReadResults;
+    QList<ssize_t> aioBeginWriteResults;
+    QList<ssize_t> aioWaitWriteResults;
+
 private:
+    struct FakeDir {
+        QString path;
+        QVector<SftpEntry> entries;
+        bool eof = false;
+    };
+
+    struct FakeFile {
+        QString path;
+        int flags = 0;
+        QByteArray remaining;
+    };
+
+    struct FakeAio {
+        sftp_file file = nullptr;
+        bool reading = false;
+        QByteArray data;
+        ssize_t requested = 0;
+    };
+
+    QHash<sftp_dir, FakeDir> dirs;
+    QHash<sftp_file, FakeFile> files;
+    quintptr nextHandle = 100;
+    bool readingExec = false;
+    QByteArray execStdoutRemaining;
+    QByteArray execStderrRemaining;
+
+    sftp_attributes makeAttributes(const SftpEntry &entry) const
+    {
+        auto *attrs = new sftp_attributes_struct();
+        std::memset(attrs, 0, sizeof(*attrs));
+        const QByteArray name = entry.name.toUtf8();
+        attrs->name = new char[size_t(name.size()) + 1];
+        std::memcpy(attrs->name, name.constData(), size_t(name.size()) + 1);
+        attrs->size = entry.size;
+        attrs->permissions = entry.permissions;
+        attrs->mtime = uint32_t(entry.mtime);
+        attrs->flags = SSH_FILEXFER_ATTR_SIZE | SSH_FILEXFER_ATTR_PERMISSIONS
+            | SSH_FILEXFER_ATTR_ACMODTIME;
+        if (entry.isDir) {
+            attrs->type = SSH_FILEXFER_TYPE_DIRECTORY;
+            attrs->permissions |= SSH_S_IFDIR;
+        } else if (entry.isSymlink) {
+            attrs->type = SSH_FILEXFER_TYPE_SYMLINK;
+            attrs->permissions |= SSH_S_IFLNK;
+        } else {
+            attrs->type = SSH_FILEXFER_TYPE_REGULAR;
+            attrs->permissions |= SSH_S_IFREG;
+        }
+        return attrs;
+    }
+
     bool appendCurrentKnownHost()
     {
         QFile file(stringOptions.value(SSH_OPTIONS_KNOWNHOSTS));

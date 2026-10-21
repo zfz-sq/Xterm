@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sftprequest.h"
 #include "sshtypes.h"
 #include "sshtarget.h"
 
@@ -13,6 +14,7 @@
 class KnownHostsStore;
 class LibsshApi;
 class LibsshConnection;
+class SftpChannel;
 class ShellChannel;
 
 class SshWorker final : public QObject
@@ -34,6 +36,8 @@ public slots:
                                bool accept);
     void submitAuthAnswers(quint64 generation, SshRequestId requestId,
                            const QStringList &answers);
+    void submitSftpRequest(quint64 generation, const SftpRequest &request);
+    void cancelSftpRequest(quint64 generation, SshRequestId requestId);
 
 signals:
     void connected(quint64 generation);
@@ -46,6 +50,7 @@ signals:
                              const QList<SshAuthPrompt> &prompts);
     void connectionFailed(quint64 generation, const SshError &error);
     void connectionClosed(quint64 generation);
+    void sftpResult(quint64 generation, const SftpResult &result);
 
 private slots:
     void advance();
@@ -73,12 +78,15 @@ private:
     void failAndClose(const SshError &error);
     void requestClose(bool notify);
     void forceCloseCurrent(bool notify);
+    void serviceSftp();
+    void emitSftpResults(const QList<SftpResult> &results);
 
     LibsshApi &m_api;
     KnownHostsStore &m_knownHosts;
     QTimer *m_timer = nullptr;
     std::unique_ptr<LibsshConnection> m_connection;
     std::unique_ptr<ShellChannel> m_shell;
+    std::unique_ptr<SftpChannel> m_sftp;
     quint64 m_generation = 0;
     int m_initialCols = 80;
     int m_initialRows = 24;
