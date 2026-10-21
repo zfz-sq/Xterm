@@ -30,16 +30,20 @@ public:
     virtual int setOptionBool(ssh_session session,
                               enum ssh_options_e option, bool value);
     virtual int parseConfig(ssh_session session);
+    virtual QString effectiveHost(ssh_session session);
+    virtual quint16 effectivePort(ssh_session session);
     virtual void setBlocking(ssh_session session, bool blocking);
     virtual int connect(ssh_session session);
 
     virtual enum ssh_known_hosts_e knownHostState(ssh_session session);
     virtual int updateKnownHosts(ssh_session session);
     virtual QString serverFingerprintSha256(ssh_session session);
+    virtual QString serverHostKeyType(ssh_session session);
 
     virtual int authAgent(ssh_session session);
     virtual int authExplicitKey(ssh_session session, const QString &path,
                                 const QByteArray &passphrase);
+    virtual QString authenticationErrorString(ssh_session session) const;
     virtual int authAutomaticPublicKey(ssh_session session,
                                        const QByteArray &passphrase);
     virtual int authKeyboardInteractive(ssh_session session);
@@ -55,4 +59,7 @@ public:
     virtual void disconnect(ssh_session session);
     virtual QString errorString(ssh_session session) const;
     virtual int errorCode(ssh_session session) const;
+
+private:
+    QString m_authenticationError;
 };

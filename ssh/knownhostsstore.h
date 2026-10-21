@@ -26,7 +26,15 @@ public:
     bool prepareMigration(QString *error = nullptr);
     QString legacyFingerprint(const QString &host, quint16 port) const;
     QString standardFingerprint(const QString &host, quint16 port,
+                                const QString &expectedKeyType,
                                 QString *error = nullptr) const;
+    bool consumeLegacyRecord(
+        const QString &legacyHost, quint16 legacyPort,
+        const QString &legacyFingerprint,
+        const QString &standardHost, quint16 standardPort,
+        const QString &standardKeyType,
+        const QString &standardFingerprint,
+        QString *error = nullptr);
     bool rememberLegacyMatch(const QString &host, quint16 port,
                              const QString &fingerprint,
                              QString *error = nullptr);

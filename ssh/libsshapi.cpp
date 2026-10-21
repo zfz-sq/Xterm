@@ -1,6 +1,7 @@
 #include "libsshapi.h"
 
 #include <QByteArray>
+#include <QFileInfo>
 
 namespace {
 
@@ -82,6 +83,32 @@ int LibsshApi::parseConfig(ssh_session session)
     return ssh_options_parse_config(session, nullptr);
 }
 
+QString LibsshApi::effectiveHost(ssh_session session)
+{
+    char *host = nullptr;
+    const int optionResult =
+        ssh_options_get(session, SSH_OPTIONS_HOST, &host);
+    if (optionResult != SSH_OK || host == nullptr) {
+        if (host != nullptr) {
+            ssh_string_free_char(host);
+        }
+        return {};
+    }
+    const QString result = QString::fromUtf8(host);
+    ssh_string_free_char(host);
+    return result;
+}
+
+quint16 LibsshApi::effectivePort(ssh_session session)
+{
+    unsigned int port = 0;
+    if (ssh_options_get_port(session, &port) != SSH_OK
+        || port > 65535) {
+        return 0;
+    }
+    return static_cast<quint16>(port);
+}
+
 void LibsshApi::setBlocking(ssh_session session, bool blocking)
 {
     ssh_set_blocking(session, blocking ? 1 : 0);
@@ -106,6 +133,9 @@ QString LibsshApi::serverFingerprintSha256(ssh_session session)
 {
     ssh_key key = nullptr;
     if (ssh_get_server_publickey(session, &key) != SSH_OK) {
+        if (key != nullptr) {
+            ssh_key_free(key);
+        }
         return {};
     }
     const QString fingerprint = fingerprintForKey(key);
@@ -113,14 +143,33 @@ QString LibsshApi::serverFingerprintSha256(ssh_session session)
     return fingerprint;
 }
 
+QString LibsshApi::serverHostKeyType(ssh_session session)
+{
+    ssh_key key = nullptr;
+    if (ssh_get_server_publickey(session, &key) != SSH_OK
+        || key == nullptr) {
+        if (key != nullptr) {
+            ssh_key_free(key);
+        }
+        return {};
+    }
+    const char *typeName = ssh_key_type_to_char(ssh_key_type(key));
+    const QString result =
+        QString::fromLatin1(typeName == nullptr ? "" : typeName);
+    ssh_key_free(key);
+    return result;
+}
+
 int LibsshApi::authAgent(ssh_session session)
 {
+    m_authenticationError.clear();
     return ssh_userauth_agent(session, nullptr);
 }
 
 int LibsshApi::authExplicitKey(ssh_session session, const QString &path,
                                const QByteArray &passphrase)
 {
+    m_authenticationError.clear();
     const QByteArray pathBytes = path.toUtf8();
     ssh_key privateKey = nullptr;
     const int importResult = ssh_pki_import_privkey_file(
@@ -131,6 +180,21 @@ int LibsshApi::authExplicitKey(ssh_session session, const QString &path,
         if (privateKey != nullptr) {
             ssh_key_free(privateKey);
         }
+        const QFileInfo keyFile(path);
+        if (!keyFile.exists()) {
+            m_authenticationError =
+                QStringLiteral("Private key file does not exist: %1")
+                    .arg(path);
+        } else if (!keyFile.isReadable()) {
+            m_authenticationError =
+                QStringLiteral("Private key file is not readable: %1")
+                    .arg(path);
+        } else {
+            m_authenticationError =
+                QStringLiteral(
+                    "Private key is invalid or could not be decrypted: %1")
+                    .arg(path);
+        }
         return SSH_AUTH_ERROR;
     }
     const int result = ssh_userauth_publickey(session, nullptr, privateKey);
@@ -138,9 +202,17 @@ int LibsshApi::authExplicitKey(ssh_session session, const QString &path,
     return result;
 }
 
+QString LibsshApi::authenticationErrorString(ssh_session session) const
+{
+    return m_authenticationError.isEmpty()
+        ? errorString(session)
+        : m_authenticationError;
+}
+
 int LibsshApi::authAutomaticPublicKey(ssh_session session,
                                       const QByteArray &passphrase)
 {
+    m_authenticationError.clear();
     return ssh_userauth_publickey_auto(
         session, nullptr,
         passphrase.isEmpty() ? nullptr : passphrase.constData());
@@ -148,6 +220,7 @@ int LibsshApi::authAutomaticPublicKey(ssh_session session,
 
 int LibsshApi::authKeyboardInteractive(ssh_session session)
 {
+    m_authenticationError.clear();
     return ssh_userauth_kbdint(session, nullptr, nullptr);
 }
 
@@ -181,6 +254,7 @@ int LibsshApi::setKeyboardInteractiveAnswer(ssh_session session,
 int LibsshApi::authPassword(ssh_session session,
                             const QByteArray &password)
 {
+    m_authenticationError.clear();
     return ssh_userauth_password(session, nullptr, password.constData());
 }
 

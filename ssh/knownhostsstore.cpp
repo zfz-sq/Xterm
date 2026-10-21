@@ -130,6 +130,8 @@ bool hostPatternsMatch(const QString &patternsField,
 QString standardFileFingerprint(const QString &path,
                                 const KnownHostKeyValidator &keyValidator,
                                 const QString &host, quint16 port,
+                                const QString &expectedKeyType,
+                                const QString &expectedFingerprint,
                                 QString *error)
 {
     QByteArray contents;
@@ -158,6 +160,10 @@ QString standardFileFingerprint(const QString &path,
         }
 
         const QByteArray declaredType = fields.at(1).toLatin1();
+        if (!expectedKeyType.isEmpty()
+            && declaredType != expectedKeyType.toLatin1()) {
+            continue;
+        }
         const QByteArray encodedBlob = fields.at(2).toLatin1();
         const auto decoded = QByteArray::fromBase64Encoding(
             encodedBlob, QByteArray::AbortOnBase64DecodingErrors);
@@ -172,8 +178,14 @@ QString standardFileFingerprint(const QString &path,
             QCryptographicHash::hash(decoded.decoded,
                                      QCryptographicHash::Sha256)
                 .toHex();
+        const QString fingerprint = QString::fromLatin1(hash);
+        if (!expectedFingerprint.isEmpty()
+            && fingerprint.compare(expectedFingerprint,
+                                   Qt::CaseInsensitive) != 0) {
+            continue;
+        }
         setError(error, {});
-        return QString::fromLatin1(hash);
+        return fingerprint;
     }
 
     setError(error,
@@ -326,16 +338,20 @@ QString KnownHostsStore::legacyFingerprint(const QString &host,
 
 QString KnownHostsStore::standardFingerprint(const QString &host,
                                              quint16 port,
+                                             const QString &expectedKeyType,
                                              QString *error) const
 {
     setError(error, {});
     return standardFileFingerprint(path(), m_keyValidator, host, port,
-                                   error);
+                                   expectedKeyType, {}, error);
 }
 
-bool KnownHostsStore::rememberLegacyMatch(const QString &host, quint16 port,
-                                          const QString &fingerprint,
-                                          QString *error)
+bool KnownHostsStore::consumeLegacyRecord(
+    const QString &legacyHost, quint16 legacyPort,
+    const QString &legacyFingerprint,
+    const QString &standardHost, quint16 standardPort,
+    const QString &standardKeyType,
+    const QString &expectedStandardFingerprint, QString *error)
 {
     setError(error, {});
 
@@ -354,8 +370,10 @@ bool KnownHostsStore::rememberLegacyMatch(const QString &host, quint16 port,
         const qsizetype end = newline < 0 ? contents.size() : newline + 1;
         const QByteArray completeLine = contents.mid(position, end - position);
         const LegacyRow row = parseLegacyRow(completeLine);
-        if (!removed && row.valid && row.host == host && row.port == port
-            && row.fingerprint.compare(fingerprint, Qt::CaseInsensitive) == 0) {
+        if (!removed && row.valid && row.host == legacyHost
+            && row.port == legacyPort
+            && row.fingerprint.compare(legacyFingerprint,
+                                       Qt::CaseInsensitive) == 0) {
             removed = true;
         } else {
             rewritten.append(completeLine);
@@ -366,22 +384,15 @@ bool KnownHostsStore::rememberLegacyMatch(const QString &host, quint16 port,
     if (!removed) {
         setError(error,
                  QStringLiteral("No matching legacy fingerprint for %1:%2")
-                     .arg(host)
-                     .arg(port));
+                     .arg(legacyHost)
+                     .arg(legacyPort));
         return false;
     }
 
-    const QString standard =
-        standardFingerprint(host, port, error);
-    if (standard.isEmpty()
-        || standard.compare(fingerprint, Qt::CaseInsensitive) != 0) {
-        if (!standard.isEmpty()) {
-            setError(error,
-                     QStringLiteral(
-                         "OpenSSH host key fingerprint mismatch for %1:%2")
-                         .arg(host)
-                         .arg(port));
-        }
+    const QString standard = standardFileFingerprint(
+        path(), m_keyValidator, standardHost, standardPort,
+        standardKeyType, expectedStandardFingerprint, error);
+    if (standard.isEmpty()) {
         return false;
     }
 
@@ -403,4 +414,12 @@ bool KnownHostsStore::rememberLegacyMatch(const QString &host, quint16 port,
         return false;
     }
     return true;
+}
+
+bool KnownHostsStore::rememberLegacyMatch(const QString &host, quint16 port,
+                                          const QString &fingerprint,
+                                          QString *error)
+{
+    return consumeLegacyRecord(host, port, fingerprint, host, port, {},
+                               fingerprint, error);
 }

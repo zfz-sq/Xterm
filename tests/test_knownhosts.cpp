@@ -90,6 +90,8 @@ private slots:
     void standardKnownHostsPathStaysInsideAppConfig();
     void createsAndMaintainsEmptyGlobalKnownHosts();
     void readsStrictStandardFingerprintThroughValidator();
+    void standardFingerprintSelectsExpectedKeyType();
+    void consumesLegacyAgainstDifferentStandardHost();
     void atomicRewritePreservesUnrelatedHosts();
     void requiresMatchingStandardKeyBeforeConsumingLegacy();
     void unreadableStandardFileDoesNotConsumeLegacy();
@@ -205,6 +207,7 @@ void TestKnownHosts::readsStrictStandardFingerprintThroughValidator()
 
     QString error;
     QCOMPARE(store.standardFingerprint(QStringLiteral("target.test"), 2200,
+                                       QStringLiteral("ssh-ed25519"),
                                        &error),
              expected);
     QVERIFY(error.isEmpty());
@@ -212,9 +215,58 @@ void TestKnownHosts::readsStrictStandardFingerprintThroughValidator()
 
     m_validator.accept = false;
     QVERIFY(store.standardFingerprint(QStringLiteral("target.test"), 2200,
+                                      QStringLiteral("ssh-ed25519"),
                                       &error).isEmpty());
     QVERIFY(!error.isEmpty());
     m_validator.accept = true;
+}
+
+void TestKnownHosts::standardFingerprintSelectsExpectedKeyType()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    KnownHostsStore store(m_validator, directory.path());
+    const QByteArray rsa = [] {
+        QByteArray blob;
+        appendSshString(&blob, QByteArrayLiteral("ssh-rsa"));
+        appendSshString(&blob, QByteArray(32, 'r'));
+        return blob;
+    }();
+    const QByteArray ed = ed25519Blob('e');
+    QVERIFY(writeFile(store.path(),
+                      "target.test ssh-rsa " + rsa.toBase64() + "\n"
+                      "target.test ssh-ed25519 " + ed.toBase64() + "\n"));
+
+    QString error;
+    QCOMPARE(store.standardFingerprint(
+                 QStringLiteral("target.test"), 22,
+                 QStringLiteral("ssh-ed25519"), &error),
+             QString::fromLatin1(fingerprintForBlob(ed)));
+}
+
+void TestKnownHosts::consumesLegacyAgainstDifferentStandardHost()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    KnownHostsStore store(m_validator, directory.path());
+    const QByteArray newBlob = ed25519Blob('n');
+    const QString oldFingerprint(64, QLatin1Char('a'));
+    const QString newFingerprint =
+        QString::fromLatin1(fingerprintForBlob(newBlob));
+    QVERIFY(writeFile(store.legacyPath(),
+                      "alias.test:2200 "
+                          + oldFingerprint.toLatin1() + "\n"));
+    QVERIFY(writeFile(store.path(),
+                      "[real.test]:2222 ssh-ed25519 "
+                          + newBlob.toBase64() + "\n"));
+
+    QString error;
+    QVERIFY2(store.consumeLegacyRecord(
+                 QStringLiteral("alias.test"), 2200, oldFingerprint,
+                 QStringLiteral("real.test"), 2222,
+                 QStringLiteral("ssh-ed25519"), newFingerprint, &error),
+             qPrintable(error));
+    QCOMPARE(readFile(store.legacyPath()), QByteArray());
 }
 
 void TestKnownHosts::atomicRewritePreservesUnrelatedHosts()

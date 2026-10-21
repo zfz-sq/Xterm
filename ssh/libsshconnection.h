@@ -61,8 +61,11 @@ private:
     bool setStringOption(enum ssh_options_e option, const QString &value);
     bool setUnsignedOption(enum ssh_options_e option, unsigned int value);
     bool setBoolOption(enum ssh_options_e option, bool value);
+    void drainDeferredBegins();
+    void initializeBegin(const SshTarget &target, QByteArray password);
     void configure();
     void verifyHost();
+    bool validateUpdatedHostKey(QString *error) const;
     void handleAuthResult(int result, Step nextStep);
     void setPhase(SshPhase phase);
     void fail(SshError::Domain domain, const QString &message,
@@ -84,5 +87,13 @@ private:
     SshRequestId m_pendingRequestId = 0;
     QList<SshAuthPrompt> m_pendingPrompts;
     QString m_currentFingerprint;
+    QString m_serverKeyType;
+    QString m_effectiveHost;
+    quint16 m_effectivePort = 0;
+    QString m_pendingLegacyFingerprint;
+    bool m_beginInProgress = false;
+    bool m_hasDeferredBegin = false;
+    SshTarget m_deferredTarget;
+    QByteArray m_deferredPassword;
     bool m_finished = false;
 };

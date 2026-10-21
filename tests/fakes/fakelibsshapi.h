@@ -32,6 +32,9 @@ public:
     {
         calls.append(QStringLiteral("string:%1=%2").arg(int(option)).arg(value));
         stringOptions[option] = value;
+        if (option == SSH_OPTIONS_HOST) {
+            effectiveHostValue = value;
+        }
         return takeOptionResult(option);
     }
 
@@ -40,6 +43,9 @@ public:
     {
         calls.append(QStringLiteral("unsigned:%1=%2").arg(int(option)).arg(value));
         unsignedOptions[option] = value;
+        if (option == SSH_OPTIONS_PORT) {
+            effectivePortValue = static_cast<quint16>(value);
+        }
         return takeOptionResult(option);
     }
 
@@ -53,7 +59,25 @@ public:
     int parseConfig(ssh_session) override
     {
         calls.append(QStringLiteral("parseConfig"));
+        if (!configuredHost.isEmpty()) {
+            effectiveHostValue = configuredHost;
+        }
+        if (configuredPort != 0) {
+            effectivePortValue = configuredPort;
+        }
         return parseConfigResult;
+    }
+
+    QString effectiveHost(ssh_session) override
+    {
+        calls.append(QStringLiteral("effectiveHost"));
+        return effectiveHostValue;
+    }
+
+    quint16 effectivePort(ssh_session) override
+    {
+        calls.append(QStringLiteral("effectivePort"));
+        return effectivePortValue;
     }
 
     void setBlocking(ssh_session, bool blocking) override
@@ -86,6 +110,12 @@ public:
         return serverFingerprint;
     }
 
+    QString serverHostKeyType(ssh_session) override
+    {
+        calls.append(QStringLiteral("serverHostKeyType"));
+        return serverKeyType;
+    }
+
     int authAgent(ssh_session) override
     {
         calls.append(QStringLiteral("authAgent"));
@@ -98,6 +128,12 @@ public:
         Q_UNUSED(passphrase);
         calls.append(QStringLiteral("authExplicit:%1").arg(path));
         return take(explicitKeyResults, int(SSH_AUTH_DENIED));
+    }
+
+    QString authenticationErrorString(ssh_session) const override
+    {
+        return explicitKeyErrorText.isEmpty() ? errorText
+                                              : explicitKeyErrorText;
     }
 
     int authAutomaticPublicKey(ssh_session,
@@ -165,11 +201,16 @@ public:
     QHash<enum ssh_options_e, bool> boolOptions;
     QHash<enum ssh_options_e, QList<int>> optionResults;
     int parseConfigResult = SSH_OK;
+    QString configuredHost;
+    quint16 configuredPort = 0;
+    QString effectiveHostValue;
+    quint16 effectivePortValue = 22;
     QList<int> connectResults;
     enum ssh_known_hosts_e knownState = SSH_KNOWN_HOSTS_OK;
     int updateKnownHostsResult = SSH_OK;
     int updateKnownHostsCount = 0;
     QString serverFingerprint = QStringLiteral("new-sha256");
+    QString serverKeyType = QStringLiteral("ssh-ed25519");
     mutable QList<bool> keyValidationResults;
     QList<int> agentResults;
     QList<int> explicitKeyResults;
@@ -180,6 +221,7 @@ public:
     QStringList answers;
     int keepaliveResult = SSH_OK;
     QString errorText = QStringLiteral("scripted libssh failure");
+    QString explicitKeyErrorText;
     int errorNumber = SSH_ERROR;
     int disconnectCount = 0;
 
