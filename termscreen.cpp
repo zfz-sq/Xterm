@@ -340,6 +340,20 @@ int TermScreen::resize(int cols, int rows)
     rows = qBound(4, rows, 200);
     if (cols == m_cols && rows == m_rows)
         return 0;
+    // 放大时先从滚动历史回填顶部（xterm 语义）：新露出的行显示刚滚走的
+    // 内容，而不是一片空行等输出慢慢填。历史尾行搬进屏幕后绝对下标不变
+    // （historySize 的减少恰好抵消屏幕偏移的增加），滚动位置与选区无需挪。
+    // 整屏滚动区之外（设备设了 DECSTBM）不动，语义就不闭环了。
+    if (!m_alt && rows > m_rows && !m_hist.empty()
+        && m_scrollTop == 0 && m_scrollBottom == m_rows - 1) {
+        const int want = qMin(rows - m_rows, int(m_hist.size()));
+        for (int i = 0; i < want; ++i) {
+            m_lines.insert(m_lines.begin(), std::move(m_hist.back()));
+            m_hist.pop_back();
+        }
+        m_unscannedHist = qMin(m_unscannedHist, int(m_hist.size()));
+        m_row += want; // 光标钉在原来的内容上
+    }
     m_cols = cols;
     m_rows = rows;
     if (m_alt) {

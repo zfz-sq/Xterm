@@ -141,6 +141,20 @@ QComboBox#sshPortCombo::drop-down {
     border: none;
 }
 
+/* ---------------- 多行文本（MCP 提示词 / 命令输出） ---------------- */
+
+QPlainTextEdit, QTextEdit, QTextBrowser {
+    background-color: #FBFBFC;
+    color: #24292E;
+    border: 1px solid #DCDCDE;
+    border-radius: 4px;
+    selection-background-color: #D6E9FF;
+    selection-color: #1F1F1F;
+}
+QPlainTextEdit:focus, QTextEdit:focus, QTextBrowser:focus {
+    border-color: #007ACC;
+}
+
 /* ---------------- 按钮 ---------------- */
 
 QPushButton {

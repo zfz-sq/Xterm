@@ -1,5 +1,29 @@
 find_package(Qt6 REQUIRED COMPONENTS Test)
 
+# 纯屏幕模型，不碰 SSH，也就不需要运行时部署
+add_executable(test_termscreen
+    test_termscreen.cpp
+    "${CMAKE_SOURCE_DIR}/termscreen.cpp"
+    "${CMAKE_SOURCE_DIR}/termscreen.h"
+)
+
+target_include_directories(test_termscreen
+    PRIVATE
+        "${CMAKE_SOURCE_DIR}"
+)
+
+target_link_libraries(test_termscreen
+    PRIVATE
+        Qt6::Test
+        Qt6::Gui
+)
+
+set_target_properties(test_termscreen PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)
+
+add_test(NAME test_termscreen COMMAND test_termscreen)
+
 add_executable(test_knownhosts
     test_knownhosts.cpp
     "${CMAKE_SOURCE_DIR}/ssh/knownhostsstore.cpp"
