@@ -10,10 +10,12 @@
 
 class AgentBridge;
 class HostStats;
+class QProgressDialog;
 
 class CommandBar;
 class QLabel;
 class QTimer;
+class QToolButton;
 class SerialSession;
 class SshSession;
 class ScreenView;
@@ -68,10 +70,13 @@ private:
     void browsePrivateKey();
     void onFilesClicked();          // 打开 SFTP 文件管理器（SSH 会话的独立第二连接）
     void onMcpClicked();            // 弹出 MCP 提示词
+    void setMcpActive(bool on);     // MCP 在线角标: AI 正在访问本窗口时点亮
+    void refreshMcpIcon();          // 按当前主题 + 在线状态重建 MCP 按钮图标
 
     QJsonObject agentStatus() const;
     QString agentRecentText(int maxLines) const;
     QString agentSendLine(const QString &text);
+    QString agentSendBytes(const QByteArray &bytes); // MCP send_control 用: 裸字节直达
 
     void sendRaw(const QByteArray &bytes);       // 唯一发送汇聚点 → 当前链路
     void sendLine(const QString &line);          // 预设命令按钮用
@@ -96,6 +101,9 @@ private:
     SshSession *m_ssh = nullptr;
     CommandStore *m_store = nullptr;
     CommandBar *m_commandBar = nullptr;
+    QToolButton *m_mcpBtn = nullptr; // MCP 按钮：挂命令栏收起态侧边按钮组（展开命令栏按钮下方）
+    QTimer *m_mcpActiveTimer = nullptr; // MCP 在线角标自动熄灭（单发）
+    bool m_mcpActive = false;           // 最近是否有合法 MCP 请求
     ScreenView *m_serialView = nullptr;
     ScreenView *m_sshView = nullptr;
     CompletionEngine *m_completion = nullptr;

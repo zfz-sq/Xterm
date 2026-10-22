@@ -191,6 +191,7 @@ bool CommandStore::load()
     m_mode = (mode == QStringLiteral("ssh")) ? QStringLiteral("ssh")
                                              : QStringLiteral("serial");
     m_fontSize = qBound(0, root.value(QStringLiteral("fontSize")).toInt(0), 72);
+    m_commandBarCollapsed = root.value(QStringLiteral("commandBarCollapsed")).toBool(false);
     return true;
 }
 
@@ -209,6 +210,7 @@ bool CommandStore::save() const
         { QStringLiteral("theme"), m_theme },
         { QStringLiteral("mode"), m_mode },
         { QStringLiteral("fontSize"), m_fontSize },
+        { QStringLiteral("commandBarCollapsed"), m_commandBarCollapsed },
         { QStringLiteral("profiles"), arr },
     };
 

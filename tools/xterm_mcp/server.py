@@ -56,45 +56,87 @@ def pipe_path(name):
     return name
 
 
+# ---------- 持久连接: 管道复用，断了自动重连一次 ----------
+# QLocalServer 支持同一连接上多请求（一行一答），无需每个工具调用都重连。
+_pipe_fh = None
+_pipe_key = None
+_next_id = [0]
+
+
+def close_pipe():
+    global _pipe_fh, _pipe_key
+    if _pipe_fh is not None:
+        try:
+            _pipe_fh.close()
+        except OSError:
+            pass
+        _pipe_fh = None
+        _pipe_key = None
+
+
+def get_pipe(cfg):
+    """取当前可用的管道句柄；配置变化（Xterm 重启换令牌）时自动重连。"""
+    global _pipe_fh, _pipe_key
+    key = (cfg.get("pipe"), cfg.get("token"))
+    if _pipe_fh is not None and _pipe_key != key:
+        close_pipe()  # Xterm 重启了: 旧令牌已失效
+    if _pipe_fh is not None:
+        return _pipe_fh
+    try:
+        _pipe_fh = open(pipe_path(cfg.get("pipe") or PIPE_NAME), "r+b", buffering=0)
+        _pipe_key = key
+    except OSError as exc:
+        raise RuntimeError("连不上 Xterm（%s）" % exc) from exc
+    return _pipe_fh
+
+
+def one_roundtrip(cfg, method, params):
+    """在持久管道上完成一次请求-响应。"""
+    pipe = get_pipe(cfg)
+    _next_id[0] += 1
+    req = {
+        "id": _next_id[0],
+        "token": cfg["token"],
+        "method": method,
+        "params": params or {},
+    }
+    pipe.write(json.dumps(req, ensure_ascii=False).encode("utf-8") + b"\n")
+    buf = b""
+    while b"\n" not in buf:
+        chunk = pipe.read(4096)
+        if not chunk:
+            raise ConnectionError("管道被 Xterm 关闭")
+        buf += chunk
+        if len(buf) > 8 * 1024 * 1024:
+            break
+    if b"\n" not in buf:
+        raise ConnectionError("Xterm 没有返回结果")
+    return json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+
+
 def call_xterm(method, params, timeout_hint_ms):
     cfg = load_agent()
     if not cfg:
         raise RuntimeError("Xterm 未运行，或还没有写好本机连接信息")
-    path = pipe_path(cfg.get("pipe") or PIPE_NAME)
-    # 软件侧会在超时后回包，这里把读超时放宽一点
-    wait_s = max(5.0, (timeout_hint_ms + 2000) / 1000.0)
-    try:
-        pipe = open(path, "r+b", buffering=0)
-    except OSError as exc:
-        raise RuntimeError("连不上 Xterm（%s）" % exc) from exc
-    try:
-        if os.name == "nt":
-            # 命名管道没有标准的 settimeout；靠对端必定回一行。
-            pass
-        req = {
-            "id": 1,
-            "token": cfg["token"],
-            "method": method,
-            "params": params or {},
-        }
-        pipe.write(json.dumps(req, ensure_ascii=False).encode("utf-8") + b"\n")
-        buf = b""
-        while b"\n" not in buf:
-            chunk = pipe.read(4096)
-            if not chunk:
-                break
-            buf += chunk
-            if len(buf) > 8 * 1024 * 1024:
-                break
-        if b"\n" not in buf:
-            raise RuntimeError("Xterm 没有返回结果（等待约 %ss）" % wait_s)
-        line = buf.split(b"\n", 1)[0]
-        msg = json.loads(line.decode("utf-8"))
-    finally:
-        pipe.close()
-    if not msg.get("ok"):
-        raise RuntimeError(msg.get("error") or "Xterm 拒绝了请求")
-    return msg.get("result") or {}
+    # 首次失败（对端重启/残留令牌）时断开重连再试一次
+    for attempt in (1, 2):
+        try:
+            msg = one_roundtrip(cfg, method, params)
+        except (OSError, ConnectionError) as exc:
+            close_pipe()
+            if attempt == 2:
+                raise RuntimeError("与 Xterm 通信失败（%s）" % exc) from exc
+            continue
+        if not msg.get("ok"):
+            err = msg.get("error") or "Xterm 拒绝了请求"
+            if "令牌" in err:
+                # agent.json 是异常退出残留: 提示重启 Xterm 即可自愈（新实例会重写）
+                close_pipe()
+                raise RuntimeError(
+                    err + "；agent.json 可能是残留文件，重启 Xterm 即可自动修复")
+            raise RuntimeError(err)
+        return msg.get("result") or {}
+    return {}
 
 
 def tool_text(result):
@@ -124,6 +166,24 @@ TOOLS = [
                 "timeout_ms": {"type": "integer", "description": "等待毫秒，默认 3000，最大 30000"},
             },
             "required": ["text"],
+        },
+    },
+    {
+        "name": "send_control",
+        "description": (
+            "发送控制字符到 Xterm 当前连接。"
+            "长输出命令失控想中断时用 ctrl+c；结束输入用 ctrl+d；esc 退出。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string",
+                    "enum": ["ctrl+c", "ctrl+d", "ctrl+z", "ctrl+u", "ctrl+l", "esc", "tab"],
+                    "description": "控制键名",
+                },
+            },
+            "required": ["key"],
         },
     },
     {
@@ -165,6 +225,8 @@ def dispatch_tool(name, arguments):
             params["timeout_ms"] = arguments["timeout_ms"]
         timeout = int(arguments.get("timeout_ms") or 3000)
         return call_xterm("send_line", params, timeout)
+    if name == "send_control":
+        return call_xterm("send_control", {"key": arguments.get("key", "")}, 3000)
     if name == "wait":
         timeout = int(arguments.get("timeout_ms") or 3000)
         return call_xterm(

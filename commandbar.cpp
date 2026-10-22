@@ -154,18 +154,28 @@ void CommandBar::buildUi()
     m_downBtn = mkBtn(QStringLiteral("down.png"), tr("下移"));
     panelLayout->addLayout(bottom);
 
-    // ---------- 完全收起后的还原按钮 ----------
-    m_restoreBtn = new QToolButton(this);
+    // ---------- 完全收起后的侧边按钮组 ----------
+    // 收起态整栏只剩这一竖排：顶部是“展开命令栏”按钮，下方经 addSideButton()
+    // 挂外部功能按钮（如 MCP）；命令栏任一形态展开时整组隐藏。
+    m_sideRail = new QWidget(this);
+    m_sideRail->setFixedWidth(28);
+    m_sideRail->hide();
+    m_sideRailLayout = new QVBoxLayout(m_sideRail);
+    m_sideRailLayout->setContentsMargins(0, 0, 0, 0);
+    m_sideRailLayout->setSpacing(4);
+
+    m_restoreBtn = new QToolButton(m_sideRail);
     m_restoreBtn->setIcon(themedIcon(QStringLiteral("gear.png")));
     m_restoreBtn->setToolTip(tr("展开命令栏"));
     m_restoreBtn->setAutoRaise(true);
-    m_restoreBtn->setFixedWidth(28);
-    m_restoreBtn->hide();
+    m_restoreBtn->setFixedSize(28, 28);
+    m_sideRailLayout->addWidget(m_restoreBtn);
+    m_sideRailLayout->addStretch(1); // 按钮贴顶，不被垂直居中
 
     rootLayout->addWidget(m_buttonColumn);
     rootLayout->addWidget(m_editPanel);
-    // 全部收起后只剩还原按钮: 固定贴顶，避免被布局垂直居中
-    rootLayout->addWidget(m_restoreBtn, 0, Qt::AlignTop | Qt::AlignLeft);
+    // 全部收起后只剩侧边按钮组: 固定贴顶，避免被布局垂直居中
+    rootLayout->addWidget(m_sideRail, 0, Qt::AlignTop | Qt::AlignLeft);
 
     // ---------- 三态收起 ----------
     // 展开设置页时隐藏按钮列（设置页自带收起按钮），收起时恢复按钮列
@@ -179,13 +189,12 @@ void CommandBar::buildUi()
         m_buttonColumn->show();
     });
     connect(m_collapseBtn, &QToolButton::clicked, this, [this] {
-        m_buttonColumn->hide();
-        m_editPanel->hide();
-        m_restoreBtn->show();
+        setCollapsed(true);
+        emit collapsedChanged(true);
     });
     connect(m_restoreBtn, &QToolButton::clicked, this, [this] {
-        m_restoreBtn->hide();
-        m_buttonColumn->show();
+        setCollapsed(false);
+        emit collapsedChanged(false);
     });
 
     // ---------- 增删复制排序 ----------
@@ -220,6 +229,34 @@ void CommandBar::applyTheme()
         row->sendBtn->setIcon(themedIcon(QStringLiteral("send.png")));
         row->gripLabel->setPixmap(themedIcon(QStringLiteral("grip.png")).pixmap(16, 16));
     }
+}
+
+void CommandBar::addSideButton(QToolButton *btn)
+{
+    if (!btn || !m_sideRailLayout)
+        return;
+    // 统一成与“展开命令栏”按钮一致的纯图标 28×28 小方块，
+    // 插到末尾 stretch 之前（还原按钮下方），随整组一起显隐。
+    btn->setParent(m_sideRail);
+    btn->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    btn->setAutoRaise(true);
+    btn->setFixedSize(28, 28);
+    m_sideRailLayout->insertWidget(m_sideRailLayout->count() - 1, btn);
+}
+
+void CommandBar::setCollapsed(bool collapsed)
+{
+    if (collapsed) {
+        m_buttonColumn->hide();
+        m_editPanel->hide();
+        m_sideRail->show();
+    } else {
+        // 恢复到默认形态：按钮列（设置页若曾展开也不再恢复）
+        m_sideRail->hide();
+        m_editPanel->hide();
+        m_buttonColumn->show();
+    }
+    m_collapsed = collapsed;
 }
 
 // ---------- 对外接口 ----------

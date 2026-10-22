@@ -21,11 +21,13 @@
 #include <QIntValidator>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPainter>
 #include <QPlainTextEdit>
 #include <QListView>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSerialPortInfo>
+#include <QShortcut>
 #include <QStatusBar>
 #include <QStyle>
 #include <QTimer>
@@ -144,6 +146,13 @@ MainWindow::MainWindow(QWidget *parent)
     m_commandBar = new CommandBar(this);
     ui->commandBarLayout->addWidget(m_commandBar);
 
+    // 右侧功能按钮（MCP 等）挂在命令栏收起态的侧边按钮组里：位于“展开命令栏”
+    // 按钮下方，命令栏展开时整组隐藏。只显示图标，尺寸统一 28×28。
+    m_mcpBtn = new QToolButton(this);
+    m_mcpBtn->setIcon(themedIcon(QStringLiteral("mcp.png")));
+    m_mcpBtn->setToolTip(tr("显示 MCP 提示词"));
+    m_commandBar->addSideButton(m_mcpBtn);
+
     // 永久状态: 端口/波特率/连接状态
     m_statusLabel = new QLabel(tr("未连接"), this);
     ui->statusbar->addPermanentWidget(m_statusLabel, 1);
@@ -152,6 +161,8 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_store->load();
     applyTheme();
+    // 恢复上次保存的命令栏收起状态（侧边按钮组形态）
+    m_commandBar->setCollapsed(m_store->commandBarCollapsed());
     // 恢复上次保存的终端字号（全局，两页一致）
     if (const int savedPt = m_store->fontSize(); savedPt > 0) {
         m_serialView->setFontSize(savedPt);
@@ -167,6 +178,18 @@ MainWindow::MainWindow(QWidget *parent)
         [this] { return agentStatus(); },
         [this](int maxLines) { return agentRecentText(maxLines); },
         [this](const QString &text) { return agentSendLine(text); },
+        [this](const QByteArray &bytes) { return agentSendBytes(bytes); },
+    });
+
+    // MCP 在线角标: 有合法请求时点亮，30 秒无活动自动熄灭
+    // （管道连接按请求建立，没有“断开”事件可依赖）
+    m_mcpActiveTimer = new QTimer(this);
+    m_mcpActiveTimer->setSingleShot(true);
+    m_mcpActiveTimer->setInterval(30 * 1000);
+    connect(m_mcpActiveTimer, &QTimer::timeout, this, [this] { setMcpActive(false); });
+    connect(m_agent, &AgentBridge::agentActive, this, [this] {
+        setMcpActive(true);
+        m_mcpActiveTimer->start();
     });
 }
 
@@ -380,9 +403,31 @@ void MainWindow::connectSignals()
         m_store->save();
         applyTheme();
     });
-    connect(ui->mcpBtn, &QToolButton::clicked, this, &MainWindow::onMcpClicked);
+    connect(m_mcpBtn, &QToolButton::clicked, this, &MainWindow::onMcpClicked);
     connect(ui->modeBtn, &QToolButton::clicked, this, [this] {
         setMode(m_mode == Mode::Serial ? Mode::Ssh : Mode::Serial);
+    });
+
+    // 命令栏收起状态持久化: 下次启动直接恢复侧边按钮组形态
+    connect(m_commandBar, &CommandBar::collapsedChanged, this, [this](bool collapsed) {
+        m_store->setCommandBarCollapsed(collapsed);
+        m_store->save();
+    });
+
+    // 全局快捷键: F9 切换串口/SSH，F10 打开 SFTP 文件管理。
+    // 注意: 焦点在终端时 F9/F10 由快捷键优先消费，不再透传给远端
+    // （F1-F8、F11、F12 的 ANSI 序列不受影响）。
+    auto *modeSc = new QShortcut(QKeySequence(Qt::Key_F9), this);
+    connect(modeSc, &QShortcut::activated, this, [this] {
+        setMode(m_mode == Mode::Serial ? Mode::Ssh : Mode::Serial);
+    });
+    auto *sftpSc = new QShortcut(QKeySequence(Qt::Key_F10), this);
+    connect(sftpSc, &QShortcut::activated, this, [this] {
+        if (m_ssh->state() == Transport::Connected) {
+            onFilesClicked();
+        } else {
+            appendActiveNote(tr("── SSH 未连接，无法打开 SFTP 文件管理 ──"));
+        }
     });
     // settingsBtn 非 checkable，clicked(false) 会让 setVisible(false) 永远收起，改用 lambda 切换
     connect(ui->settingsBtn, &QToolButton::clicked, this, [this] {
@@ -687,8 +732,11 @@ void MainWindow::updateModeUi()
     ui->modeBtn->setIcon(themedIcon(serial ? QStringLiteral("ssh.png")
                                            : QStringLiteral("serial.png")));
     ui->modeBtn->setText(serial ? tr("SSH") : tr("串口"));
-    ui->modeBtn->setToolTip(serial ? tr("切换到 SSH 终端（串口连接与内容保持不断开）")
-                                   : tr("切换回串口终端（SSH 连接与内容保持不断开）"));
+    ui->modeBtn->setToolTip(serial ? tr("切换到 SSH 终端（F9；串口连接与内容保持不断开）")
+                                   : tr("切换回串口终端（F9；SSH 连接与内容保持不断开）"));
+    // SFTP 走 SSH 通道：串口页不显示文件管理按钮（连同其左侧分隔线）
+    ui->vline1->setVisible(!serial);
+    ui->filesBtn->setVisible(!serial);
     if (!serial && !m_shellTitle.isEmpty())
         setWindowTitle(tr("Xterm — %1").arg(m_shellTitle));
     else
@@ -742,7 +790,7 @@ void MainWindow::updateConnectionUi()
     ui->keyEdit->setEnabled(!serial && idle);
     ui->keyBrowseBtn->setEnabled(!serial && idle);
 
-    // 文件管理器看 SSH 链路（含后台模式），与当前在哪一页无关
+    // 文件管理按钮只在 SSH 页显示（见 updateModeUi），启用与否看 SSH 链路状态（含后台）
     ui->filesBtn->setEnabled(m_ssh->state() == Transport::Connected);
 }
 
@@ -763,6 +811,9 @@ void MainWindow::applyTheme()
     ui->themeBtn->setToolTip(dark ? tr("切换到亮色主题") : tr("切换到深色主题"));
     if (m_commandBar)
         m_commandBar->applyTheme();
+    // 侧边按钮组里的 MCP 按钮也要跟主题换图标（构造时首次调用已创建）
+    if (m_mcpBtn)
+        refreshMcpIcon();
     fitSshPortEdit();
 }
 
@@ -969,6 +1020,33 @@ void MainWindow::promptAuthAnswers(SshRequestId requestId,
 
 // ---------------------------------------------------------------- 本机 MCP
 
+void MainWindow::setMcpActive(bool on)
+{
+    if (m_mcpActive == on)
+        return;
+    m_mcpActive = on;
+    refreshMcpIcon();
+}
+
+void MainWindow::refreshMcpIcon()
+{
+    if (!m_mcpBtn)
+        return;
+    QPixmap pm = themedIcon(QStringLiteral("mcp.png")).pixmap(16, 16);
+    if (m_mcpActive) {
+        // 右下角绿色小圆点: AI 正在通过 MCP 访问本窗口
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(76, 175, 80));
+        p.drawEllipse(QRectF(9.5, 9.5, 6.0, 6.0));
+        p.end();
+    }
+    m_mcpBtn->setIcon(QIcon(pm));
+    m_mcpBtn->setToolTip(m_mcpActive ? tr("MCP 在线（AI 正在访问本窗口），点击查看提示词")
+                                     : tr("显示 MCP 提示词"));
+}
+
 QJsonObject MainWindow::agentStatus() const
 {
     Transport *t = activeTransport();
@@ -1001,6 +1079,14 @@ QString MainWindow::agentRecentText(int maxLines) const
 {
     const ScreenView *view = (m_mode == Mode::Serial) ? m_serialView : m_sshView;
     return view ? view->recentText(maxLines) : QString();
+}
+
+QString MainWindow::agentSendBytes(const QByteArray &bytes)
+{
+    Transport *t = activeTransport();
+    if (!t || t->state() != Transport::Connected)
+        return tr("未连接");
+    return t->send(bytes);
 }
 
 QString MainWindow::agentSendLine(const QString &text)

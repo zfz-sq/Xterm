@@ -33,6 +33,7 @@
         <file>icons/light/invert.png</file>
         <file>icons/light/move.png</file>
         <file>icons/light/command.png</file>
+        <file>icons/light/mcp.png</file>
         <file>icons/light/new.png</file>
         <file>icons/light/name.png</file>
         <file>icons/dark/refresh.png</file>
@@ -67,6 +68,7 @@
         <file>icons/dark/invert.png</file>
         <file>icons/dark/move.png</file>
         <file>icons/dark/command.png</file>
+        <file>icons/dark/mcp.png</file>
         <file>icons/dark/new.png</file>
         <file>icons/dark/name.png</file>
         <file>style-dark.qss</file>

@@ -3,6 +3,7 @@
 #include "commandstore.h"
 
 #include <QDateTime>
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -51,7 +52,9 @@ QString AgentBridge::instructions()
         "串口（含 STM32 USB CDC）是 \\n，SSH 是 \\r。\n"
         "\n"
         "发送后用 wait，或给 send_line 带上 wait，等到预期输出或超时。"
-        "不要用固定睡眠判断成功。需要看屏幕已有内容时用 read。\n"
+        "不要用固定睡眠判断成功。需要看屏幕已有内容时用 read。"
+        "wait 自带回显免疫：等待词出现在命令文本里时，会等它再次出现（真实输出）才命中，"
+        "无需用引号拆分等技巧绕开回显。\n"
         "\n"
         "不要用这些工具操作 top、vim 等全屏程序。\n"
         "\n"
@@ -81,6 +84,15 @@ void AgentBridge::start(Hooks hooks)
     if (m_server)
         return;
 
+    m_agentFile = agentFilePath();
+
+    // 已有活实例在服务管道时（用户开了第二个 Xterm），本实例不抢管道、
+    // 不覆盖 agent.json——否则次实例一旦退出会留下死令牌，所有 MCP 客户端
+    // 全部「令牌不匹配」。注意 Windows 允许同名管道多实例，listen() 成功
+    // 不代表没有别人在监听，必须主动探测。
+    if (probeExistingAgent())
+        return;
+
     m_server = new QLocalServer(this);
     m_server->setSocketOptions(QLocalServer::UserAccessOption);
     // Windows 上进程退出会释放管道。这里不 removeServer，避免把另一个正在运行的 Xterm 挤掉。
@@ -91,8 +103,37 @@ void AgentBridge::start(Hooks hooks)
     }
     connect(m_server, &QLocalServer::newConnection, this, &AgentBridge::onNewConnection);
     m_token = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    m_agentFile = agentFilePath();
     writeAgentFile();
+}
+
+bool AgentBridge::probeExistingAgent() const
+{
+    QFile f(m_agentFile);
+    if (!f.open(QIODevice::ReadOnly))
+        return false; // 没有文件: 本实例是第一个
+    const QJsonObject obj = QJsonDocument::fromJson(f.readAll()).object();
+    f.close();
+    const QString pipe = obj.value(QStringLiteral("pipe")).toString();
+    const QString token = obj.value(QStringLiteral("token")).toString();
+    if (pipe.isEmpty() || token.isEmpty())
+        return false;
+
+    // 用文件里的令牌连管道发一个 status：能连通且令牌通过 = 有活实例在前台服务。
+    QLocalSocket sock;
+    sock.connectToServer(pipe);
+    if (!sock.waitForConnected(300))
+        return false; // 无人监听: 文件是崩溃残留，本实例安全接管（写入时覆盖）
+    QJsonObject req;
+    req.insert(QStringLiteral("id"), 1);
+    req.insert(QStringLiteral("token"), token);
+    req.insert(QStringLiteral("method"), QStringLiteral("status"));
+    req.insert(QStringLiteral("params"), QJsonObject());
+    sock.write(QJsonDocument(req).toJson(QJsonDocument::Compact));
+    sock.write("\n");
+    if (!sock.waitForBytesWritten(300) || !sock.waitForReadyRead(300))
+        return false; // 有连接但对端无响应（半死状态）: 视为无实例
+    const QJsonObject resp = QJsonDocument::fromJson(sock.readLine()).object();
+    return resp.value(QStringLiteral("ok")).toBool(); // 令牌不匹配 = 前实例已死
 }
 
 void AgentBridge::writeAgentFile()
@@ -101,6 +142,8 @@ void AgentBridge::writeAgentFile()
     QJsonObject obj;
     obj.insert(QStringLiteral("pipe"), m_pipeName);
     obj.insert(QStringLiteral("token"), m_token);
+    // pid 供客户端判断实例存活性（异常退出残留的文件可识别）
+    obj.insert(QStringLiteral("pid"), static_cast<double>(QCoreApplication::applicationPid()));
     obj.insert(QStringLiteral("instructions"), instructions());
     QSaveFile file(m_agentFile);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
@@ -193,6 +236,7 @@ void AgentBridge::handleLine(QLocalSocket *sock, const QByteArray &line)
     }
     const QString method = req.value(QStringLiteral("method")).toString();
     const QJsonObject params = req.value(QStringLiteral("params")).toObject();
+    emit agentActive(); // 令牌校验通过: 合法的 AI 客户端正在访问
 
     if (method == QLatin1String("status")) {
         QJsonObject result = m_hooks.status ? m_hooks.status() : QJsonObject();
@@ -203,6 +247,36 @@ void AgentBridge::handleLine(QLocalSocket *sock, const QByteArray &line)
         const int lines = clampLines(params.value(QStringLiteral("max_lines")).toInt());
         QJsonObject result;
         result.insert(QStringLiteral("text"), m_hooks.recentText ? m_hooks.recentText(lines) : QString());
+        reply(sock, id, true, result, {});
+        return;
+    }
+    if (method == QLatin1String("send_control")) {
+        // 控制字符直达当前链路（如 ctrl+c 中断长输出命令），不补行尾、不记行历史
+        const QString key = params.value(QStringLiteral("key")).toString().toLower();
+        char byte = 0;
+        if (key == QLatin1String("esc"))
+            byte = 0x1b;
+        else if (key == QLatin1String("tab"))
+            byte = 0x09;
+        else if (key.startsWith(QLatin1String("ctrl+")) && key.size() == 6) {
+            const QChar c = key.at(5);
+            if (c >= QLatin1Char('a') && c <= QLatin1Char('z'))
+                byte = char(c.toLatin1() - 'a' + 1);
+        }
+        if (byte == 0) {
+            reply(sock, id, false, {},
+                  QStringLiteral("未知控制键（支持 ctrl+a..z / esc / tab）"));
+            return;
+        }
+        const QString err = m_hooks.sendBytes
+                                ? m_hooks.sendBytes(QByteArray(1, byte))
+                                : QStringLiteral("未连接");
+        if (!err.isEmpty()) {
+            reply(sock, id, false, {}, err);
+            return;
+        }
+        QJsonObject result;
+        result.insert(QStringLiteral("sent"), key);
         reply(sock, id, true, result, {});
         return;
     }
@@ -226,6 +300,9 @@ void AgentBridge::handleLine(QLocalSocket *sock, const QByteArray &line)
         w.id = id;
         w.needle = needle;
         w.beforeCount = after.count(needle);
+        // 回显免疫: needle 若是所发命令的子串，命令回显本身就会让它 +1；
+        // 此时要求它再出现一次（真实输出）才算命中，避免被回显提前满足。
+        w.minNew = text.contains(needle) ? 2 : 1;
         w.timeoutMs = clampTimeout(params.value(QStringLiteral("timeout_ms")).toInt());
         w.deadlineMs = QDateTime::currentMSecsSinceEpoch() + w.timeoutMs;
         m_waiters.append(w);
@@ -266,7 +343,8 @@ void AgentBridge::pollWaiters()
     for (int i = m_waiters.size() - 1; i >= 0; --i) {
         const Waiter w = m_waiters.at(i);
         const int count = now.count(w.needle);
-        const bool hit = count > w.beforeCount;
+        // 命中条件: 新出现次数达到 minNew（普通为 1，回显免疫场景为 2）
+        const bool hit = count - w.beforeCount >= w.minNew;
         const bool timedOut = clock >= w.deadlineMs;
         if (!hit && !timedOut)
             continue;

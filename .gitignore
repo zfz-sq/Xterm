@@ -27,3 +27,4 @@ tools/__pycache__/
 # OS / editor
 Thumbs.db
 Desktop.ini
+__pycache__/

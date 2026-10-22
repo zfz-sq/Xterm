@@ -23,7 +23,8 @@ class QVBoxLayout;
  * 三种形态:
  *   1. 按钮 + 设置页 (点击齿轮展开编辑面板)
  *   2. 仅按钮列      (设置页收起)
- *   3. 仅扩展按钮    (整栏收起，只留一个齿轮按钮，点击还原)
+ *   3. 仅侧边按钮组  (整栏收起，顶部是“展开命令栏”按钮，下方可经 addSideButton()
+ *                     挂外部功能按钮，如 MCP；命令栏任一形态展开时整组隐藏)
  *
  * 设置页每行: 序号 | 命令文本 | 发送按钮 | 拖动手柄(可拖动排序)
  * 底部右侧: 复制 | +添加 | -删除 | 上移 | 下移
@@ -40,9 +41,17 @@ public:
     void setSendEnabled(bool enabled);
     void applyTheme(); // 按当前图标主题重刷本栏图标
 
+    bool isCollapsed() const { return m_collapsed; }
+    void setCollapsed(bool collapsed); // 程序化设置收起状态（启动恢复用，不发信号）
+
+    // 把外部功能按钮（如 MCP）挂到收起态侧边按钮组：位于“展开命令栏”按钮下方，
+    // 命令栏展开时整组隐藏。按钮统一为纯图标 28×28，与“展开命令栏”按钮一致。
+    void addSideButton(QToolButton *btn);
+
 signals:
     void commandRequested(const QString &text); // 按下任一发送入口
     void commandsChanged();                     // 命令列表内容/顺序变化
+    void collapsedChanged(bool collapsed);      // 用户切换整栏收起/展开时发出
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -81,6 +90,8 @@ private:
 
     QWidget *m_editPanel = nullptr;
     QListWidget *m_list = nullptr;
+    QWidget *m_sideRail = nullptr;       // 收起态侧边按钮组（展开命令栏按钮 + 外挂功能按钮）
+    QVBoxLayout *m_sideRailLayout = nullptr;
     QToolButton *m_restoreBtn = nullptr;
     QToolButton *m_panelCollapseBtn = nullptr;
     QToolButton *m_copyBtn = nullptr;
@@ -93,6 +104,7 @@ private:
     QMap<QListWidgetItem *, Row *> m_rows;
     bool m_sendEnabled = false;
     bool m_rebuilding = false;
+    bool m_collapsed = false; // 整栏是否收起成侧边按钮组（供持久化，isVisible 在窗口未显示时不可靠）
 };
 
 #endif // COMMANDBAR_H

@@ -70,6 +70,10 @@ public:
     int fontSize() const { return m_fontSize; }
     void setFontSize(int pt) { m_fontSize = pt; }
 
+    // 命令栏收起状态（true = 整栏收起，只剩右侧竖排按钮组）
+    bool commandBarCollapsed() const { return m_commandBarCollapsed; }
+    void setCommandBarCollapsed(bool collapsed) { m_commandBarCollapsed = collapsed; }
+
     // 上次使用的工作模式: "serial" / "ssh"
     QString mode() const { return m_mode; }
     void setMode(const QString &mode)
@@ -86,6 +90,7 @@ private:
     QString m_theme = QStringLiteral("dark");
     QString m_mode = QStringLiteral("serial");
     int m_fontSize = 0;
+    bool m_commandBarCollapsed = false;
 };
 
 #endif // COMMANDSTORE_H
