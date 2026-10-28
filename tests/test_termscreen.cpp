@@ -41,6 +41,7 @@ private slots:
     void growExhaustedHistoryLeavesNoHole();
     void shrinkKeepsEverythingReachable();
     void resizeStormLosesNothing();
+    void screenCtlFlagTracksPainterBlocks();
 };
 
 void TermScreenTest::growBackfillsFromHistory()
@@ -132,6 +133,37 @@ void TermScreenTest::resizeStormLosesNothing()
         }
     }
     QCOMPARE(expect, next);
+}
+
+// 画屏标志：BusyBox top 式帧（ESC[H + 重画）置位，提示符样纯文本块清零，
+// 而且光标停在行中、写了可见字符——ScreenView 依此判定全屏程序进出。
+void TermScreenTest::screenCtlFlagTracksPainterBlocks()
+{
+    TermScreen screen;
+    screen.resize(100, 34);
+
+    // shell 提示符：纯文本，不是画屏
+    screen.feed("root@board:~# ");
+    QVERIFY(!screen.screenCtlSeen());
+    QVERIFY(screen.feedPrintable() > 0);
+    QVERIFY(screen.cursorCol() > 0);
+
+    // BusyBox top 一帧：ESC[H ESC[J + 反显表头 + 行内容
+    QByteArray frame = "\x1b[H\x1b[J";
+    frame += "\x1b[7m  PID USER %CPU COMMAND\x1b[m\r\n";
+    frame += "  123 root  1.2 top\r\n";
+    screen.feed(frame);
+    QVERIFY(screen.screenCtlSeen());
+
+    // 退出后 shell 直接打提示符（纯文本、停在行中）
+    screen.feed("root@board:~# ");
+    QVERIFY(!screen.screenCtlSeen());
+    QVERIFY(screen.feedPrintable() > 0);
+    QVERIFY(screen.cursorCol() > 0);
+
+    // 整屏擦除（clear / vi 起手）也算画屏
+    screen.feed("\x1b[H\x1b[2J");
+    QVERIFY(screen.screenCtlSeen());
 }
 
 QTEST_MAIN(TermScreenTest)

@@ -8,6 +8,7 @@
 #include <QInputMethodEvent>
 #include <QKeyEvent>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPaintEvent>
@@ -96,7 +97,7 @@ ScreenView::ScreenView(QWidget *parent)
     });
 
     m_find = new QLineEdit(this);
-    m_find->setPlaceholderText(QStringLiteral("查找    Enter 下一个   Shift+Enter 上一个   Esc 关闭"));
+    m_find->setPlaceholderText(QStringLiteral("查找    Enter/F3 下一个   Shift+Enter 上一个   Esc 关闭"));
     m_find->hide();
     m_find->installEventFilter(this);
 }
@@ -156,7 +157,10 @@ void ScreenView::pumpRx()
         m_rx.remove(0, m_rxUsed);
         m_rxUsed = 0;
     }
-    afterOutput(m_screen.feed(slice));
+    const int dropped = m_screen.feed(slice);
+    if (!m_editRedraw) // 本地行编辑重画自带光标定位，不能当远端画屏
+        applyRemoteCtl();
+    afterOutput(dropped);
     if (m_rxUsed < m_rx.size())
         m_pump->start(0);
 }
@@ -173,7 +177,10 @@ void ScreenView::flushRx()
     const QByteArray rest = m_rx.mid(m_rxUsed);
     m_rx.clear();
     m_rxUsed = 0;
-    afterOutput(m_screen.feed(rest));
+    const int dropped = m_screen.feed(rest);
+    if (!m_editRedraw)
+        applyRemoteCtl();
+    afterOutput(dropped);
 }
 
 void ScreenView::recalcMetrics()
@@ -200,6 +207,15 @@ void ScreenView::updateGrid()
     const int dropped = m_screen.resize(cols, rows);
     afterOutput(dropped);
     m_sizeTimer->start(40);
+}
+
+void ScreenView::setPad(int pad)
+{
+    if (m_pad == pad)
+        return;
+    m_pad = pad;
+    updateGrid(); // 内边距变化会改变可用列数/行数，需重算并通知 pty
+    update();
 }
 
 void ScreenView::emitPtySize()
@@ -295,6 +311,56 @@ void ScreenView::setFontSize(int pt)
     emit fontSizeChanged(next);
 }
 
+void ScreenView::setKeywords(const QList<KeywordRule> &rules)
+{
+    m_keywords = rules;
+    update(); // 已在屏上的内容立即按新规则重画
+}
+
+void ScreenView::collectKeywordHits(const TermLine *line, int cols,
+                                     QList<KeywordHit> *hits) const
+{
+    hits->clear();
+    // 可见文本 + 每个字符的起始列与占格数。宽字符（CJK/emoji）占两列但只算首格，
+    // 代理对的第二个 QChar 沿用同列号，命中区间按列展开才对得上画面。
+    QString text;
+    QVector<int> colOf;
+    QVector<int> spanOf;
+    for (int col = 0; col < cols; ++col) {
+        const TermCell cell = cellOrBlank(line, col);
+        if (cell.flags & TermScreen::FlagWideCont)
+            continue;
+        const char32_t cp = cell.cp ? cell.cp : U' ';
+        const int before = text.size();
+        text += QString::fromUcs4(&cp, 1);
+        const int added = text.size() - before;
+        const int span = (cell.flags & TermScreen::FlagWide) ? 2 : 1;
+        colOf.append(col);
+        spanOf.append(span);
+        for (int e = 1; e < added; ++e) {
+            colOf.append(col);
+            spanOf.append(0);
+        }
+    }
+    if (text.isEmpty())
+        return;
+    for (const KeywordRule &rule : m_keywords) {
+        if (!rule.enabled || rule.text.isEmpty())
+            continue;
+        int from = 0;
+        while (true) {
+            const int idx = text.indexOf(rule.text, from, Qt::CaseInsensitive);
+            if (idx < 0)
+                break;
+            const int last = idx + rule.text.size() - 1;
+            const int start = colOf.at(idx);
+            const int end = colOf.at(last) + qMax(spanOf.at(last), 1) - 1;
+            hits->append({ start, end, rule.color });
+            from = idx + rule.text.size();
+        }
+    }
+}
+
 void ScreenView::zoom(int steps)
 {
     setFontSize(m_font.pointSize() + steps);
@@ -309,7 +375,7 @@ void ScreenView::pasteClipboard()
         text.truncate(1000000);
     text.replace(QLatin1String("\r\n"), QLatin1String("\n"));
     text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
-    if (m_localEcho && !m_screen.altScreen()) {
+    if (localLineMode()) {
         const QStringList parts = text.split(QLatin1Char('\n'));
         for (int i = 0; i < parts.size(); ++i) {
             if (!parts.at(i).isEmpty())
@@ -459,12 +525,20 @@ void ScreenView::paintEvent(QPaintEvent *)
     const int cols = m_screen.cols();
     const bool alt = m_screen.altScreen();
     const int origin = alt ? 0 : m_origin;
+    QList<KeywordHit> kwHits; // 当前行的关键词命中，逐行重算
 
     auto colorsOf = [&](const TermCell &cell, int rowAbs, int column, QColor &fg, QColor &bg) {
         fg = m_screen.foreground(cell);
         bg = m_screen.background(cell);
         if (cell.attr & TermScreen::AttrInverse)
             std::swap(fg, bg);
+        // 关键词高亮只改文字颜色；选中 / 查找高亮是主动状态，优先级更高
+        for (const KeywordHit &hit : kwHits) {
+            if (column >= hit.start && column <= hit.end) {
+                fg = hit.color;
+                break;
+            }
+        }
         if (cellSelected(rowAbs, column)) {
             bg = m_screen.selectionBackground();
             fg = m_screen.defaultForeground();
@@ -478,6 +552,10 @@ void ScreenView::paintEvent(QPaintEvent *)
     for (int row = 0; row < rows; ++row) {
         const int abs = alt ? row : origin + row;
         const TermLine *line = m_screen.lineAbsolute(abs);
+        if (!m_keywords.isEmpty())
+            collectKeywordHits(line, cols, &kwHits);
+        else if (!kwHits.isEmpty())
+            kwHits.clear();
         const int y = m_pad + row * m_cellH;
         int col = 0;
         while (col < cols) {
@@ -596,7 +674,9 @@ void ScreenView::showEvent(QShowEvent *)
 
 void ScreenView::echoLocal(const QByteArray &bytes)
 {
-    if (!m_localEcho || bytes.isEmpty() || bytes.contains('\x1b'))
+    // 行编辑没在管屏幕（备用屏 / 远端画屏）时远端自己会画，本地代画只会
+    // 在 vi/top 的画面上留下残影
+    if (!localLineMode() || bytes.isEmpty() || bytes.contains('\x1b'))
         return;
     QByteArray shown;
     shown.reserve(bytes.size() * 3);
@@ -627,7 +707,50 @@ void ScreenView::emitInput(const QByteArray &bytes)
 
 bool ScreenView::localLineMode() const
 {
-    return m_localEcho && !m_screen.altScreen();
+    return m_localEcho && !m_screen.altScreen() && !m_remoteRaw;
+}
+
+// ---------------------------------------------------------------------------
+// 远端画屏检测。串口行编辑默认替设备代画代编辑；但 BusyBox top、
+// menuconfig 这类全屏程序不切备用屏（BusyBox top 每轮只发 ESC[H ESC[J），
+// 行编辑会把它们的按键全部扣到回车为止，vi 备用屏之外的一切也同理。
+// 所以远端一旦出现光标定位/整屏擦除，就判定「屏幕归远端管」：
+// 丢弃未发出的编辑草稿，按键、回显、粘贴全部直通。
+// 退出判定要保守：只有整块里没有任何画屏序列、写了可见字符、且光标
+// 停在行中（提示符形状，如 "root@board:~# "）才恢复行编辑。误判的代价
+// 只是暂时像普通终端一样靠设备回显，不会丢键。
+void ScreenView::applyRemoteCtl()
+{
+    if (m_screen.screenCtlSeen()) {
+        if (!m_remoteRaw && localLineMode())
+            enterRemoteRaw();
+        return;
+    }
+    if (m_remoteRaw && !m_screen.altScreen() && m_screen.feedPrintable() > 0
+        && m_screen.cursorCol() > 0) {
+        exitRemoteRaw();
+    }
+}
+
+void ScreenView::enterRemoteRaw()
+{
+    m_remoteRaw = true;
+    // 画屏程序已把屏幕整个重画，本地编辑行没了落脚处；草稿丢弃
+    // （此时屏幕内容也被远端替换，留着也看不见）。
+    if (m_editOn) {
+        m_editOn = false;
+        m_edit.clear();
+        m_editPos = 0;
+    }
+    m_histBrowse = -1;
+    m_histDraft.clear();
+    resetCompletionCycle();
+}
+
+void ScreenView::exitRemoteRaw()
+{
+    // 回到提示符；下一个键入从当前光标处重新起一行编辑（beginLocalEdit）
+    m_remoteRaw = false;
 }
 
 static int stepCursor(const QString &text, int pos, int dir)
@@ -747,6 +870,7 @@ void ScreenView::recallSent(int direction)
 void ScreenView::clearLocalDisplay()
 {
     m_editOn = false;
+    m_remoteRaw = false; // 手动清屏后按提示符处理，恢复行编辑
     m_edit.clear();
     m_editPos = 0;
     m_histBrowse = -1;
@@ -909,6 +1033,19 @@ void ScreenView::keyPressEvent(QKeyEvent *event)
         event->accept();
         return;
     }
+    // Ctrl+F 打开/聚焦查找（与浏览器等一致）。全屏程序（备用屏/远端画屏）
+    // 期间它是程序自己的按键——vi 的下翻页——不抢，走下面的直通分支。
+    if (ctrl && !shift && !alt && key == Qt::Key_F
+        && !m_screen.altScreen() && !m_remoteRaw) {
+        if (m_find->isVisible()) {
+            m_find->setFocus();
+            m_find->selectAll();
+        } else {
+            openFind();
+        }
+        event->accept();
+        return;
+    }
     if (m_find && m_find->isVisible() && key == Qt::Key_F3) {
         runFind(!shift);
         event->accept();
@@ -981,7 +1118,7 @@ void ScreenView::keyPressEvent(QKeyEvent *event)
         seq = QByteArray(1, '\x7f');
         break;
     case Qt::Key_Tab:
-        if (m_completion && !m_screen.altScreen() && !ctrl && !alt) {
+        if (m_completion && !m_screen.altScreen() && !m_remoteRaw && !ctrl && !alt) {
             handleTabCompletion();
             event->accept();
             return;
@@ -1174,7 +1311,7 @@ QString ScreenView::inputLineText(int *cursorColOut) const
 
 void ScreenView::handleTabCompletion()
 {
-    if (!m_completion || m_screen.altScreen()) {
+    if (!m_completion || m_screen.altScreen() || m_remoteRaw) {
         emitInput(QByteArray(1, '\t'));
         return;
     }
@@ -1281,7 +1418,22 @@ void ScreenView::mousePressEvent(QMouseEvent *event)
         return;
     }
     if (event->button() == Qt::RightButton) {
-        pasteClipboard();
+        // 有选区时给菜单（高亮/复制/粘贴），没选区保持右键直接粘贴的快路径
+        QString word = selectedText().trimmed();
+        const int nl = word.indexOf(QLatin1Char('\n'));
+        if (nl >= 0)
+            word = word.left(nl).trimmed(); // 多行选区只用第一行当关键词
+        if (word.isEmpty()) {
+            pasteClipboard();
+        } else {
+            QMenu menu(this);
+            menu.addAction(tr("高亮「%1」").arg(word), this, [this, word] {
+                emit highlightRequested(word);
+            });
+            menu.addAction(tr("复制"), this, [this] { copySelection(); });
+            menu.addAction(tr("粘贴"), this, [this] { pasteClipboard(); });
+            menu.exec(event->globalPosition().toPoint());
+        }
         event->accept();
         return;
     }
@@ -1362,7 +1514,9 @@ void ScreenView::wheelEvent(QWheelEvent *event)
     }
     const int steps = qMax(1, qAbs(dy) / 120);
     const int dir = dy > 0 ? -1 : 1;
-    if (m_screen.altScreen() && !(event->modifiers() & Qt::ShiftModifier)) {
+    // 备用屏 / 远端画屏（top 列表滚动）：滚轮当方向键交给程序
+    if ((m_screen.altScreen() || m_remoteRaw)
+        && !(event->modifiers() & Qt::ShiftModifier)) {
         const QByteArray seq = dir < 0 ? arrowKey('A') : arrowKey('B');
         for (int i = 0; i < steps * 3; ++i)
             emit sendData(seq);
@@ -1388,7 +1542,7 @@ void ScreenView::focusOutEvent(QFocusEvent *event)
 void ScreenView::inputMethodEvent(QInputMethodEvent *event)
 {
     if (!event->commitString().isEmpty()) {
-        if (m_localEcho && !m_screen.altScreen())
+        if (localLineMode())
             localInsert(event->commitString());
         else
             emitInput(event->commitString().toUtf8());
@@ -1455,6 +1609,11 @@ bool ScreenView::eventFilter(QObject *watched, QEvent *event)
         }
         if (key->key() == Qt::Key_F3) {
             runFind(!(key->modifiers() & Qt::ShiftModifier));
+            return true;
+        }
+        if (key->key() == Qt::Key_F
+            && key->modifiers() == Qt::ControlModifier) {
+            m_find->selectAll(); // 查找框已聚焦时再按 Ctrl+F：全选关键词
             return true;
         }
     }

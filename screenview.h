@@ -4,6 +4,7 @@
 #include <QElapsedTimer>
 #include <QWidget>
 
+#include "commandstore.h"
 #include "termscreen.h"
 
 class CompletionEngine;
@@ -16,8 +17,12 @@ class QTimer;
  * top / vim 这类全屏程序靠格子模型的光标定位 + 备用屏才能还原。
  * 滚轮看滚动历史；备用屏（vim/htop）里滚轮变成方向键。
  * 选中即复制，右键粘贴，Ctrl+滚轮改字号。
- * Ctrl+Shift+F 在滚动历史里查找。大块输出按片解析，界面保持能打字。
+ * Ctrl+F / Ctrl+Shift+F 在滚动历史里查找（全屏程序里 Ctrl+F 直通给程序）。
+ * 大块输出按片解析，界面保持能打字。
  * 主屏可接客户端 Tab 补全（嵌入式 shell 多数不吃 Tab，服务端补不了）。
+ * 串口本地行编辑与全屏程序共存：远端一旦画屏（备用屏，或 BusyBox top
+ * 这类只发光标定位不切备用屏的），行编辑自动让路变直通；输出回落到
+ * 提示符样的纯文本（行中有字、停在行中）时再自动恢复行编辑。
  */
 class ScreenView : public QWidget
 {
@@ -31,7 +36,8 @@ public:
     void appendSystemMessage(const QString &text);
     void setCompletionEngine(CompletionEngine *engine);
     // 串口本地编辑：键入和粘贴只画在屏幕上，回车才把改完的整行发出去。
-    // SSH 保持关闭，按键仍立刻送给远端。
+    // SSH 保持关闭，按键仍立刻送给远端。全屏程序（备用屏或远端画屏）期间
+    // 自动让路，见 localLineMode()。
     void setLocalEcho(bool on) { m_localEcho = on; }
     // 当前视口的可见文本（逐行去尾空白），测试与诊断辅助
     QString screenText() const;
@@ -47,12 +53,19 @@ public:
     // 字号（pt）。设置成功（有变化）时发 fontSizeChanged；全局设置由主窗口联动两页
     int fontSize() const { return m_font.pointSize(); }
     void setFontSize(int pt);
+    // 关键词高亮：命中的文本按规则颜色绘制（不区分大小写，含滚动历史），
+    // 选中 / Ctrl+F 查找高亮优先级更高。空列表即关闭。
+    void setKeywords(const QList<KeywordRule> &rules);
+    // 绘制内边距（默认 6px）。最大化时主窗口会置 0，让终端网格贴满控件边缘
+    void setPad(int pad);
 
 signals:
     void sendData(const QByteArray &data);
     void terminalSizeChanged(int cols, int rows);
     void shellTitleChanged(const QString &title);
     void fontSizeChanged(int pt);
+    // 选中词右键「高亮此词」：把选中文本交给主窗口建关键词高亮规则
+    void highlightRequested(const QString &word);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -76,6 +89,13 @@ private:
         int abs = 0;
         int col = 0;
         bool valid = false;
+    };
+    // 一条关键词命中：列区间 [start, end]（含端点）与绘制颜色
+    struct KeywordHit
+    {
+        int start = 0;
+        int end = 0;
+        QColor color;
     };
 
     void recalcMetrics();
@@ -101,11 +121,17 @@ private:
     bool cellSelected(int abs, int col) const;
     Pos cellAt(QPoint pt) const;
     TermCell cellOrBlank(const TermLine *line, int col) const;
+    // 一行里所有关键词命中的列区间（绘制时调用，规则空则清空不扫）
+    void collectKeywordHits(const TermLine *line, int cols, QList<KeywordHit> *hits) const;
     QByteArray arrowKey(char letter) const;
     void paintCursor(QPainter &painter);
     void emitInput(const QByteArray &bytes);
     void echoLocal(const QByteArray &bytes);
     bool localLineMode() const;
+    // 远端画屏检测：进入（丢弃未发出的编辑草稿）/退出（回到行编辑）
+    void applyRemoteCtl();
+    void enterRemoteRaw();
+    void exitRemoteRaw();
     bool handleLocalLineKey(QKeyEvent *event);
     void beginLocalEdit();
     void redrawLocalEdit();
@@ -145,6 +171,7 @@ private:
     int m_sentCols = -1;
     int m_sentRows = -1;
     bool m_localEcho = false;
+    bool m_remoteRaw = false;  // 远端画屏中（BusyBox top 等），行编辑让路、按键直通
     bool m_editOn = false;     // 串口行编辑：未回车的内容还没发给设备
     bool m_editRedraw = false;
     int m_editAbs = 0;         // 这一行的绝对行号
@@ -160,6 +187,7 @@ private:
     bool m_wasAlt = false;
     Pos m_anchor;
     Pos m_focus;
+    QList<KeywordRule> m_keywords; // 关键词高亮规则（全局设置同步而来）
 
     // ---- 客户端 Tab 补全（主屏 + 串口/SSH shell 行编辑场景）----
     CompletionEngine *m_completion = nullptr;

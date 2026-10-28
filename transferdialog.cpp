@@ -18,10 +18,10 @@ constexpr qint64 kRateIntervalMs = 400;   // 速率采样间隔
 }
 
 TransferDialog::TransferDialog(SftpClient *client, QWidget *parent)
-    : QDialog(parent)
+    : FramelessDialog(parent)
     , m_client(client)
 {
-    setWindowTitle(tr("传输队列"));
+    setDialogTitle(tr("传输队列"));
     resize(680, 320);
 
     m_table = new QTableWidget(0, 5, this);
@@ -57,10 +57,12 @@ TransferDialog::TransferDialog(SftpClient *client, QWidget *parent)
     btnRow->addWidget(m_clearBtn);
     btnRow->addWidget(m_closeBtn);
 
-    auto *root = new QVBoxLayout(this);
+    auto *root = new QVBoxLayout;
+    root->setContentsMargins(9, 6, 9, 9);
     root->addWidget(m_table, 1);
     root->addWidget(m_bar);
     root->addLayout(btnRow);
+    setContentLayout(root);
 
     connect(m_client, &SftpClient::transferProgress, this, &TransferDialog::onProgress);
     connect(m_client, &SftpClient::transferFinished, this, &TransferDialog::onFinished);

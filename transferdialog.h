@@ -1,10 +1,11 @@
 #ifndef TRANSFERDIALOG_H
 #define TRANSFERDIALOG_H
 
-#include <QDialog>
 #include <QElapsedTimer>
 #include <QQueue>
 #include <QVector>
+
+#include "framelessdialog.h"
 
 class QLabel;
 class QProgressBar;
@@ -16,8 +17,9 @@ class SftpClient;
  *
  * 同一时刻只跑一个传输（SFTP 单通道内串行最稳），完成的任务自动让位
  * 给下一个排队任务。行状态: 排队 → 传输中 → 完成 / 失败 / 已取消。
+ * 顶层是公共无边框对话框（FramelessDialog），随全局 QSS 换肤。
  */
-class TransferDialog : public QDialog
+class TransferDialog : public FramelessDialog
 {
     Q_OBJECT
 

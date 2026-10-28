@@ -30,7 +30,6 @@
 #include <QGuiApplication>
 #include <QHeaderView>
 #include <QHBoxLayout>
-#include <QInputDialog>
 #include <QJsonArray>
 #include <QLabel>
 #include <QJsonDocument>
@@ -39,7 +38,6 @@
 #include <QListWidget>
 #include <QLocale>
 #include <QMenu>
-#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QProcess>
 #include <QPushButton>
@@ -139,21 +137,22 @@ QString humanSize(quint64 size)
 
 void showCommandOutput(QWidget *parent, const QString &title, const QString &text)
 {
-    auto *dlg = new QDialog(parent);
+    auto *dlg = new FramelessDialog(parent);
     dlg->setAttribute(Qt::WA_DeleteOnClose);
-    dlg->setWindowTitle(title);
+    dlg->setDialogTitle(title);
     dlg->resize(640, 380);
     auto *edit = new QPlainTextEdit(dlg);
     edit->setReadOnly(true);
     edit->setPlainText(text);
     auto *closeBtn = new QPushButton(QObject::tr("关闭"), dlg);
     QObject::connect(closeBtn, &QPushButton::clicked, dlg, &QDialog::close);
-    auto *lay = new QVBoxLayout(dlg);
+    auto *lay = new QVBoxLayout;
     lay->addWidget(edit, 1);
     auto *row = new QHBoxLayout;
     row->addStretch(1);
     row->addWidget(closeBtn);
     lay->addLayout(row);
+    dlg->setContentLayout(lay);
     dlg->show();
 }
 
@@ -238,14 +237,14 @@ bool showWindowsShellMenu(const QStringList &paths, HWND hwnd)
 }
 #endif
 
-class ChmodDialog : public QDialog
+class ChmodDialog : public FramelessDialog
 {
 public:
     ChmodDialog(const QString &titleText, const QString &extra, quint32 mode, QWidget *parent)
-        : QDialog(parent)
+        : FramelessDialog(parent)
         , m_mode(mode & 07777)
     {
-        setWindowTitle(tr("属性"));
+        setDialogTitle(tr("属性"));
         resize(380, 320);
         const quint32 bits[9] = { 0400, 0200, 0100, 0040, 0020, 0010, 0004, 0002, 0001 };
         auto *grid = new QGridLayout;
@@ -277,7 +276,7 @@ public:
         m_octal->setText(QStringLiteral("%1").arg(m_mode, 4, 8, QLatin1Char('0')));
         connect(m_octal, &QLineEdit::editingFinished, this, [this] { syncFromOctal(); });
 
-        auto *root = new QVBoxLayout(this);
+        auto *root = new QVBoxLayout;
         root->addWidget(new QLabel(titleText));
         if (!extra.isEmpty()) {
             auto *detail = new QLabel(extra);
@@ -300,6 +299,7 @@ public:
         connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
         connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
         root->addWidget(buttons);
+        setContentLayout(root);
     }
 
     quint32 mode() const { return m_mode & 07777; }
@@ -359,15 +359,15 @@ private:
     bool m_guard = false;
 };
 
-class LocalPropsDialog : public QDialog
+class LocalPropsDialog : public FramelessDialog
 {
 public:
     explicit LocalPropsDialog(const QString &path, QWidget *parent)
-        : QDialog(parent)
+        : FramelessDialog(parent)
         , m_path(path)
     {
         const QFileInfo info(path);
-        setWindowTitle(tr("属性"));
+        setDialogTitle(tr("属性"));
         auto *form = new QFormLayout;
         form->addRow(tr("名称"), new QLabel(info.fileName()));
         form->addRow(tr("位置"), new QLabel(QDir::toNativeSeparators(info.absolutePath())));
@@ -384,7 +384,7 @@ public:
         m_hidden = new QCheckBox(tr("隐藏"));
         m_hidden->setChecked(attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_HIDDEN));
 #endif
-        auto *root = new QVBoxLayout(this);
+        auto *root = new QVBoxLayout;
         root->addLayout(form);
         root->addWidget(m_readonly);
 #ifdef Q_OS_WIN
@@ -397,6 +397,7 @@ public:
         });
         connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
         root->addWidget(buttons);
+        setContentLayout(root);
         resize(420, 220);
     }
 
@@ -427,14 +428,14 @@ private:
     QCheckBox *m_hidden = nullptr;
 };
 
-class CommandManagerDialog : public QDialog
+class CommandManagerDialog : public FramelessDialog
 {
 public:
     explicit CommandManagerDialog(const QList<FileCommand> &initial, QWidget *parent)
-        : QDialog(parent)
+        : FramelessDialog(parent)
         , m_commands(initial)
     {
-        setWindowTitle(tr("文件自定义命令"));
+        setDialogTitle(tr("文件自定义命令"));
         resize(620, 380);
         m_list = new QListWidget(this);
         for (const FileCommand &command : m_commands)
@@ -478,9 +479,10 @@ public:
         auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
         connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
         connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
-        auto *root = new QVBoxLayout(this);
+        auto *root = new QVBoxLayout;
         root->addLayout(columns, 1);
         root->addWidget(buttons);
+        setContentLayout(root);
         if (m_list->count() > 0)
             m_list->setCurrentRow(0);
         else
@@ -752,11 +754,11 @@ private:
 };
 
 FileBrowserDialog::FileBrowserDialog(SshSession *session, QWidget *parent)
-    : QDialog(parent)
+    : FramelessDialog(parent)
     , m_session(session)
     , m_target(session->target())
 {
-    setWindowTitle(tr("文件管理 - %1@%2").arg(
+    setDialogTitle(tr("文件管理 - %1@%2").arg(
         m_target.user.isEmpty() ? QStringLiteral("root") : m_target.user, m_target.host));
     // 跟终端主窗口对齐，避免文件管理比终端宽一截。
     if (parent && parent->width() >= 640 && parent->height() >= 400)
@@ -904,9 +906,10 @@ FileBrowserDialog::FileBrowserDialog(SshSession *session, QWidget *parent)
     statusRow->addWidget(m_status, 1);
     statusRow->addWidget(queueBtn);
 
-    auto *root = new QVBoxLayout(this);
+    auto *root = new QVBoxLayout;
     root->addWidget(splitter, 1);
     root->addLayout(statusRow);
+    setContentLayout(root);
 
     loadBrowserState();
     const QString savedLocal = m_localPath;
@@ -1159,7 +1162,7 @@ void FileBrowserDialog::onListedFailed(const QString &path, const QString &error
         return;
     }
     m_status->setText(tr("列目录失败：%1").arg(error));
-    QMessageBox::warning(this, tr("列目录失败"), tr("路径 %1\n%2").arg(path, error));
+    FramelessDialog::message(this, tr("列目录失败"), tr("路径 %1\n%2").arg(path, error));
 }
 
 void FileBrowserDialog::onOpFinished(const QString &op, const QString &arg, bool ok, const QString &error)
@@ -1172,7 +1175,7 @@ void FileBrowserDialog::onOpFinished(const QString &op, const QString &arg, bool
         if (!ok) {
             if (m_homePath.isEmpty())
                 m_status->setText(tr("读取主目录失败"));
-            QMessageBox::warning(this, tr("操作失败"), tr("%1\n%2").arg(arg, error));
+            FramelessDialog::message(this, tr("操作失败"), tr("%1\n%2").arg(arg, error));
             return;
         }
         if (m_homePath.isEmpty()) {
@@ -1194,7 +1197,7 @@ void FileBrowserDialog::onOpFinished(const QString &op, const QString &arg, bool
         return;
     }
     if (!ok) {
-        QMessageBox::warning(this, tr("操作失败"),
+        FramelessDialog::message(this, tr("操作失败"),
                              tr("%1 %2\n%3").arg(op, arg, error.isEmpty() ? tr("失败") : error));
         return;
     }
@@ -1209,7 +1212,7 @@ void FileBrowserDialog::onTransferFinished(int id, bool ok, const QString &error
     if (job.uploadBack) {
         if (!ok) {
             m_editDigest.insert(job.local, job.previousDigest);
-            QMessageBox::warning(this, tr("回传失败"),
+            FramelessDialog::message(this, tr("回传失败"),
                                  tr("%1\n%2").arg(job.remote, error));
         } else {
             m_status->setText(tr("已回传 %1").arg(QFileInfo(job.local).fileName()));
@@ -1217,7 +1220,7 @@ void FileBrowserDialog::onTransferFinished(int id, bool ok, const QString &error
         return;
     }
     if (!ok) {
-        QMessageBox::warning(this, tr(job.edit ? "编辑失败" : "打开失败"), error);
+        FramelessDialog::message(this, tr(job.edit ? "编辑失败" : "打开失败"), error);
         return;
     }
     if (job.edit) {
@@ -1462,14 +1465,13 @@ void FileBrowserDialog::uploadSelected()
         pendings.append(pending);
     }
     if (!skippedDirs.isEmpty()) {
-        QMessageBox::information(this, tr("不支持目录上传"),
+        FramelessDialog::message(this, tr("不支持目录上传"),
                                  tr("以下是目录，已跳过（暂不支持递归上传）：\n%1").arg(skippedDirs));
     }
     for (const Pending &pending : pendings) {
         if (pendings.size() == 1 && remoteNameExists(QFileInfo(pending.local).fileName())) {
-            const auto answer = QMessageBox::question(
-                this, tr("覆盖确认"), tr("远程已存在 %1，覆盖？").arg(pending.remote));
-            if (answer != QMessageBox::Yes)
+            if (!FramelessDialog::question(
+                    this, tr("覆盖确认"), tr("远程已存在 %1，覆盖？").arg(pending.remote)))
                 return;
         }
         m_transfer->enqueue(true, pending.local, pending.remote, pending.size);
@@ -1490,15 +1492,14 @@ void FileBrowserDialog::downloadSelected()
         const QString remote = remoteJoin(m_remotePath, item.name);
         const QString local = localJoin(m_localPath, item.name);
         if (items.size() == 1 && QFileInfo::exists(local)) {
-            const auto answer = QMessageBox::question(
-                this, tr("覆盖确认"), tr("本地已存在 %1，覆盖？").arg(local));
-            if (answer != QMessageBox::Yes)
+            if (!FramelessDialog::question(
+                    this, tr("覆盖确认"), tr("本地已存在 %1，覆盖？").arg(local)))
                 return;
         }
         m_transfer->enqueue(false, local, remote, qint64(item.size));
     }
     if (!skippedDirs.isEmpty()) {
-        QMessageBox::information(this, tr("不支持目录下载"),
+        FramelessDialog::message(this, tr("不支持目录下载"),
                                  tr("以下是目录，已跳过（暂不支持递归下载）：\n%1").arg(skippedDirs));
     }
 }
@@ -1508,9 +1509,8 @@ void FileBrowserDialog::deleteLocal()
     const QStringList paths = selectedLocalPaths();
     if (paths.isEmpty())
         return;
-    const auto answer = QMessageBox::question(
-        this, tr("删除确认"), tr("删除本地的 %n 个条目？", "", int(paths.size())));
-    if (answer != QMessageBox::Yes)
+    if (!FramelessDialog::question(
+            this, tr("删除确认"), tr("删除本地的 %n 个条目？", "", int(paths.size()))))
         return;
     QStringList failed;
     for (const QString &path : paths) {
@@ -1524,7 +1524,7 @@ void FileBrowserDialog::deleteLocal()
             failed << path;
     }
     if (!failed.isEmpty()) {
-        QMessageBox::warning(this, tr("删除失败"),
+        FramelessDialog::message(this, tr("删除失败"),
                              tr("以下条目没能删除（目录需要是空的）：\n%1").arg(failed.join(QLatin1Char('\n'))));
     }
 }
@@ -1534,9 +1534,8 @@ void FileBrowserDialog::deleteRemote()
     const QVector<RemoteItem> items = selectedRemote();
     if (items.isEmpty() || !m_connected)
         return;
-    const auto answer = QMessageBox::question(
-        this, tr("删除确认"), tr("删除远程的 %n 个条目？", "", int(items.size())));
-    if (answer != QMessageBox::Yes)
+    if (!FramelessDialog::question(
+            this, tr("删除确认"), tr("删除远程的 %n 个条目？", "", int(items.size()))))
         return;
     for (const RemoteItem &item : items)
         m_client->removeEntry(remoteJoin(m_remotePath, item.name), item.isDir);
@@ -1553,11 +1552,11 @@ void FileBrowserDialog::renameLocal()
         return;
     const QString dest = info.dir().filePath(name);
     if (QFileInfo::exists(dest)) {
-        QMessageBox::warning(this, tr("重命名"), tr("已存在 %1").arg(dest));
+        FramelessDialog::message(this, tr("重命名"), tr("已存在 %1").arg(dest));
         return;
     }
     if (!QFile::rename(info.absoluteFilePath(), dest))
-        QMessageBox::warning(this, tr("重命名"), tr("无法重命名 %1").arg(info.fileName()));
+        FramelessDialog::message(this, tr("重命名"), tr("无法重命名 %1").arg(info.fileName()));
 }
 
 void FileBrowserDialog::renameRemote()
@@ -1640,13 +1639,12 @@ void FileBrowserDialog::copyRemoteSelected()
         if (!validFileName(destName))
             continue;
         if (dir == m_remotePath && destName == item.name) {
-            QMessageBox::warning(this, tr("远程复制"), tr("目标和源相同：%1").arg(item.name));
+            FramelessDialog::message(this, tr("远程复制"), tr("目标和源相同：%1").arg(item.name));
             continue;
         }
         if (dir == m_remotePath && remoteNameExists(destName)) {
-            const auto answer = QMessageBox::question(
-                this, tr("覆盖确认"), tr("远程已存在 %1，覆盖？").arg(destName));
-            if (answer != QMessageBox::Yes)
+            if (!FramelessDialog::question(
+                    this, tr("覆盖确认"), tr("远程已存在 %1，覆盖？").arg(destName)))
                 continue;
         }
         m_client->copyRemote(remoteJoin(m_remotePath, item.name), remoteJoin(dir, destName), item.isDir);
@@ -1670,9 +1668,8 @@ void FileBrowserDialog::moveRemoteSelected()
         if (dir == m_remotePath && destName == item.name)
             continue;
         if (dir == m_remotePath && remoteNameExists(destName)) {
-            const auto answer = QMessageBox::question(
-                this, tr("覆盖确认"), tr("远程已存在 %1，覆盖？").arg(destName));
-            if (answer != QMessageBox::Yes)
+            if (!FramelessDialog::question(
+                    this, tr("覆盖确认"), tr("远程已存在 %1，覆盖？").arg(destName)))
                 continue;
         }
         m_client->renameEntry(remoteJoin(m_remotePath, item.name), remoteJoin(dir, destName));
@@ -1725,7 +1722,7 @@ void FileBrowserDialog::newLocalDir()
     if (!askName(tr("新建目录"), QString(), &name))
         return;
     if (!QDir(m_localPath).mkdir(name))
-        QMessageBox::warning(this, tr("新建目录"), tr("无法创建 %1").arg(name));
+        FramelessDialog::message(this, tr("新建目录"), tr("无法创建 %1").arg(name));
 }
 
 void FileBrowserDialog::newLocalFile()
@@ -1735,12 +1732,12 @@ void FileBrowserDialog::newLocalFile()
         return;
     const QString path = localJoin(m_localPath, name);
     if (QFileInfo::exists(path)) {
-        QMessageBox::warning(this, tr("新建文件"), tr("已存在 %1").arg(name));
+        FramelessDialog::message(this, tr("新建文件"), tr("已存在 %1").arg(name));
         return;
     }
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly))
-        QMessageBox::warning(this, tr("新建文件"), tr("无法创建 %1").arg(name));
+        FramelessDialog::message(this, tr("新建文件"), tr("无法创建 %1").arg(name));
 }
 
 void FileBrowserDialog::newRemoteDir()
@@ -1793,7 +1790,7 @@ void FileBrowserDialog::runCustomCommand(int index)
     QString dir;
     if (command.remote) {
         if (!m_connected) {
-            QMessageBox::warning(this, tr("自定义命令"), tr("SFTP 未连接"));
+            FramelessDialog::message(this, tr("自定义命令"), tr("SFTP 未连接"));
             return;
         }
         dir = m_remotePath;
@@ -1804,7 +1801,7 @@ void FileBrowserDialog::runCustomCommand(int index)
         files = selectedLocalPaths();
     }
     if (commandNeedsSelection(command.command) && files.isEmpty()) {
-        QMessageBox::information(this, tr("自定义命令"), tr("请先选择文件"));
+        FramelessDialog::message(this, tr("自定义命令"), tr("请先选择文件"));
         return;
     }
     const auto quote = command.remote ? shellQuote : cmdQuote;
@@ -1849,10 +1846,10 @@ void FileBrowserDialog::showSystemMenu()
     for (const QString &path : paths)
         native << QDir::toNativeSeparators(path);
     if (!showWindowsShellMenu(native, reinterpret_cast<HWND>(winId())))
-        QMessageBox::warning(this, tr("系统菜单"), tr("无法打开系统右键菜单"));
+        FramelessDialog::message(this, tr("系统菜单"), tr("无法打开系统右键菜单"));
 #else
     Q_UNUSED(m_shellMenuPos);
-    QMessageBox::information(this, tr("系统菜单"), tr("系统菜单仅在 Windows 上可用"));
+    FramelessDialog::message(this, tr("系统菜单"), tr("系统菜单仅在 Windows 上可用"));
 #endif
 }
 
@@ -1991,7 +1988,7 @@ void FileBrowserDialog::flushExecUi()
     if (!m_execLog.trimmed().isEmpty())
         showCommandOutput(this, m_execFailed ? tr("命令失败") : tr("命令输出"), m_execLog);
     else if (m_execFailed)
-        QMessageBox::warning(this, tr("命令失败"), tr("远程命令执行失败"));
+        FramelessDialog::message(this, tr("命令失败"), tr("远程命令执行失败"));
     else
         m_status->setText(tr("命令已完成"));
     m_execLog.clear();
@@ -2036,7 +2033,7 @@ void FileBrowserDialog::pumpLocalCommand()
         if (!m_localOutput.trimmed().isEmpty())
             showCommandOutput(this, m_localFailed ? tr("命令失败") : tr("命令输出"), m_localOutput);
         else if (m_localFailed)
-            QMessageBox::warning(this, tr("命令失败"), tr("本地命令执行失败"));
+            FramelessDialog::message(this, tr("命令失败"), tr("本地命令执行失败"));
         else
             m_status->setText(tr("命令已完成"));
         m_localOutput.clear();
@@ -2051,11 +2048,11 @@ void FileBrowserDialog::pumpLocalCommand()
 bool FileBrowserDialog::askName(const QString &title, const QString &initial, QString *out)
 {
     bool ok = false;
-    const QString name = QInputDialog::getText(this, title, tr("名称:"), QLineEdit::Normal, initial, &ok).trimmed();
+    const QString name = FramelessDialog::getText(this, title, tr("名称:"), initial, &ok).trimmed();
     if (!ok)
         return false;
     if (!validFileName(name)) {
-        QMessageBox::warning(this, title, tr("名称无效"));
+        FramelessDialog::message(this, title, tr("名称无效"));
         return false;
     }
     *out = name;
@@ -2065,10 +2062,10 @@ bool FileBrowserDialog::askName(const QString &title, const QString &initial, QS
 bool FileBrowserDialog::askRemoteDest(const QString &title, const QString &defaultName, bool editName,
                                       QString *dirOut, QString *nameOut)
 {
-    QDialog dlg(this);
-    dlg.setWindowTitle(title);
-    auto *dirEdit = new QLineEdit(m_remotePath, &dlg);
-    auto *nameEdit = new QLineEdit(defaultName, &dlg);
+    FramelessDialog dlg(this);
+    dlg.setDialogTitle(title);
+    auto *dirEdit = new QLineEdit(m_remotePath);
+    auto *nameEdit = new QLineEdit(defaultName);
     nameEdit->setEnabled(editName);
     auto *form = new QFormLayout;
     form->addRow(tr("目标目录"), dirEdit);
@@ -2076,10 +2073,11 @@ bool FileBrowserDialog::askRemoteDest(const QString &title, const QString &defau
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    auto *lay = new QVBoxLayout(&dlg);
-    lay->addWidget(new QLabel(tr("目标目录需要已经存在。多个条目时保留原名。"), &dlg));
+    auto *lay = new QVBoxLayout;
+    lay->addWidget(new QLabel(tr("目标目录需要已经存在。多个条目时保留原名。")));
     lay->addLayout(form);
     lay->addWidget(buttons);
+    dlg.setContentLayout(lay);
     if (dlg.exec() != QDialog::Accepted)
         return false;
     QString dir = dirEdit->text().trimmed();
@@ -2089,7 +2087,7 @@ bool FileBrowserDialog::askRemoteDest(const QString &title, const QString &defau
     if (!dir.startsWith(QLatin1Char('/')))
         dir = remoteJoin(m_remotePath, dir);
     if (editName && !validFileName(name)) {
-        QMessageBox::warning(this, title, tr("名称无效"));
+        FramelessDialog::message(this, title, tr("名称无效"));
         return false;
     }
     *dirOut = dir;

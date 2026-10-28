@@ -57,6 +57,10 @@ qt_add_executable(Xterm
     icons.h
     mainwindow.cpp
     mainwindow.h
+    titlebar.cpp
+    titlebar.h
+    framelessdialog.cpp
+    framelessdialog.h
     mainwindow.ui
     agentbridge.cpp
     agentbridge.h

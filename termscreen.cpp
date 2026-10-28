@@ -294,6 +294,7 @@ int TermScreen::feed(const QByteArray &data)
     m_clearRequested = false;
     m_feedScrolled = 0;
     m_feedPrintable = 0;
+    m_feedCtl = 0;
     m_rowsErased = 0;
     std::memset(m_rowErased, 0, sizeof(m_rowErased));
     for (int i = 0; i < data.size(); ++i)
@@ -820,6 +821,7 @@ void TermScreen::handleCsi(char finalByte)
     }
     case 'H':
     case 'f': {
+        ++m_feedCtl; // 画屏程序定位光标，shell 输出从不这么干
         const int rowArg = qMax(1, arg(0, 1));
         const int colArg = qMax(1, arg(1, 1));
         if (m_originMode)
@@ -902,6 +904,7 @@ void TermScreen::handleCsi(char finalByte)
         } else if (mode == 2 || mode == 3) {
             // ESC[2J 擦可见区，ESC[3J 在 xterm 里只擦历史。设备上的 clear
             // 经常只到其中一条，窗口里的字和滚动历史一起丢掉。
+            ++m_feedCtl; // 整屏擦除同样只有画屏/清屏场景会出现
             for (int r = 0; r < m_rows; ++r)
                 m_lines[size_t(r)] = blankLine();
             if (!m_alt)

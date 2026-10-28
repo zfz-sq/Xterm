@@ -10,12 +10,13 @@
 
 class AgentBridge;
 class HostStats;
-class QProgressDialog;
+class QAction;
 
 class CommandBar;
 class QLabel;
 class QTimer;
 class QToolButton;
+class TitleBar;
 class SerialSession;
 class SshSession;
 class ScreenView;
@@ -45,10 +46,12 @@ public:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    void changeEvent(QEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     void setupIcons();
+    void setupTitleBar();             // 无边框窗口自定义标题栏（VSCode 式工具条）
     void setupConnectionCombos();
     void setupSshInputs();
     void fitSshPortEdit(); // 端口编辑框拉到箭头前，避免数字被裁、中间留白
@@ -70,6 +73,9 @@ private:
     void browsePrivateKey();
     void onFilesClicked();          // 打开 SFTP 文件管理器（SSH 会话的独立第二连接）
     void onMcpClicked();            // 弹出 MCP 提示词
+    void openKeywordSettings();     // 设置菜单: 关键词高亮编辑（表格，改即预览）
+    void applyKeywords(const QList<KeywordRule> &rules); // 规则落到存储并同步两个终端页
+    void onHighlightRequested(const QString &word); // 终端选中词右键「高亮此词」
     void setMcpActive(bool on);     // MCP 在线角标: AI 正在访问本窗口时点亮
     void refreshMcpIcon();          // 按当前主题 + 在线状态重建 MCP 按钮图标
 
@@ -101,6 +107,9 @@ private:
     SshSession *m_ssh = nullptr;
     CommandStore *m_store = nullptr;
     CommandBar *m_commandBar = nullptr;
+    TitleBar *m_titleBar = nullptr;   // 自定义标题栏：菜单/主题/置顶/系统按钮
+    QAction *m_connectAction = nullptr; // 工具菜单「连接/断开」项，文案随连接状态
+    QAction *m_switchModeAction = nullptr; // 工具菜单「切换串口/SSH」项，文案随当前模式
     QToolButton *m_mcpBtn = nullptr; // MCP 按钮：挂命令栏收起态侧边按钮组（展开命令栏按钮下方）
     QTimer *m_mcpActiveTimer = nullptr; // MCP 在线角标自动熄灭（单发）
     bool m_mcpActive = false;           // 最近是否有合法 MCP 请求

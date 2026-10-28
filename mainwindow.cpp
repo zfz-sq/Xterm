@@ -7,6 +7,7 @@
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QDesktopServices>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -17,19 +18,24 @@
 #include <QFormLayout>
 #include <QFontMetrics>
 #include <QGuiApplication>
+#include <QHeaderView>
 #include <QIcon>
 #include <QIntValidator>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPainter>
+#include <QPainterPath>
+#include <QPixmap>
 #include <QPlainTextEdit>
 #include <QListView>
+#include <QMenu>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSerialPortInfo>
 #include <QShortcut>
 #include <QStatusBar>
 #include <QStyle>
+#include <QTableWidget>
 #include <QTimer>
 #include <QToolButton>
 #include <QtMath>
@@ -38,11 +44,13 @@
 #include "agentbridge.h"
 #include "commandbar.h"
 #include "filebrowserdialog.h"
+#include "framelessdialog.h"
 #include "hoststats.h"
 #include "icons.h"
 #include "screenview.h"
 #include "serialsession.h"
 #include "sshsession.h"
+#include "titlebar.h"
 #include "transport.h"
 #include "ui_mainwindow.h"
 
@@ -100,6 +108,16 @@ void pruneCustomPortItems(QComboBox *combo)
         combo->setEditText(typed);
     pruning = false;
 }
+
+// 新增关键词高亮的默认色在几个醒目色间轮换（设置对话框与右键「高亮此词」共用）
+QColor nextKeywordColor(int used)
+{
+    static const QColor palette[] = {
+        QColor(0xE0, 0x6C, 0x75), QColor(0xE5, 0xC0, 0x7A), QColor(0x7C, 0xD0, 0x77),
+        QColor(0x61, 0xAF, 0xEF), QColor(0xC6, 0x78, 0xDD),
+    };
+    return palette[used % 5];
+}
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
@@ -108,6 +126,15 @@ MainWindow::MainWindow(QWidget *parent)
 {
     ui->setupUi(this);
     setWindowIcon(QIcon(QStringLiteral(":/icons/app.png")));
+    // 外围留白随窗口状态初始化（窗口化 6px / 最大化 0）
+    {
+        const int m = isMaximized() ? 0 : 6;
+        ui->mainLayout->setContentsMargins(m, m, m, m);
+        ui->terminalLayout->setContentsMargins(m, m, m, m);
+        // 注意: m_serialView/m_sshView 在 setupTerminal() 创建，pad 随 changeEvent
+        // 或 setupTerminal 后统一设置
+    }
+    setupTitleBar();
 
     m_serial = new SerialSession(this);
     m_ssh = new SshSession(this);
@@ -168,6 +195,8 @@ MainWindow::MainWindow(QWidget *parent)
         m_serialView->setFontSize(savedPt);
         m_sshView->setFontSize(savedPt);
     }
+    // 恢复关键词高亮规则（全局，两页一致）
+    applyKeywords(m_store->keywords());
     ui->advancedBar->hide(); // 高级参数默认收起
     refreshPorts();
     reloadProfiles(m_store->lastProfile());
@@ -200,6 +229,143 @@ MainWindow::~MainWindow()
 
 // ---------------------------------------------------------------- 初始化
 
+void MainWindow::setupTitleBar()
+{
+    // 无边框窗口 + 自定义标题栏：暗色主题下标题栏不再是系统白条，
+    // 且标题栏升级为 VSCode 式工具条（菜单 / 主题切换 / 置顶 / 系统按钮）。
+    setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
+
+    m_titleBar = new TitleBar(this);
+    setMenuWidget(m_titleBar); // QMainWindow 顶部专属位，不占 centralWidget
+
+    // VSCode 式菜单栏：设置 / 工具 / 帮助（复用已有按钮/快捷键行为，避免另起一套逻辑）
+    auto *setMenu = new QMenu(m_titleBar);
+    setMenu->addAction(tr("切换主题"), this, [this] {
+        m_store->setDarkTheme(!m_store->isDarkTheme());
+        m_store->save();
+        applyTheme();
+    });
+    setMenu->addAction(tr("关键词高亮"), this, [this] { openKeywordSettings(); });
+    setMenu->addSeparator();
+    auto *quitAction = setMenu->addAction(tr("退出"), this, &MainWindow::close);
+    quitAction->setShortcut(QKeySequence::Quit);
+    m_titleBar->addMenuButton(tr("设置"))->setMenu(setMenu);
+
+    auto *toolMenu = new QMenu(m_titleBar);
+    // F5/F9/F10 都注册在菜单 action 上（快捷键唯一，见下方 connectSignals 的说明）。
+    // 文案跟随连接状态（updateConnectionUi 同步），与连接按钮同一动作
+    m_connectAction = toolMenu->addAction(tr("连接"), this, [this] {
+        ui->connectBtn->click();
+    });
+    m_connectAction->setShortcut(QKeySequence(Qt::Key_F5));
+    auto *filesAction = toolMenu->addAction(tr("SFTP"), this, [this] {
+        if (m_ssh->state() == Transport::Connected) {
+            onFilesClicked();
+        } else {
+            appendActiveNote(tr("── SSH 未连接，无法打开 SFTP 文件管理 ──"));
+        }
+    });
+    filesAction->setShortcut(QKeySequence(Qt::Key_F10));
+    // 文案跟随当前模式（updateModeUi 同步），点谁就切到谁
+    m_switchModeAction = toolMenu->addAction(tr("切换到 SSH"), this, [this] {
+        setMode(m_mode == Mode::Serial ? Mode::Ssh : Mode::Serial);
+    });
+    m_switchModeAction->setShortcut(QKeySequence(Qt::Key_F9));
+    m_titleBar->addMenuButton(tr("工具"))->setMenu(toolMenu);
+
+    auto *helpMenu = new QMenu(m_titleBar);
+    helpMenu->addAction(tr("文档"), this, [] {
+        // 优先打开项目自带 docs 目录（打包环境无 docs 时静默失败即可）
+        const QString docs = QCoreApplication::applicationDirPath()
+                             + QStringLiteral("/docs");
+        if (QDir(docs).exists())
+            QDesktopServices::openUrl(QUrl::fromLocalFile(docs));
+    });
+    helpMenu->addAction(tr("关于 Qt"), this, [this] {
+        // QApplication::aboutQt 弹的是原生 QMessageBox，换成公共对话框保持主题一致
+        FramelessDialog dlg(this);
+        dlg.setDialogTitle(tr("关于 Qt"));
+        auto *content = new QWidget;
+        auto *lay = new QVBoxLayout(content);
+        lay->setContentsMargins(24, 18, 24, 16);
+        lay->setSpacing(8);
+        auto *logo = new QLabel(
+            tr("<span style=\"font-size:26pt; font-weight:600; color:#41CD52\">Qt</span>"));
+        auto *text = new QLabel(
+            tr("<b>关于 Qt</b><br><br>"
+               "本程序使用了 Qt %1。<br><br>"
+               "Qt 是面向 C++ 的跨平台应用开发框架，"
+               "提供图形界面、网络、多媒体等模块，"
+               "Qt 是 The Qt Company Ltd. 的注册商标。")
+                .arg(QString::fromLatin1(qVersion())));
+        text->setWordWrap(true);
+        auto *row = new QHBoxLayout;
+        row->setSpacing(16);
+        row->addWidget(logo, 0, Qt::AlignTop);
+        row->addWidget(text, 0, Qt::AlignTop);
+        lay->addLayout(row);
+        lay->addSpacing(8);
+        auto *ok = new QPushButton(tr("确定"));
+        ok->setDefault(true); // 回车确认
+        ok->setFixedWidth(96);
+        connect(ok, &QPushButton::clicked, &dlg, &QDialog::accept);
+        lay->addWidget(ok, 0, Qt::AlignRight);
+        dlg.setContentLayout(lay);
+        dlg.applyTheme(m_store->isDarkTheme());
+        dlg.exec();
+    });
+    helpMenu->addAction(tr("关于 Xterm"), this, [this] {
+        // 公共无边框对话框，主题随全局 QSS，暗色下不再露原生样式
+        FramelessDialog dlg(this);
+        dlg.setDialogTitle(tr("关于 Xterm"));
+        auto *content = new QWidget;
+        auto *lay = new QVBoxLayout(content);
+        lay->setContentsMargins(24, 18, 24, 16);
+        lay->setSpacing(8);
+        auto *icon = new QLabel;
+        icon->setPixmap(QPixmap(QStringLiteral(":/icons/app.png"))
+                            .scaled(48, 48, Qt::KeepAspectRatio,
+                                    Qt::SmoothTransformation));
+        auto *text = new QLabel(
+            tr("<b>Xterm 终端</b><br>串口 / SSH 双链路终端工具<br><br>版本 %1")
+                .arg(QCoreApplication::applicationVersion()));
+        text->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+        auto *row = new QHBoxLayout;
+        row->setSpacing(16);
+        row->addWidget(icon, 0, Qt::AlignTop);
+        row->addWidget(text, 0, Qt::AlignTop);
+        lay->addLayout(row);
+        lay->addSpacing(8);
+        auto *ok = new QPushButton(tr("确定"));
+        ok->setDefault(true); // 回车确认
+        ok->setFixedWidth(96);
+        connect(ok, &QPushButton::clicked, &dlg, &QDialog::accept);
+        lay->addWidget(ok, 0, Qt::AlignRight);
+        dlg.setContentLayout(lay);
+        dlg.applyTheme(m_store->isDarkTheme());
+        dlg.exec();
+    });
+    m_titleBar->addMenuButton(tr("帮助"))->setMenu(helpMenu);
+
+    // 标题不显示在标题栏（VSCode 式），系统任务栏/Alt+Tab 仍显示 windowTitle
+
+    // 主题 / 置顶 / 系统按钮
+    connect(m_titleBar, &TitleBar::themeClicked, this, [this] {
+        m_store->setDarkTheme(!m_store->isDarkTheme());
+        m_store->save();
+        applyTheme();
+    });
+    connect(m_titleBar, &TitleBar::minimizedRequested, this,
+            [this] { setWindowState(windowState() | Qt::WindowMinimized); });
+    connect(m_titleBar, &TitleBar::maximizedToggled, this, [this] {
+        setWindowState(isMaximized() ? windowState() & ~Qt::WindowMaximized
+                                     : windowState() | Qt::WindowMaximized);
+    });
+    connect(m_titleBar, &TitleBar::closedRequested, this, &MainWindow::close);
+
+    applyWin11RoundedCorners(this);
+}
+
 void MainWindow::setupIcons()
 {
     ui->refreshPortBtn->setIcon(themedIcon(QStringLiteral("refresh.png")));
@@ -214,7 +380,6 @@ void MainWindow::setupIcons()
     ui->pwToggleBtn->setText(QString());
     ui->keyBrowseBtn->setIconSize(QSize(16, 16));
     ui->filesBtn->setIcon(themedIcon(QStringLiteral("folder.png")));
-    ui->themeBtn->setIcon(themedIcon(QStringLiteral("sun.png"))); // 实际图标由 applyTheme 设定
 }
 
 void MainWindow::setupConnectionCombos()
@@ -317,6 +482,12 @@ void MainWindow::setupTerminal()
     m_sshView = new ScreenView(this);
     ui->sshTerminalPageLayout->addWidget(m_sshView);
 
+    // 最大化启动时终端网格内边距同步为 0（窗口化默认 6px）
+    if (isMaximized()) {
+        m_serialView->setPad(0);
+        m_sshView->setPad(0);
+    }
+
     // 面板外观由全局主题 QSS（QFrame#terminalPanel）定义
 }
 
@@ -397,12 +568,7 @@ void MainWindow::connectSignals()
         m_store->save();
     });
 
-    // 主题切换 / 模式切换 / 高级参数收展
-    connect(ui->themeBtn, &QToolButton::clicked, this, [this] {
-        m_store->setDarkTheme(!m_store->isDarkTheme());
-        m_store->save();
-        applyTheme();
-    });
+    // 模式切换 / 高级参数收展（主题切换已移到自定义标题栏）
     connect(m_mcpBtn, &QToolButton::clicked, this, &MainWindow::onMcpClicked);
     connect(ui->modeBtn, &QToolButton::clicked, this, [this] {
         setMode(m_mode == Mode::Serial ? Mode::Ssh : Mode::Serial);
@@ -414,21 +580,15 @@ void MainWindow::connectSignals()
         m_store->save();
     });
 
-    // 全局快捷键: F9 切换串口/SSH，F10 打开 SFTP 文件管理。
-    // 注意: 焦点在终端时 F9/F10 由快捷键优先消费，不再透传给远端
+    // 快捷键说明: F5 连接/断开、F9 切串口/SSH、F10 SFTP，
+    // 全部注册在工具菜单的 action 上（快捷键保持唯一注册，重复注册会被
+    // Qt 判为歧义、两个都不触发——F9 曾因此失效）。
+    // 注意: 焦点在终端时 F5/F9/F10 由快捷键优先消费，不再透传给远端
     // （F1-F8、F11、F12 的 ANSI 序列不受影响）。
-    auto *modeSc = new QShortcut(QKeySequence(Qt::Key_F9), this);
-    connect(modeSc, &QShortcut::activated, this, [this] {
-        setMode(m_mode == Mode::Serial ? Mode::Ssh : Mode::Serial);
-    });
-    auto *sftpSc = new QShortcut(QKeySequence(Qt::Key_F10), this);
-    connect(sftpSc, &QShortcut::activated, this, [this] {
-        if (m_ssh->state() == Transport::Connected) {
-            onFilesClicked();
-        } else {
-            appendActiveNote(tr("── SSH 未连接，无法打开 SFTP 文件管理 ──"));
-        }
-    });
+
+    // 选中词右键「高亮此词」：两个终端页共用同一套规则
+    for (ScreenView *view : { m_serialView, m_sshView })
+        connect(view, &ScreenView::highlightRequested, this, &MainWindow::onHighlightRequested);
     // settingsBtn 非 checkable，clicked(false) 会让 setVisible(false) 永远收起，改用 lambda 切换
     connect(ui->settingsBtn, &QToolButton::clicked, this, [this] {
         ui->advancedStack->setCurrentIndex(0);
@@ -734,6 +894,9 @@ void MainWindow::updateModeUi()
     ui->modeBtn->setText(serial ? tr("SSH") : tr("串口"));
     ui->modeBtn->setToolTip(serial ? tr("切换到 SSH 终端（F9；串口连接与内容保持不断开）")
                                    : tr("切换回串口终端（F9；SSH 连接与内容保持不断开）"));
+    // 工具菜单项与模式按钮同一动作，文案同步（串口页显示「切换到 SSH」，反之亦然）
+    if (m_switchModeAction)
+        m_switchModeAction->setText(serial ? tr("切换到 SSH") : tr("切换到串口"));
     // SFTP 走 SSH 通道：串口页不显示文件管理按钮（连同其左侧分隔线）
     ui->vline1->setVisible(!serial);
     ui->filesBtn->setVisible(!serial);
@@ -767,6 +930,9 @@ void MainWindow::updateConnectionUi()
     }
     ui->connectBtn->setText(text);
     ui->connectBtn->setToolTip(tip);
+    // 工具菜单项触发的是同一个按钮，文案同步（断开时显示「连接」，连接时「断开」）
+    if (m_connectAction)
+        m_connectAction->setText(text);
     ui->connectBtn->setIcon(themedIcon(open ? QStringLiteral("disconnect.png")
                                              : QStringLiteral("connect.png")));
     ui->connectBtn->setEnabled(st != Transport::Disconnecting);
@@ -806,9 +972,15 @@ void MainWindow::applyTheme()
     setupIcons();
     updateModeUi();
     updateConnectionUi();
-    // 图标显示"将要切换到"的主题: 深色时显示太阳(切亮色)，亮色时显示月亮(切深色)
-    ui->themeBtn->setIcon(themedIcon(dark ? QStringLiteral("sun.png") : QStringLiteral("moon.png")));
-    ui->themeBtn->setToolTip(dark ? tr("切换到亮色主题") : tr("切换到深色主题"));
+    // 主题切换入口在自定义标题栏，图标显示"将要切换到"的主题
+    if (m_titleBar) {
+        m_titleBar->setThemeIcon(
+            themedIcon(dark ? QStringLiteral("sun.png") : QStringLiteral("moon.png")),
+            dark ? tr("切换到亮色主题") : tr("切换到深色主题"));
+        m_titleBar->applyCaptionTheme(dark); // 系统按钮字形颜色跟主题
+    }
+    // 公共对话框实例化时自动取用（message/question 这类静态弹窗拿不到主窗口引用）
+    FramelessDialog::setThemeHint(dark);
     if (m_commandBar)
         m_commandBar->applyTheme();
     // 侧边按钮组里的 MCP 按钮也要跟主题换图标（构造时首次调用已创建）
@@ -942,28 +1114,28 @@ bool MainWindow::confirmHostKeyChange(const QString &host, const QString &stored
         return QStringLiteral("SHA256:") + b64;
     };
 
-    QDialog dialog(this);
-    dialog.setWindowTitle(tr("主机密钥已变化"));
-    auto *layout = new QVBoxLayout(&dialog);
-    auto *intro = new QLabel(tr("主机 %1 的密钥指纹和上次记下的不一致。").arg(host), &dialog);
+    FramelessDialog dialog(this);
+    dialog.setDialogTitle(tr("主机密钥已变化"));
+    auto *layout = new QVBoxLayout;
+    auto *intro = new QLabel(tr("主机 %1 的密钥指纹和上次记下的不一致。").arg(host));
     intro->setWordWrap(true);
     layout->addWidget(intro);
 
     auto addLine = [&](const QString &title, const QString &hex) {
-        layout->addWidget(new QLabel(title, &dialog));
-        auto *value = new QLabel(show(hex), &dialog);
+        layout->addWidget(new QLabel(title));
+        auto *value = new QLabel(show(hex));
         value->setTextInteractionFlags(Qt::TextSelectableByMouse);
         layout->addWidget(value);
     };
     addLine(tr("上次记录"), stored);
     addLine(tr("这次连接"), current);
 
-    auto *hint = new QLabel(tr("确认这台机器重装过或换过密钥后，再更新记录并继续。如果这台机器不该换密钥，请拒绝。"), &dialog);
+    auto *hint = new QLabel(tr("确认这台机器重装过或换过密钥后，再更新记录并继续。如果这台机器不该换密钥，请拒绝。"));
     hint->setWordWrap(true);
     layout->addWidget(hint);
 
     auto *buttons = new QDialogButtonBox(
-        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     buttons->button(QDialogButtonBox::Ok)->setText(tr("更新并连接"));
     buttons->button(QDialogButtonBox::Cancel)->setText(tr("拒绝"));
     buttons->button(QDialogButtonBox::Ok)->setAutoDefault(false);
@@ -973,6 +1145,7 @@ bool MainWindow::confirmHostKeyChange(const QString &host, const QString &stored
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     dialog.setMinimumWidth(460);
+    dialog.setContentLayout(layout);
     return dialog.exec() == QDialog::Accepted;
 }
 
@@ -986,13 +1159,13 @@ void MainWindow::promptHostKeyDecision(const SshHostKeyChange &change)
 void MainWindow::promptAuthAnswers(SshRequestId requestId,
                                    const QList<SshAuthPrompt> &prompts)
 {
-    QDialog dialog(this);
-    dialog.setWindowTitle(tr("SSH 认证"));
-    auto *layout = new QVBoxLayout(&dialog);
+    FramelessDialog dialog(this);
+    dialog.setDialogTitle(tr("SSH 认证"));
+    auto *layout = new QVBoxLayout;
     auto *form = new QFormLayout;
     QList<QLineEdit *> edits;
     for (const SshAuthPrompt &prompt : prompts) {
-        auto *edit = new QLineEdit(&dialog);
+        auto *edit = new QLineEdit;
         edit->setEchoMode(prompt.echo ? QLineEdit::Normal : QLineEdit::Password);
         form->addRow(prompt.text, edit);
         edits.append(edit);
@@ -1000,11 +1173,12 @@ void MainWindow::promptAuthAnswers(SshRequestId requestId,
     layout->addLayout(form);
 
     auto *buttons = new QDialogButtonBox(
-        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     dialog.setMinimumWidth(420);
+    dialog.setContentLayout(layout);
 
     if (dialog.exec() != QDialog::Accepted) {
         m_ssh->close();
@@ -1134,29 +1308,195 @@ void MainWindow::onMcpClicked()
                                "}")
                                .arg(script);
 
-    QDialog dlg(this);
-    dlg.setWindowTitle(tr("MCP 提示词"));
+    FramelessDialog dlg(this);
+    dlg.setDialogTitle(tr("MCP 提示词"));
     dlg.resize(680, 520);
-    auto *lay = new QVBoxLayout(&dlg);
-    auto *hint = new QLabel(tr("把提示词交给已经接上 Xterm MCP 的 AI。服务程序只连接本机正在运行的这个窗口。"), &dlg);
+    auto *lay = new QVBoxLayout;
+    auto *hint = new QLabel(tr("把提示词交给已经接上 Xterm MCP 的 AI。服务程序只连接本机正在运行的这个窗口。"));
     hint->setWordWrap(true);
     lay->addWidget(hint);
-    auto *edit = new QPlainTextEdit(AgentBridge::instructions(), &dlg);
+    auto *edit = new QPlainTextEdit(AgentBridge::instructions());
     edit->setReadOnly(true);
     lay->addWidget(edit, 1);
-    lay->addWidget(new QLabel(tr("MCP 配置："), &dlg));
-    auto *cfg = new QPlainTextEdit(config, &dlg);
+    lay->addWidget(new QLabel(tr("MCP 配置：")));
+    auto *cfg = new QPlainTextEdit(config);
     cfg->setReadOnly(true);
     cfg->setFixedHeight(140);
     lay->addWidget(cfg);
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
     auto *copy = buttons->addButton(tr("复制提示词"), QDialogButtonBox::ActionRole);
     connect(copy, &QPushButton::clicked, &dlg, [edit] {
         QGuiApplication::clipboard()->setText(edit->toPlainText());
     });
     connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
     lay->addWidget(buttons);
+    dlg.setContentLayout(lay);
     dlg.exec();
+}
+
+// ---------------------------------------------------------------- 关键词高亮
+
+void MainWindow::applyKeywords(const QList<KeywordRule> &rules)
+{
+    m_store->setKeywords(rules);
+    m_serialView->setKeywords(rules);
+    m_sshView->setKeywords(rules);
+}
+
+void MainWindow::onHighlightRequested(const QString &word)
+{
+    if (word.isEmpty())
+        return;
+    QList<KeywordRule> rules = m_store->keywords();
+    for (KeywordRule &rule : rules) {
+        // 已有同名规则（不区分大小写）就只点亮它
+        if (rule.text.compare(word, Qt::CaseInsensitive) == 0) {
+            rule.enabled = true;
+            applyKeywords(rules);
+            m_store->save();
+            ui->statusbar->showMessage(tr("已高亮「%1」").arg(word), 3000);
+            return;
+        }
+    }
+    KeywordRule rule;
+    rule.text = word;
+    rule.color = nextKeywordColor(rules.size());
+    rules.append(rule);
+    applyKeywords(rules);
+    m_store->save();
+    ui->statusbar->showMessage(tr("已高亮「%1」").arg(word), 3000);
+}
+
+void MainWindow::openKeywordSettings()
+{
+    FramelessDialog dlg(this);
+    dlg.setDialogTitle(tr("关键词高亮"));
+    dlg.resize(440, 360);
+
+    const QList<KeywordRule> original = m_store->keywords(); // 取消时回滚
+    auto *content = new QWidget;
+    auto *lay = new QVBoxLayout(content);
+    lay->setContentsMargins(12, 10, 12, 12);
+
+    auto *table = new QTableWidget;
+    table->setColumnCount(3);
+    table->setHorizontalHeaderLabels({ tr("关键词"), tr("颜色"), tr("启用") });
+    table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    table->setColumnWidth(1, 110);
+    table->setColumnWidth(2, 52);
+    table->verticalHeader()->setVisible(false);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+
+    // 颜色列 = 终端里的真实效果预览：关键词字样（跟随第 0 列的输入）用规则色
+    // 画在终端底色上（暗 #1E1E1E / 亮 #FFFFFF，与 TermScreen 调色板一致）
+    const bool dark = m_store->isDarkTheme();
+    auto swatchStyle = [dark](const QColor &color) {
+        return QStringLiteral(
+                   "QPushButton { background-color: %1; color: %2; border: 1px solid %3;"
+                   " border-radius: 3px; font-weight: 600; }")
+            .arg(dark ? QStringLiteral("#1E1E1E") : QStringLiteral("#FFFFFF"),
+                 color.name(),
+                 dark ? QStringLiteral("#3B3B40") : QStringLiteral("#C9C9CD"));
+    };
+    // 表格 -> 规则列表 -> 立即预览（确定才落盘，取消回滚）
+    auto applyFromTable = [&]() {
+        QList<KeywordRule> rules;
+        for (int row = 0; row < table->rowCount(); ++row) {
+            const auto *textItem = table->item(row, 0);
+            const auto *colorItem = table->item(row, 1);
+            const auto *checkItem = table->item(row, 2);
+            KeywordRule rule;
+            rule.text = textItem ? textItem->text().trimmed() : QString();
+            rule.color = colorItem ? QColor(colorItem->text()) : KeywordRule().color;
+            rule.enabled = !checkItem || checkItem->checkState() == Qt::Checked;
+            if (!rule.text.isEmpty() && rule.color.isValid())
+                rules.append(rule);
+        }
+        applyKeywords(rules);
+    };
+    auto addRow = [&](const QString &text, const QColor &color, bool enabled) {
+        const int row = table->rowCount();
+        table->insertRow(row);
+        auto *textItem = new QTableWidgetItem(text);
+        table->setItem(row, 0, textItem);
+        // 颜色存在 item 文本里（applyFromTable 读它），显示交给覆盖在上面的色块按钮
+        auto *colorItem = new QTableWidgetItem(color.name());
+        colorItem->setFlags(colorItem->flags() & ~Qt::ItemIsEditable);
+        table->setItem(row, 1, colorItem);
+        auto *swatch = new QPushButton(text);
+        swatch->setCursor(Qt::PointingHandCursor);
+        swatch->setStyleSheet(swatchStyle(color));
+        // cellWidget 会吃掉表格的双击事件，取色器直接挂在按钮上，单击即改。
+        // swatch 必须按值捕获：它是 addRow 的局部变量，按引用捕获在
+        // addRow 返回后即悬垂（栈槽被下一次 addRow 复用，样式会刷错行）
+        connect(swatch, &QPushButton::clicked, this, [&, row, swatch] {
+            const QColor picked = FramelessDialog::getColor(
+                &dlg, QColor(table->item(row, 1)->text()), tr("关键词颜色"));
+            if (!picked.isValid())
+                return;
+            table->item(row, 1)->setText(picked.name());
+            swatch->setStyleSheet(swatchStyle(picked));
+            applyFromTable();
+        });
+        table->setCellWidget(row, 1, swatch);
+        auto *checkItem = new QTableWidgetItem;
+        checkItem->setFlags((checkItem->flags() | Qt::ItemIsUserCheckable) & ~Qt::ItemIsEditable);
+        checkItem->setCheckState(enabled ? Qt::Checked : Qt::Unchecked);
+        table->setItem(row, 2, checkItem);
+    };
+    for (const KeywordRule &rule : original)
+        addRow(rule.text, rule.color, rule.enabled);
+
+    auto *addBtn = new QPushButton(tr("添加"));
+    auto *delBtn = new QPushButton(tr("删除"));
+    auto *okBtn = new QPushButton(tr("确定"));
+    okBtn->setDefault(true);
+    auto *cancelBtn = new QPushButton(tr("取消"));
+    connect(addBtn, &QPushButton::clicked, this, [&] {
+        const QColor color = nextKeywordColor(table->rowCount());
+        addRow(tr("新关键词"), color, true);
+        applyFromTable();
+        table->editItem(table->item(table->rowCount() - 1, 0));
+    });
+    connect(delBtn, &QPushButton::clicked, this, [&] {
+        const int row = table->currentRow();
+        if (row >= 0) {
+            table->removeRow(row);
+            applyFromTable();
+        }
+    });
+    connect(okBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
+    connect(cancelBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
+    // 关键词编辑 / 启用勾选变化 -> 实时预览；关键词变了，色块上的预览字样跟着变
+    connect(table, &QTableWidget::itemChanged, this, [&](QTableWidgetItem *item) {
+        if (item->column() == 0) {
+            if (auto *btn = qobject_cast<QPushButton *>(table->cellWidget(item->row(), 1)))
+                btn->setText(item->text());
+        }
+        if (item->column() != 0 && item->column() != 2)
+            return;
+        applyFromTable();
+    });
+
+    auto *hint = new QLabel(tr("命中不区分大小写，终端与滚动历史同时生效。颜色列即终端实际效果，点击改色。"));
+    hint->setWordWrap(true);
+
+    auto *btnRow = new QHBoxLayout;
+    btnRow->addWidget(addBtn);
+    btnRow->addWidget(delBtn);
+    btnRow->addStretch(1);
+    btnRow->addWidget(okBtn);
+    btnRow->addWidget(cancelBtn);
+
+    lay->addWidget(table, 1);
+    lay->addLayout(btnRow);
+    lay->addWidget(hint);
+    dlg.setContentLayout(lay);
+
+    if (dlg.exec() == QDialog::Accepted)
+        m_store->save();
+    else
+        applyKeywords(original); // 取消：还原打开前的规则
 }
 
 // ---------------------------------------------------------------- 发送
@@ -1306,4 +1646,19 @@ void MainWindow::closeEvent(QCloseEvent *event)
     m_serial->close();
     m_ssh->close();
     event->accept();
+}
+
+void MainWindow::changeEvent(QEvent *event)
+{
+    if (event->type() == QEvent::WindowStateChange) {
+        // 窗口化时外围留 6px 呼吸空间（配合面板圆角）；
+        // 最大化时清零留白和终端网格内边距，让串口/SSH 终端贴满整个窗口。
+        const bool max = isMaximized();
+        const int m = max ? 0 : 6;
+        ui->mainLayout->setContentsMargins(m, m, m, m);
+        ui->terminalLayout->setContentsMargins(m, m, m, m);
+        m_serialView->setPad(m);
+        m_sshView->setPad(m);
+    }
+    QMainWindow::changeEvent(event);
 }

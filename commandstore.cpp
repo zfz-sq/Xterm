@@ -192,6 +192,18 @@ bool CommandStore::load()
                                              : QStringLiteral("serial");
     m_fontSize = qBound(0, root.value(QStringLiteral("fontSize")).toInt(0), 72);
     m_commandBarCollapsed = root.value(QStringLiteral("commandBarCollapsed")).toBool(false);
+
+    m_keywords.clear();
+    const QJsonArray kws = root.value(QStringLiteral("keywords")).toArray();
+    for (const QJsonValue &v : kws) {
+        const QJsonObject o = v.toObject();
+        KeywordRule rule;
+        rule.text = o.value(QStringLiteral("text")).toString();
+        rule.color = QColor(o.value(QStringLiteral("color")).toString());
+        rule.enabled = o.value(QStringLiteral("enabled")).toBool(true);
+        if (!rule.text.isEmpty() && rule.color.isValid())
+            m_keywords.append(rule);
+    }
     return true;
 }
 
@@ -204,6 +216,12 @@ bool CommandStore::save() const
     for (const Profile &p : m_profiles)
         arr.append(profileToJson(p));
 
+    QJsonArray kws;
+    for (const KeywordRule &r : m_keywords)
+        kws.append(QJsonObject{ { QStringLiteral("text"), r.text },
+                                 { QStringLiteral("color"), r.color.name() },
+                                 { QStringLiteral("enabled"), r.enabled } });
+
     const QJsonObject root{
         { QStringLiteral("version"), 1 },
         { QStringLiteral("lastProfile"), m_lastProfile },
@@ -211,6 +229,7 @@ bool CommandStore::save() const
         { QStringLiteral("mode"), m_mode },
         { QStringLiteral("fontSize"), m_fontSize },
         { QStringLiteral("commandBarCollapsed"), m_commandBarCollapsed },
+        { QStringLiteral("keywords"), kws },
         { QStringLiteral("profiles"), arr },
     };
 

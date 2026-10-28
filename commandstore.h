@@ -1,6 +1,7 @@
 #ifndef COMMANDSTORE_H
 #define COMMANDSTORE_H
 
+#include <QColor>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -13,6 +14,14 @@ struct CommandItem
 
     CommandItem() = default;
     explicit CommandItem(const QString &t) : text(t) {}
+};
+
+// 终端关键词高亮规则：命中（不区分大小写）的文本按配置颜色绘制
+struct KeywordRule
+{
+    QString text;
+    QColor color = QColor(0xE0, 0x6C, 0x75); // 默认暖红，报错类关键词常用
+    bool enabled = true;
 };
 
 struct ConnectionConfig
@@ -74,6 +83,10 @@ public:
     bool commandBarCollapsed() const { return m_commandBarCollapsed; }
     void setCommandBarCollapsed(bool collapsed) { m_commandBarCollapsed = collapsed; }
 
+    // 终端关键词高亮规则（全局，串口 / SSH 两页共用）
+    QList<KeywordRule> keywords() const { return m_keywords; }
+    void setKeywords(const QList<KeywordRule> &rules) { m_keywords = rules; }
+
     // 上次使用的工作模式: "serial" / "ssh"
     QString mode() const { return m_mode; }
     void setMode(const QString &mode)
@@ -91,6 +104,7 @@ private:
     QString m_mode = QStringLiteral("serial");
     int m_fontSize = 0;
     bool m_commandBarCollapsed = false;
+    QList<KeywordRule> m_keywords;
 };
 
 #endif // COMMANDSTORE_H

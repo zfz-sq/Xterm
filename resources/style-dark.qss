@@ -479,3 +479,92 @@ QToolTip {
     padding: 5px 8px;
     border-radius: 3px;
 }
+
+/* ---------------- 自定义标题栏（无边框窗口，VSCode 式工具条） ---------------- */
+
+QWidget#TitleBar {
+    background-color: #1E1E1E;
+    border: none;
+}
+
+QWidget#TitleBar QLabel#TitleLabel {
+    color: #9A9A9E;
+    padding-left: 8px;
+    font-size: 12px;
+}
+
+QWidget#TitleBar QToolButton {
+    background: transparent;
+    border: none;
+    color: #CCCCCC;
+    padding: 0 8px;
+}
+
+QWidget#TitleBar QToolButton:hover {
+    background-color: #2E2E32;
+}
+
+QWidget#TitleBar QToolButton:pressed {
+    background-color: #35353A;
+}
+
+QWidget#TitleBar QToolButton:checked {
+    background-color: #322A18;
+    color: #D8B45A;
+}
+
+QWidget#TitleBar QToolButton#TitleCloseBtn:hover {
+    background-color: #C42B1C;
+    color: #FFFFFF;
+}
+
+/* 菜单项按钮不画下拉倒三角（VSCode 菜单栏同款纯文字） */
+QWidget#TitleBar QToolButton#TitleMenuBtn::menu-indicator {
+    image: none;
+    width: 0;
+    height: 0;
+    subcontrol-position: right center;
+}
+
+/* ---------------- 标题栏下拉菜单（VSCode 式紧凑菜单） ---------------- */
+
+QMenu {
+    background-color: #252528;
+    border: 1px solid #38383E;
+    border-radius: 6px;
+    padding: 4px 0;
+}
+
+QMenu::item {
+    padding: 4px 4px 4px 4px;   /* 左侧不再预留图标/勾选列空白 */
+    color: #CCCCCC;
+    border-radius: 4px;
+    margin: 0 4px;
+}
+
+QMenu::item:selected {
+    background-color: #094771;
+    color: #FFFFFF;
+}
+
+QMenu::item:disabled {
+    color: #5A5A5A;
+}
+
+QMenu::separator {
+    height: 1px;
+    background: #38383E;
+    margin: 4px 8px;
+}
+
+QMenu::right-arrow, QMenu::arrow {
+    width: 12px;
+    height: 12px;
+}
+
+/* ---------------- 公共无边框对话框（关于等；标题栏复用 #TitleBar 规则组） ---------------- */
+
+QDialog#FramelessDialog {
+    background-color: #252528;
+    border: 1px solid #3B3B40;
+}

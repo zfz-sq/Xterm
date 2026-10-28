@@ -2,10 +2,10 @@
 #define FILEBROWSERDIALOG_H
 
 #include <QByteArray>
-#include <QDialog>
 #include <QFileIconProvider>
 #include <QHash>
 
+#include "framelessdialog.h"
 #include "sftpclient.h"
 #include "sshtarget.h"
 
@@ -41,7 +41,7 @@ struct FileCommand
  * 直接复用终端的 SshSession（同一条 SSH 连接上的共享 SFTP 通道）：
  * 会话断开时本窗口一并关闭；关闭窗口只取消文件请求，shell 不受影响。
  */
-class FileBrowserDialog : public QDialog
+class FileBrowserDialog : public FramelessDialog
 {
     Q_OBJECT
 

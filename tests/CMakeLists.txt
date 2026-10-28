@@ -24,6 +24,34 @@ set_target_properties(test_termscreen PROPERTIES
 
 add_test(NAME test_termscreen COMMAND test_termscreen)
 
+# 串口行编辑与全屏程序共存的状态机（离屏，不需要设备）
+add_executable(test_screenview
+    test_screenview.cpp
+    "${CMAKE_SOURCE_DIR}/screenview.cpp"
+    "${CMAKE_SOURCE_DIR}/screenview.h"
+    "${CMAKE_SOURCE_DIR}/termscreen.cpp"
+    "${CMAKE_SOURCE_DIR}/termscreen.h"
+    "${CMAKE_SOURCE_DIR}/completionengine.cpp"
+    "${CMAKE_SOURCE_DIR}/completionengine.h"
+)
+
+target_include_directories(test_screenview
+    PRIVATE
+        "${CMAKE_SOURCE_DIR}"
+)
+
+target_link_libraries(test_screenview
+    PRIVATE
+        Qt6::Test
+        Qt6::Widgets
+)
+
+set_target_properties(test_screenview PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)
+
+add_test(NAME test_screenview COMMAND test_screenview)
+
 add_executable(test_knownhosts
     test_knownhosts.cpp
     "${CMAKE_SOURCE_DIR}/ssh/knownhostsstore.cpp"
