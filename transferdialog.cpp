@@ -66,10 +66,11 @@ TransferDialog::TransferDialog(SftpClient *client, QWidget *parent)
 
     connect(m_client, &SftpClient::transferProgress, this, &TransferDialog::onProgress);
     connect(m_client, &SftpClient::transferFinished, this, &TransferDialog::onFinished);
+    connect(m_client, &SftpClient::opFinished, this, &TransferDialog::onOpFinished);
 }
 
 int TransferDialog::enqueue(bool upload, const QString &localPath,
-                            const QString &remotePath, qint64 size, bool reveal)
+                            const QString &remotePath, qint64 size)
 {
     Job job;
     job.id = m_nextId++;
@@ -77,6 +78,23 @@ int TransferDialog::enqueue(bool upload, const QString &localPath,
     job.localPath = localPath;
     job.remotePath = remotePath;
     job.size = size;
+    return appendJob(job);
+}
+
+int TransferDialog::enqueueDir(const QString &localDir, const QString &remoteDir)
+{
+    Job job;
+    job.id = m_nextId++;
+    job.upload = true; // 建目录属于上传方向（↑ 列）
+    job.makeDir = true;
+    job.localPath = localDir;
+    job.remotePath = remoteDir;
+    job.size = -1; // 大小列显示 "-"
+    return appendJob(job);
+}
+
+int TransferDialog::appendJob(const Job &job)
+{
     m_jobs.append(job);
 
     const int row = m_table->rowCount();
@@ -84,12 +102,8 @@ int TransferDialog::enqueue(bool upload, const QString &localPath,
     for (int c = 0; c < 5; ++c)
         m_table->setItem(row, c, new QTableWidgetItem);
     updateRow(row);
-    if (reveal) {
-        show();
-        raise();
-        activateWindow();
-    }
     pump();
+    emitProgress();
     return job.id;
 }
 
@@ -107,8 +121,10 @@ void TransferDialog::pump()
         job.rateBps = 0;
         m_activeId = job.id;
         updateRow(i);
-        m_cancelBtn->setEnabled(true);
-        if (job.upload)
+        m_cancelBtn->setEnabled(!job.makeDir); // 建目录瞬时完成，无可取消
+        if (job.makeDir)
+            m_client->makeDir(job.remotePath);
+        else if (job.upload)
             m_client->uploadFile(job.id, job.localPath, job.remotePath);
         else
             m_client->downloadFile(job.id, job.remotePath, job.localPath);
@@ -145,11 +161,30 @@ void TransferDialog::onProgress(int id, qint64 done, qint64 total)
         const int pct = job.size > 0 ? int(done * 100 / job.size) : 0;
         m_bar->setValue(pct);
         m_bar->setFormat(tr("%1% · %2").arg(pct).arg(humanRate(job.rateBps)));
+        emitProgress();
         return;
     }
 }
 
 void TransferDialog::onFinished(int id, bool ok, const QString &error)
+{
+    finishJob(id, ok, error);
+}
+
+// 建目录结果没有传输 id，只能靠「当前活动任务 + 路径」对上号；
+// 队列串行、同一时刻只有一个建目录在飞，不会认错行
+void TransferDialog::onOpFinished(const QString &op, const QString &arg,
+                                  bool ok, const QString &error)
+{
+    if (op != QLatin1String("mkdir") || m_activeId == 0)
+        return;
+    Job *job = jobById(m_activeId);
+    if (!job || !job->makeDir || job->remotePath != arg)
+        return; // 别处的 mkdir（如右键新建目录），与队列无关
+    finishJob(job->id, ok, error);
+}
+
+void TransferDialog::finishJob(int id, bool ok, const QString &error)
 {
     for (int i = 0; i < m_jobs.size(); ++i) {
         if (m_jobs[i].id != id)
@@ -177,13 +212,59 @@ void TransferDialog::onFinished(int id, bool ok, const QString &error)
     }
     m_summary->setText(tr("共 %1 项 · 成功 %2 · 失败 %3")
                            .arg(m_jobs.size()).arg(done).arg(failed));
+    emit jobFinished(id, ok);
     pump();
+    emitProgress();
+}
+
+void TransferDialog::emitProgress()
+{
+    QString text;
+    int pct = 0;
+    bool active = false;
+    const Job *job = m_activeId != 0 ? jobById(m_activeId) : nullptr;
+    if (job) {
+        active = true;
+        const QString name = QFileInfo(job->remotePath).fileName();
+        if (job->makeDir) {
+            text = tr("建目录 %1").arg(name);
+        } else {
+            pct = job->size > 0 ? int(job->done * 100 / job->size) : 0;
+            text = QStringLiteral("%1 %2 · %3% · %4/s")
+                       .arg(job->upload ? QStringLiteral("↑") : QStringLiteral("↓"),
+                            name, QString::number(pct), humanSize(qint64(job->rateBps)));
+        }
+        int queued = 0;
+        for (const Job &j : m_jobs) {
+            if (j.state == 0)
+                ++queued;
+        }
+        if (queued > 0)
+            text += tr(" · 排队 %1").arg(queued);
+    } else if (!m_jobs.isEmpty()) {
+        // 队列收尾：给一句汇总，下次入队或清除时被替换
+        int done = 0, failed = 0;
+        for (const Job &j : m_jobs) {
+            if (j.state == 2)
+                ++done;
+            else if (j.state == 3)
+                ++failed;
+        }
+        if (done + failed > 0)
+            text = failed > 0 ? tr("传输结束：成功 %1 · 失败 %2").arg(done).arg(failed)
+                              : tr("传输结束：成功 %1").arg(done);
+    }
+    emit progressChanged(text, pct, active);
 }
 
 void TransferDialog::cancelCurrent()
 {
-    if (m_activeId != 0)
-        m_client->cancelTransfer(m_activeId);
+    if (m_activeId == 0)
+        return;
+    const Job *job = jobById(m_activeId);
+    if (job && job->makeDir)
+        return; // 建目录没有传输可取消
+    m_client->cancelTransfer(m_activeId);
 }
 
 void TransferDialog::clearFinished()
@@ -196,6 +277,7 @@ void TransferDialog::clearFinished()
     }
     if (m_jobs.isEmpty())
         m_summary->setText(tr("队列为空"));
+    emitProgress();
 }
 
 void TransferDialog::onCloseClicked()
@@ -237,6 +319,10 @@ void TransferDialog::updateRow(int row)
         break;
     case 1:
         pct = job.size > 0 ? int(job.done * 100 / job.size) : 0;
+        if (job.makeDir) {
+            stateText = tr("创建目录");
+            break;
+        }
         stateText = tr("传输中 %1").arg(humanRate(job.rateBps));
         if (job.rateBps > 1 && job.size > job.done) {
             const qint64 secs = qint64(double(job.size - job.done) / job.rateBps);

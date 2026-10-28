@@ -4,6 +4,7 @@
 #include <QByteArray>
 #include <QFileIconProvider>
 #include <QHash>
+#include <QSet>
 
 #include "framelessdialog.h"
 #include "sftpclient.h"
@@ -16,6 +17,7 @@ class QLabel;
 class QMenu;
 class QModelIndex;
 class QProcess;
+class QProgressBar;
 class QTimer;
 class QToolButton;
 class QTreeWidget;
@@ -54,6 +56,8 @@ private slots:
     void onListedFailed(const QString &path, const QString &error);
     void onOpFinished(const QString &op, const QString &arg, bool ok, const QString &error);
     void onTransferFinished(int id, bool ok, const QString &error);
+    void onQueueJobFinished(int id); // 文件夹上传批次全部收尾时刷一次远程列表
+    void onTransferProgressInfo(const QString &text, int percent, bool active); // 底栏进度
 
     void showTransferQueue();
     void onLocalActivated(const QModelIndex &index);
@@ -169,6 +173,8 @@ private:
     QToolButton *m_remoteProps = nullptr;
     QToolButton *m_remoteNew = nullptr;
     QLabel *m_status = nullptr;
+    QLabel *m_transferText = nullptr;    // 底栏传输进度文案（队列空时为空）
+    QProgressBar *m_transferBar = nullptr; // 底栏传输进度条，仅活动传输时可见
 
     bool m_connected = false;
     bool m_remoteRestorePending = false;
@@ -186,6 +192,8 @@ private:
     QHash<QString, QString> m_watchedEdit;          // 本地缓存 -> 远程路径
     QHash<QString, QByteArray> m_editDigest;        // 上次已同步内容
     QHash<int, PendingFetch> m_pendingFetch;
+    QSet<int> m_folderUploadIds;    // 本轮文件夹上传的全部任务 id（建目录 + 文件）
+    QSet<QString> m_folderMkdirs;   // 文件夹上传要建的远程目录，onOpFinished 里静默放行
 
     QProcess *m_localProc = nullptr;
     QStringList m_localCmdQueue;

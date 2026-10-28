@@ -7,6 +7,7 @@
 #include <QAction>
 #include <QCheckBox>
 #include <QClipboard>
+#include <algorithm>
 #include <functional>
 
 #include <QEvent>
@@ -20,6 +21,7 @@
 #include <QDesktopServices>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QFileSystemModel>
@@ -40,6 +42,7 @@
 #include <QMenu>
 #include <QPlainTextEdit>
 #include <QProcess>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSaveFile>
@@ -768,6 +771,8 @@ FileBrowserDialog::FileBrowserDialog(SshSession *session, QWidget *parent)
 
     m_client = new SftpClient(m_session, this);
     m_transfer = new TransferDialog(m_client, this);
+    connect(m_transfer, &TransferDialog::jobFinished, this, &FileBrowserDialog::onQueueJobFinished);
+    connect(m_transfer, &TransferDialog::progressChanged, this, &FileBrowserDialog::onTransferProgressInfo);
     m_editWatcher = new QFileSystemWatcher(this);
     m_editTimer = new QTimer(this);
     m_editTimer->setSingleShot(true);
@@ -898,12 +903,21 @@ FileBrowserDialog::FileBrowserDialog(SshSession *session, QWidget *parent)
     splitter->setStretchFactor(1, 1);
 
     m_status = new QLabel(tr("正在打开主目录..."), this);
+    // 底栏传输进度：文案 + 细进度条，详情/取消仍走「传输队列」窗口（不再自动弹出）
+    m_transferText = new QLabel(this);
+    m_transferBar = new QProgressBar(this);
+    m_transferBar->setFixedWidth(140);
+    m_transferBar->setTextVisible(false);
+    m_transferBar->setRange(0, 100);
+    m_transferBar->hide();
     auto *queueBtn = new QPushButton(tr("传输队列..."), this);
     queueBtn->setAutoDefault(false);
     queueBtn->setDefault(false);
     connect(queueBtn, &QPushButton::clicked, this, &FileBrowserDialog::showTransferQueue);
     auto *statusRow = new QHBoxLayout;
     statusRow->addWidget(m_status, 1);
+    statusRow->addWidget(m_transferText);
+    statusRow->addWidget(m_transferBar);
     statusRow->addWidget(queueBtn);
 
     auto *root = new QVBoxLayout;
@@ -1167,6 +1181,9 @@ void FileBrowserDialog::onListedFailed(const QString &path, const QString &error
 
 void FileBrowserDialog::onOpFinished(const QString &op, const QString &arg, bool ok, const QString &error)
 {
+    // 文件夹上传的建目录结果由传输队列行展示（远程已存在等），这里静默放行
+    if (op == QLatin1String("mkdir") && m_folderMkdirs.remove(arg))
+        return;
     if (op == QLatin1String("exec")) {
         handleExecFinished(ok, arg, error);
         return;
@@ -1230,6 +1247,24 @@ void FileBrowserDialog::onTransferFinished(int id, bool ok, const QString &error
             m_editWatcher->addPath(job.local);
     }
     QDesktopServices::openUrl(QUrl::fromLocalFile(job.local));
+}
+
+void FileBrowserDialog::onQueueJobFinished(int id)
+{
+    if (!m_folderUploadIds.contains(id))
+        return;
+    m_folderUploadIds.remove(id);
+    if (m_folderUploadIds.isEmpty()) { // 整批（建目录 + 文件）收尾
+        m_folderMkdirs.clear();
+        refreshRemote();
+    }
+}
+
+void FileBrowserDialog::onTransferProgressInfo(const QString &text, int percent, bool active)
+{
+    m_transferText->setText(text);
+    m_transferBar->setVisible(active);
+    m_transferBar->setValue(percent);
 }
 
 void FileBrowserDialog::showTransferQueue()
@@ -1444,37 +1479,91 @@ void FileBrowserDialog::uploadSelected()
     const QModelIndexList rows = m_localView->selectionModel()->selectedRows(0);
     if (rows.isEmpty() || !m_connected)
         return;
-    struct Pending
+    struct FileTask
     {
         QString local;
         QString remote;
-        qint64 size;
+        qint64 size = 0;
     };
-    QVector<Pending> pendings;
-    QString skippedDirs;
+    struct DirTask
+    {
+        QString local;
+        QString remote;
+    };
+    QVector<FileTask> files;
+    QVector<DirTask> dirs;  // 要在远程新建的目录（先根后子，按 remote 排序保证父在前）
+    QStringList conflicts;  // 远程已存在的顶层目录，合并前需确认
+    int skippedLinks = 0;
+
     for (const QModelIndex &idx : rows) {
         const QString path = m_fsModel->filePath(idx);
-        if (m_fsModel->isDir(idx)) {
-            skippedDirs += path + QLatin1Char('\n');
+        const QFileInfo info(path);
+        if (info.isSymLink()) { // 链接/junction 可能成环，直接跳过不递归
+            ++skippedLinks;
             continue;
         }
-        Pending pending;
-        pending.local = path;
-        pending.remote = remoteJoin(m_remotePath, QFileInfo(path).fileName());
-        pending.size = QFileInfo(path).size();
-        pendings.append(pending);
-    }
-    if (!skippedDirs.isEmpty()) {
-        FramelessDialog::message(this, tr("不支持目录上传"),
-                                 tr("以下是目录，已跳过（暂不支持递归上传）：\n%1").arg(skippedDirs));
-    }
-    for (const Pending &pending : pendings) {
-        if (pendings.size() == 1 && remoteNameExists(QFileInfo(pending.local).fileName())) {
-            if (!FramelessDialog::question(
-                    this, tr("覆盖确认"), tr("远程已存在 %1，覆盖？").arg(pending.remote)))
-                return;
+        const QString remoteRoot = remoteJoin(m_remotePath, info.fileName());
+        if (!info.isDir()) {
+            FileTask task;
+            task.local = path;
+            task.remote = remoteRoot;
+            task.size = info.size();
+            files.append(task);
+            continue;
         }
-        m_transfer->enqueue(true, pending.local, pending.remote, pending.size);
+        if (remoteNameExists(info.fileName()))
+            conflicts << info.fileName();
+        // 递归收集子项：目录进 dirs、文件进 files，远程路径保持同样的相对结构
+        dirs.append(DirTask{path, remoteRoot});
+        const QDir root(path);
+        QDirIterator it(path, QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot,
+                        QDirIterator::Subdirectories);
+        while (it.hasNext()) {
+            it.next();
+            const QFileInfo entry = it.fileInfo();
+            if (entry.isSymLink()) {
+                ++skippedLinks;
+                continue;
+            }
+            const QString remote = remoteRoot + QLatin1Char('/')
+                + root.relativeFilePath(entry.absoluteFilePath());
+            if (entry.isDir()) {
+                dirs.append(DirTask{entry.absoluteFilePath(), remote});
+                continue;
+            }
+            FileTask task;
+            task.local = entry.absoluteFilePath();
+            task.remote = remote;
+            task.size = entry.size();
+            files.append(task);
+        }
+    }
+    // 字典序里父目录是子目录的前缀，天然父先子后
+    std::sort(dirs.begin(), dirs.end(),
+              [](const DirTask &a, const DirTask &b) { return a.remote < b.remote; });
+
+    if (!conflicts.isEmpty()
+        && !FramelessDialog::question(
+               this, tr("合并确认"),
+               tr("远程已存在同名目录：\n%1\n\n合并上传？其中同名文件将被覆盖。")
+                   .arg(conflicts.join(QLatin1Char('\n')))))
+        return;
+    if (rows.size() == 1 && files.size() == 1 && dirs.isEmpty()
+        && remoteNameExists(QFileInfo(files.first().local).fileName())
+        && !FramelessDialog::question(
+               this, tr("覆盖确认"), tr("远程已存在 %1，覆盖？").arg(files.first().remote)))
+        return;
+    if (skippedLinks > 0)
+        m_status->setText(tr("已跳过 %1 个链接").arg(skippedLinks));
+
+    // 建目录任务在前、文件在后入队；队列串行执行，保证目录先于其中的文件就位。
+    // 批次 id 全部记下，收尾时（onQueueJobFinished）刷新一次远程列表。
+    for (const DirTask &task : dirs) {
+        m_folderMkdirs.insert(task.remote);
+        m_folderUploadIds.insert(m_transfer->enqueueDir(task.local, task.remote));
+    }
+    for (const FileTask &task : files) {
+        m_folderUploadIds.insert(m_transfer->enqueue(true, task.local, task.remote, task.size));
     }
 }
 
@@ -1921,7 +2010,7 @@ void FileBrowserDialog::commitEditUpload()
     const QByteArray previous = m_editDigest.value(local);
     m_editDigest.insert(local, digest);
     const int id = m_transfer->enqueue(true, local, m_watchedEdit.value(local),
-                                       QFileInfo(local).size(), false);
+                                       QFileInfo(local).size());
     PendingFetch job;
     job.uploadBack = true;
     job.local = local;
@@ -1934,7 +2023,7 @@ void FileBrowserDialog::commitEditUpload()
 void FileBrowserDialog::enqueueFetch(bool edit, const QString &remotePath, qint64 size)
 {
     const QString local = cacheFile(edit, remotePath);
-    const int id = m_transfer->enqueue(false, local, remotePath, size, true);
+    const int id = m_transfer->enqueue(false, local, remotePath, size);
     PendingFetch job;
     job.edit = edit;
     job.local = local;
