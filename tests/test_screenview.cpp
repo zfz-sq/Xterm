@@ -56,6 +56,8 @@ class ScreenViewTest : public QObject
 private slots:
     void topSuspendsLineEditUntilPrompt();
     void viAltScreenPassthrough();
+    void busyBoxViInsertTypingKeepsPassthrough();
+    void pureTerminalModeSendsKeysRaw();
     void localRedrawDoesNotSelfTrigger();
     void wheelBecomesArrowsWhileRemotePaints();
     void ctrlFOpensFindAndFullScreenPassesThrough();
@@ -110,8 +112,8 @@ void ScreenViewTest::topSuspendsLineEditUntilPrompt()
     QCOMPARE(cap.sent, QByteArray("\x1b[A"));
     cap.reset();
 
-    // 退出：top 不发还原序列，shell 直接打提示符（纯文本、停在行中）
-    feed(view, QByteArray("root@board:~# "));
+    // 退出：top 不发还原序列，shell 打印换行 + 提示符（新行、停在行中）
+    feed(view, QByteArray("\r\nroot@board:~# "));
     typePlain(view, "ls");
     QCOMPARE(cap.sent, QByteArray());          // 行编辑已恢复
     QVERIFY(view.screenText().contains(QStringLiteral("ls"))); // 且本地代画
@@ -144,12 +146,83 @@ void ScreenViewTest::viAltScreenPassthrough()
     QVERIFY(view.screenText().contains(QStringLiteral("main")));
     QVERIFY(!view.screenText().contains(QLatin1Char('x')));
 
-    // 退出备用屏 → 提示符 → 行编辑恢复
+    // 退出备用屏 → 提示符（换行后出现）→ 行编辑恢复
     feed(view, QByteArray("\x1b[?1049l"));
-    feed(view, QByteArray("root@board:~# "));
+    feed(view, QByteArray("\r\nroot@board:~# "));
     typePlain(view, "echo");
     QVERIFY(cap.sent == QByteArray("x"));
     QVERIFY(view.screenText().contains(QStringLiteral("echo")));
+}
+
+// BusyBox vi 不切备用屏，画屏走 remoteRaw 直通。插入模式的逐字回显
+// （纯文本、无控制序列、不带换行）绝不能触发恢复行编辑——否则打一个字
+// 就退出直通，上下方向键被本地行编辑劫持成翻历史，vi 里没法编辑。
+void ScreenViewTest::busyBoxViInsertTypingKeepsPassthrough()
+{
+    ScreenView view;
+    view.resize(100 * 15, 34 * 18);
+    view.setLocalEcho(true);
+    Capture cap;
+    QObject::connect(&view, &ScreenView::sendData,
+                     [&cap](const QByteArray &bytes) { cap.sent += bytes; });
+
+    feed(view, QByteArray("root@board:~# "));
+    typePlain(view, "vi");
+    key(view, Qt::Key_Return, QStringLiteral("\r"));
+    cap.reset();
+
+    // BusyBox vi 开场：只发光标定位 + 整屏擦除，没有 ?1049h 备用屏
+    feed(view, QByteArray("\x1b[H\x1b[2J"));
+    feed(view, QByteArray("int main(void)\r\n{\r\n"));
+
+    // 进入插入模式敲字：远端逐字回显，块里没有换行 → 必须保持直通
+    typePlain(view, "abc");
+    QCOMPARE(cap.sent, QByteArray("abc"));
+    feed(view, QByteArray("abc"));
+
+    // 上下方向键是发给 vi 的光标移动序列，不是本地翻历史
+    cap.reset();
+    key(view, Qt::Key_Up);
+    QCOMPARE(cap.sent, QByteArray("\x1b[A"));
+    key(view, Qt::Key_Down);
+    QCOMPARE(cap.sent, QByteArray("\x1b[A\x1b[B"));
+
+    // 退出：vi 还原画面（画屏序列）→ shell 打印换行提示符 → 行编辑恢复
+    feed(view, QByteArray("\x1b[H\x1b[2J"));
+    feed(view, QByteArray("\r\nroot@board:~# "));
+    cap.reset();
+    typePlain(view, "ls");
+    QVERIFY(cap.sent.isEmpty()); // 回到行编辑，键入不上路
+}
+
+// 终端档（串口设置里的开关，落到视图就是 setLocalEcho(false)）：
+// 与 SSH 完全一致——按键逐个裸发不等回车、本地不代画、不进远端画屏
+// 状态机。Linux 串口控制台（vi 的单键提示、vim 全屏重画）走这条路，
+// 不再被 STM32 CDC 那套本地行编辑扣键。
+void ScreenViewTest::pureTerminalModeSendsKeysRaw()
+{
+    ScreenView view;
+    view.resize(100 * 15, 34 * 18);
+    view.setLocalEcho(false); // 终端档
+    Capture cap;
+    QObject::connect(&view, &ScreenView::sendData,
+                     [&cap](const QByteArray &bytes) { cap.sent += bytes; });
+
+    feed(view, QByteArray("root@board:~# "));
+    typePlain(view, "e");     // 逐键上路，不等回车
+    QCOMPARE(cap.sent, QByteArray("e"));
+    QVERIFY(!view.screenText().contains(QLatin1Char('e'))); // 本地不代画
+    key(view, Qt::Key_Return, QStringLiteral("\r"));
+    QCOMPARE(cap.sent, QByteArray("e\r")); // 回车是裸 \r，不是行编辑的提交
+
+    // BusyBox vi 式画屏照常渲染，按键依旧全直通；Tab 也不被本地补全吃掉
+    cap.reset();
+    feed(view, QByteArray("\x1b[H\x1b[2Jint main(void)\r\n{\r\n"));
+    QVERIFY(view.screenText().contains(QStringLiteral("main")));
+    typePlain(view, "x");
+    key(view, Qt::Key_Tab, QStringLiteral("\t"));
+    key(view, Qt::Key_Up);
+    QCOMPARE(cap.sent, QByteArray("x\t\x1b[A"));
 }
 
 void ScreenViewTest::localRedrawDoesNotSelfTrigger()

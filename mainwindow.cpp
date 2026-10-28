@@ -18,6 +18,7 @@
 #include <QFormLayout>
 #include <QFontMetrics>
 #include <QGuiApplication>
+#include <QGridLayout>
 #include <QHeaderView>
 #include <QIcon>
 #include <QIntValidator>
@@ -25,6 +26,7 @@
 #include <QLineEdit>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPalette>
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QListView>
@@ -53,6 +55,9 @@
 #include "titlebar.h"
 #include "transport.h"
 #include "ui_mainwindow.h"
+
+// 只为「关于」框取 libssh 运行库版本号（实际加载的 DLL 版本），libssh 头不进主窗口
+extern "C" const char *ssh_version(int req_version);
 
 namespace {
 // 设备管理器里是「通信端口 (COM1)」「USB-SERIAL CH340 (COM17)」，
@@ -305,44 +310,121 @@ void MainWindow::setupTitleBar()
         row->addWidget(text, 0, Qt::AlignTop);
         lay->addLayout(row);
         lay->addSpacing(8);
+        auto *btnRow = new QHBoxLayout;
+        btnRow->addStretch(1);
         auto *ok = new QPushButton(tr("确定"));
         ok->setDefault(true); // 回车确认
         ok->setFixedWidth(96);
         connect(ok, &QPushButton::clicked, &dlg, &QDialog::accept);
-        lay->addWidget(ok, 0, Qt::AlignRight);
+        btnRow->addWidget(ok);
+        lay->addLayout(btnRow);
         dlg.setContentLayout(lay);
         dlg.applyTheme(m_store->isDarkTheme());
         dlg.exec();
     });
     helpMenu->addAction(tr("关于 Xterm"), this, [this] {
-        // 公共无边框对话框，主题随全局 QSS，暗色下不再露原生样式
+        // 公共无边框对话框，主题随全局 QSS，暗色下不再露原生样式。
+        // 版式: 居中品牌区 → 简介 → 三张信息卡片 → 分隔线 → 页脚(链接/版权/按钮)
         FramelessDialog dlg(this);
         dlg.setDialogTitle(tr("关于 Xterm"));
+        dlg.setMinimumWidth(500);
+        const bool dark = m_store->isDarkTheme();
+        const QString dim = dark ? QStringLiteral("#9A9A9A") : QStringLiteral("#6E6E6E");
+        const QString lineColor = dark ? QStringLiteral("#3B3B40") : QStringLiteral("#C9C9CD");
+        auto hline = [&lineColor]() {
+            auto *line = new QWidget;
+            line->setFixedHeight(1);
+            line->setStyleSheet(QStringLiteral("background-color:%1").arg(lineColor));
+            return line;
+        };
+
         auto *content = new QWidget;
         auto *lay = new QVBoxLayout(content);
-        lay->setContentsMargins(24, 18, 24, 16);
-        lay->setSpacing(8);
+        lay->setContentsMargins(0, 0, 0, 0);
+        lay->setSpacing(0);
+
+        // ---- 品牌区: 图标 / 名称 / 副标题，整体居中 ----
+        auto *brand = new QWidget;
+        auto *brandLay = new QVBoxLayout(brand);
+        brandLay->setContentsMargins(28, 24, 28, 0);
+        brandLay->setSpacing(4);
         auto *icon = new QLabel;
         icon->setPixmap(QPixmap(QStringLiteral(":/icons/app.png"))
-                            .scaled(48, 48, Qt::KeepAspectRatio,
+                            .scaled(64, 64, Qt::KeepAspectRatio,
                                     Qt::SmoothTransformation));
-        auto *text = new QLabel(
-            tr("<b>Xterm 终端</b><br>串口 / SSH 双链路终端工具<br><br>版本 %1")
-                .arg(QCoreApplication::applicationVersion()));
-        text->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+        icon->setAlignment(Qt::AlignHCenter);
+        auto *name = new QLabel(
+            tr("<span style=\"font-size:18pt; font-weight:600;\">Xterm</span>"));
+        name->setAlignment(Qt::AlignHCenter);
+        auto *tagline = new QLabel(
+            tr("<span style=\"font-size:9.5pt; color:%1;\">串口 / SSH 双链路终端 · v%2</span>")
+                .arg(dim, QCoreApplication::applicationVersion()));
+        tagline->setAlignment(Qt::AlignHCenter);
+        brandLay->addWidget(icon);
+        brandLay->addWidget(name);
+        brandLay->addWidget(tagline);
+        lay->addWidget(brand);
+
+        // ---- 正文: 简介 + 信息卡片 ----
+        auto *body = new QWidget;
+        auto *bodyLay = new QVBoxLayout(body);
+        bodyLay->setContentsMargins(28, 18, 28, 20);
+        bodyLay->setSpacing(14);
+        auto *desc = new QLabel(
+            tr("面向嵌入式调试：串口与 SSH 两条链路独立存活、一键切换互不打断；"
+               "SFTP 双栏文件管理共享同一条 SSH 连接；终端支持 vim / htop 等"
+               "全屏程序、关键词高亮与滚动历史查找；内置 MCP 桥，"
+               "可让 AI 直接操作已连接的终端。"));
+        desc->setWordWrap(true);
+        bodyLay->addWidget(desc);
+        lay->addWidget(body);
+
+        lay->addWidget(hline());
+
+        // ---- 页脚: 第三方组件 / 版权 / 按钮 ----
+        auto *foot = new QWidget;
+        auto *footLay = new QVBoxLayout(foot);
+        footLay->setContentsMargins(28, 14, 28, 16);
+        footLay->setSpacing(10);
+
+        // 组件名挂上游源码主页，点击走默认浏览器；QSS 管不到富文本 <a>，
+        // 链接色用调色板 Link 角色按主题上色
+        auto *legal = new QLabel(
+            tr("<span style=\"color:%1;\">第三方组件：</span>"
+               "<a href=\"https://www.qt.io/\">Qt</a>"
+               "<span style=\"color:%1;\">（GPL/LGPL）· </span>"
+               "<a href=\"https://www.libssh.org/\">libssh</a>"
+               "<span style=\"color:%1;\">（LGPL-2.1）· </span>"
+               "<a href=\"https://www.openssl.org/\">OpenSSL</a>"
+               "<span style=\"color:%1;\">（Apache-2.0）· </span>"
+               "<a href=\"https://www.mingw-w64.org/\">mingw-w64</a>")
+                .arg(dim));
+        legal->setOpenExternalLinks(true);
+        legal->setWordWrap(true);
+        QPalette linkPal = legal->palette();
+        const QColor linkColor = dark ? QColor(0x4F, 0xC1, 0xFF) : QColor(0x09, 0x69, 0xDA);
+        linkPal.setColor(QPalette::Link, linkColor);
+        linkPal.setColor(QPalette::LinkVisited, linkColor);
+        legal->setPalette(linkPal);
+        footLay->addWidget(legal);
+
+        auto *copy = new QLabel(
+            tr("<span style=\"font-size:8.5pt; color:%1;\">版权所有 © 2026</span>").arg(dim));
+        copy->setAlignment(Qt::AlignHCenter);
+        footLay->addWidget(copy);
+
         auto *row = new QHBoxLayout;
-        row->setSpacing(16);
-        row->addWidget(icon, 0, Qt::AlignTop);
-        row->addWidget(text, 0, Qt::AlignTop);
-        lay->addLayout(row);
-        lay->addSpacing(8);
+        row->addStretch(1);
         auto *ok = new QPushButton(tr("确定"));
         ok->setDefault(true); // 回车确认
         ok->setFixedWidth(96);
         connect(ok, &QPushButton::clicked, &dlg, &QDialog::accept);
-        lay->addWidget(ok, 0, Qt::AlignRight);
+        row->addWidget(ok);
+        footLay->addLayout(row);
+        lay->addWidget(foot);
+
         dlg.setContentLayout(lay);
-        dlg.applyTheme(m_store->isDarkTheme());
+        dlg.applyTheme(dark);
         dlg.exec();
     });
     m_titleBar->addMenuButton(tr("帮助"))->setMenu(helpMenu);
@@ -476,7 +558,8 @@ void MainWindow::setupTerminal()
     // 切模式只是换一页显示，另一侧继续收发，内容不丢、连接不断。
     // 两页都是格子屏幕模型：串口设备的 top/vim 和 SSH 一样能还原。
     m_serialView = new ScreenView(this);
-    m_serialView->setLocalEcho(true);
+    // 默认终端档（对齐 SSH）；开关状态与配置在 applyCurrentProfile 里同步
+    m_serialView->setLocalEcho(false);
     ui->serialTerminalPageLayout->addWidget(m_serialView);
 
     m_sshView = new ScreenView(this);
@@ -494,7 +577,8 @@ void MainWindow::setupTerminal()
 void MainWindow::setupCompletion()
 {
     m_completion = new CompletionEngine; // 非 QObject，不接受 parent；生命周期由 m_completion 指针托管
-    m_serialView->setCompletionEngine(m_completion);
+    // 调试档才挂补全；终端档没有本地行编辑，Tab 交给设备（onSerialModeToggled 同步）
+    m_serialView->setCompletionEngine(ui->serialModeBtn->isChecked() ? nullptr : m_completion);
     // 把当前配置里的命令名注入补全源
     const Profile p = m_store->profile(m_currentProfile);
     QStringList names;
@@ -512,6 +596,8 @@ void MainWindow::connectSignals()
             &MainWindow::onConnectionParamChanged);
     connect(ui->baudCombo, &QComboBox::currentTextChanged, this,
             &MainWindow::onConnectionParamChanged);
+    connect(ui->serialModeBtn, &QToolButton::toggled, this,
+            &MainWindow::onSerialModeToggled);
     connect(ui->dataBitsCombo, &QComboBox::currentIndexChanged, this,
             &MainWindow::onConnectionParamChanged);
     connect(ui->parityCombo, &QComboBox::currentIndexChanged, this,
@@ -801,6 +887,21 @@ void MainWindow::onConnectionParamChanged()
     if (m_loading)
         return;
     syncCurrentProfile();
+}
+
+// 串口终端模式切换。调试：为 STM32 CDC 这类无回显设备做的本地代画
+// 代编辑（含远端画屏让路）；终端：对齐 SSH——设备回显，按键逐个裸发，
+// vi 的单键提示、全屏重画都按 SSH 的路数走。只改本地行为，不动链路参数，
+// 连接中也能切，所以不参与 updateConnectionUi 的锁定。
+void MainWindow::onSerialModeToggled(bool pure)
+{
+    ui->serialModeBtn->setText(pure ? tr("终端") : tr("调试"));
+    m_serialView->setLocalEcho(!pure);
+    // Tab 补全是行编辑的周边（读屏上输入行、发差量），纯终端没有本地
+    // 行编辑，交给设备自己处理 Tab。
+    m_serialView->setCompletionEngine(pure ? nullptr : m_completion);
+    if (!m_loading)
+        syncCurrentProfile();
 }
 
 void MainWindow::browsePrivateKey()
@@ -1449,6 +1550,7 @@ void MainWindow::openKeywordSettings()
 
     auto *addBtn = new QPushButton(tr("添加"));
     auto *delBtn = new QPushButton(tr("删除"));
+    auto *defaultsBtn = new QPushButton(tr("默认规则"));
     auto *okBtn = new QPushButton(tr("确定"));
     okBtn->setDefault(true);
     auto *cancelBtn = new QPushButton(tr("取消"));
@@ -1464,6 +1566,23 @@ void MainWindow::openKeywordSettings()
             table->removeRow(row);
             applyFromTable();
         }
+    });
+    // 一键补齐内置日志惯例规则（error 红 / success 绿…），已有关键词不动
+    connect(defaultsBtn, &QPushButton::clicked, this, [&] {
+        const QList<KeywordRule> defaults = CommandStore::defaultKeywords(dark);
+        for (const KeywordRule &rule : defaults) {
+            bool exists = false;
+            for (int row = 0; row < table->rowCount(); ++row) {
+                const auto *item = table->item(row, 0);
+                if (item && item->text().trimmed().compare(rule.text, Qt::CaseInsensitive) == 0) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists)
+                addRow(rule.text, rule.color, rule.enabled);
+        }
+        applyFromTable();
     });
     connect(okBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
     connect(cancelBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
@@ -1484,6 +1603,7 @@ void MainWindow::openKeywordSettings()
     auto *btnRow = new QHBoxLayout;
     btnRow->addWidget(addBtn);
     btnRow->addWidget(delBtn);
+    btnRow->addWidget(defaultsBtn);
     btnRow->addStretch(1);
     btnRow->addWidget(okBtn);
     btnRow->addWidget(cancelBtn);
@@ -1550,6 +1670,7 @@ Profile MainWindow::currentProfileFromUi() const
     p.connection.flowControl = ui->flowCombo->currentData().toString();
     p.connection.dtr = ui->dtrCheck->isChecked();
     p.connection.rts = ui->rtsCheck->isChecked();
+    p.connection.pureTerminal = ui->serialModeBtn->isChecked();
     p.ssh = sshTargetFromUi();
     p.commands = m_commandBar->commands();
     return p;
@@ -1613,6 +1734,8 @@ void MainWindow::applyCurrentProfile()
         ui->dtrCheck->setChecked(p.connection.dtr);
         ui->rtsCheck->setChecked(p.connection.rts);
     }
+    // 终端模式只影响本地行为，不动串口链路，连接中也按配置生效
+    ui->serialModeBtn->setChecked(p.connection.pureTerminal);
     // SSH 参数：已连接或正在连的时候不动，避免改动把用户从当前会话上带偏
     if (!m_ssh->isOpen() && m_ssh->state() == Transport::Disconnected) {
         ui->hostEdit->setText(p.ssh.host);

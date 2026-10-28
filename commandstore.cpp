@@ -92,6 +92,7 @@ static QJsonObject profileToJson(const Profile &p)
     c[QStringLiteral("flowControl")] = p.connection.flowControl;
     c[QStringLiteral("dtr")] = p.connection.dtr;
     c[QStringLiteral("rts")] = p.connection.rts;
+    c[QStringLiteral("pureTerminal")] = p.connection.pureTerminal;
 
     QJsonObject s;
     s[QStringLiteral("host")] = p.ssh.host;
@@ -130,6 +131,7 @@ static Profile profileFromJson(const QJsonObject &o)
             : QStringLiteral("none");
     p.connection.dtr = c.value(QStringLiteral("dtr")).toBool(true);
     p.connection.rts = c.value(QStringLiteral("rts")).toBool(true);
+    p.connection.pureTerminal = c.value(QStringLiteral("pureTerminal")).toBool(true);
 
     const QJsonObject s = o.value(QStringLiteral("ssh")).toObject();
     p.ssh.host = s.value(QStringLiteral("host")).toString();
@@ -194,6 +196,9 @@ bool CommandStore::load()
     m_commandBarCollapsed = root.value(QStringLiteral("commandBarCollapsed")).toBool(false);
 
     m_keywords.clear();
+    // 老配置没有 keywords 键 = 从没用过高亮：给一套日志惯例默认规则
+    if (!root.contains(QStringLiteral("keywords")))
+        m_keywords = defaultKeywords(isDarkTheme());
     const QJsonArray kws = root.value(QStringLiteral("keywords")).toArray();
     for (const QJsonValue &v : kws) {
         const QJsonObject o = v.toObject();
@@ -205,6 +210,37 @@ bool CommandStore::load()
             m_keywords.append(rule);
     }
     return true;
+}
+
+QList<KeywordRule> CommandStore::defaultKeywords(bool dark)
+{
+    // 颜色与终端调色板同源（暗 = One Dark 系，亮 = kLight 调色板）
+    const QColor red = dark ? QColor(0xE0, 0x6C, 0x75) : QColor(0xC4, 0x2F, 0x2F);
+    const QColor green = dark ? QColor(0x7C, 0xD0, 0x77) : QColor(0x0E, 0x8A, 0x3E);
+    const QColor yellow = dark ? QColor(0xE5, 0xC0, 0x7A) : QColor(0xB5, 0x89, 0x00);
+    const QColor cyan = dark ? QColor(0x56, 0xB6, 0xC2) : QColor(0x11, 0x8A, 0xB3);
+    auto make = [](const char *text, const QColor &color) {
+        KeywordRule rule;
+        rule.text = QString::fromLatin1(text);
+        rule.color = color;
+        return rule;
+    };
+    // 匹配是不区分大小写的子串，用词要避开常见误命中：用 passed 而非 pass
+    // （passwd/bypass），用 disconnect 而非 connected（会把 disconnected 染绿），
+    // 不收 ok（token/socket）、ready（already）、enabled（disabled）、
+    // complete（incomplete）、oops（loops）、bug（debug）。
+    return {
+        make("error", red),     make("fail", red),  make("fatal", red),
+        make("panic", red),     make("denied", red), make("disconnect", red),
+        make("false", red),     make("critical", red), make("refused", red),
+        make("unable", red),    make("invalid", red), make("segfault", red),
+        make("segmentation", red),
+        make("success", green), make("true", green), make("passed", green),
+        make("done", green),
+        make("warn", yellow),   make("timeout", yellow), make("deprecated", yellow),
+        make("retry", yellow),
+        make("info", cyan),     make("debug", cyan),
+    };
 }
 
 bool CommandStore::save() const

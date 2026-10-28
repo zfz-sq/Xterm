@@ -246,7 +246,12 @@ QColor TermScreen::resolve(const TermColor &color, bool foreground) const
 
 QColor TermScreen::foreground(const TermCell &cell) const
 {
-    return resolve(cell.fg, true);
+    TermColor fg = cell.fg;
+    // 粗体亮色（bold-is-bright，xterm/MobaXterm 的传统行为）：SGR 1;31 画成
+    // 亮红。ls / dmesg / gcc 等大量用「1;3x」表达亮色，不映射整体会发暗。
+    if ((cell.attr & AttrBold) && fg.kind == TermColor::Indexed && fg.index < 8)
+        fg.index = quint8(fg.index + 8);
+    return resolve(fg, true);
 }
 
 QColor TermScreen::background(const TermCell &cell) const
@@ -294,11 +299,15 @@ int TermScreen::feed(const QByteArray &data)
     m_clearRequested = false;
     m_feedScrolled = 0;
     m_feedPrintable = 0;
+    m_feedNewlines = 0;
     m_feedCtl = 0;
     m_rowsErased = 0;
     std::memset(m_rowErased, 0, sizeof(m_rowErased));
-    for (int i = 0; i < data.size(); ++i)
+    for (int i = 0; i < data.size(); ++i) {
+        if (data.at(i) == '\n')
+            ++m_feedNewlines;
         feedByte(static_cast<unsigned char>(data.at(i)));
+    }
     return finishFeed();
 }
 

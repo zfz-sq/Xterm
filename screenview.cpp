@@ -716,9 +716,12 @@ bool ScreenView::localLineMode() const
 // 行编辑会把它们的按键全部扣到回车为止，vi 备用屏之外的一切也同理。
 // 所以远端一旦出现光标定位/整屏擦除，就判定「屏幕归远端管」：
 // 丢弃未发出的编辑草稿，按键、回显、粘贴全部直通。
-// 退出判定要保守：只有整块里没有任何画屏序列、写了可见字符、且光标
-// 停在行中（提示符形状，如 "root@board:~# "）才恢复行编辑。误判的代价
-// 只是暂时像普通终端一样靠设备回显，不会丢键。
+// 退出判定要保守，三样缺一不可：整块无画屏序列、写了可见字符且换过行、
+// 光标停在行中（提示符形状，如 "root@board:~# "）。必须见到换行是关键——
+// shell 提示符一定出现在新行上，而 vi 插入模式的逐字回显（纯文本、无控制
+// 序列、行中光标）形状几乎相同，只差没有换行；少这条判据会让 vi 里打一个
+// 字就退出直通，方向键被劫持成本地翻历史。误判的代价只是暂时像普通终端
+// 一样靠设备回显，不会丢键。
 void ScreenView::applyRemoteCtl()
 {
     if (m_screen.screenCtlSeen()) {
@@ -727,7 +730,7 @@ void ScreenView::applyRemoteCtl()
         return;
     }
     if (m_remoteRaw && !m_screen.altScreen() && m_screen.feedPrintable() > 0
-        && m_screen.cursorCol() > 0) {
+        && m_screen.feedNewlines() > 0 && m_screen.cursorCol() > 0) {
         exitRemoteRaw();
     }
 }

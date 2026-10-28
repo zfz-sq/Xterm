@@ -145,6 +145,32 @@
             </layout>
            </item>
            <item>
+            <widget class="QFrame" name="serialModeLine">
+             <property name="frameShape">
+              <enum>QFrame::Shape::VLine</enum>
+             </property>
+             <property name="frameShadow">
+              <enum>QFrame::Shadow::Sunken</enum>
+             </property>
+            </widget>
+           </item>
+           <item alignment="Qt::AlignmentFlag::AlignVCenter">
+            <widget class="QToolButton" name="serialModeBtn">
+             <property name="toolTip">
+              <string>调试：本地代画代编辑，适配无回显设备（STM32 CDC）；终端：与 SSH 一致，设备回显、按键全直通，适合 Linux 串口控制台。连接中也可切换</string>
+             </property>
+             <property name="text">
+              <string>终端</string>
+             </property>
+             <property name="checkable">
+              <bool>true</bool>
+             </property>
+             <property name="checked">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+           <item>
             <spacer name="serialPanelSpacer">
              <property name="orientation">
               <enum>Qt::Orientation::Horizontal</enum>

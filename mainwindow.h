@@ -70,6 +70,7 @@ private:
 
     void onConnectClicked();
     void onConnectionParamChanged();
+    void onSerialModeToggled(bool pure);
     void browsePrivateKey();
     void onFilesClicked();          // 打开 SFTP 文件管理器（SSH 会话的独立第二连接）
     void onMcpClicked();            // 弹出 MCP 提示词

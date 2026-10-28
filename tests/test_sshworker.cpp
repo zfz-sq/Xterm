@@ -71,11 +71,11 @@ void TestSshWorker::requestsXtermPtyWithInitialSize()
     worker.connectToHost(7, target(), 132, 43);
 
     QTRY_COMPARE(connected.count(), 1);
-    QCOMPARE(api.ptyTerm, QByteArrayLiteral("xterm"));
+    QCOMPARE(api.ptyTerm, QByteArrayLiteral("xterm-256color"));
     QCOMPARE(api.ptyCols, 132);
     QCOMPARE(api.ptyRows, 43);
     QCOMPARE(api.environment.value(QByteArrayLiteral("TERM")),
-             QByteArrayLiteral("xterm"));
+             QByteArrayLiteral("xterm-256color"));
     QCOMPARE(api.environment.value(QByteArrayLiteral("COLORTERM")),
              QByteArrayLiteral("truecolor"));
     QCOMPARE(api.requestShellCount, 1);

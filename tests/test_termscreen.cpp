@@ -42,6 +42,7 @@ private slots:
     void shrinkKeepsEverythingReachable();
     void resizeStormLosesNothing();
     void screenCtlFlagTracksPainterBlocks();
+    void boldMapsIndexedToBright();
 };
 
 void TermScreenTest::growBackfillsFromHistory()
@@ -164,6 +165,24 @@ void TermScreenTest::screenCtlFlagTracksPainterBlocks()
     // 整屏擦除（clear / vi 起手）也算画屏
     screen.feed("\x1b[H\x1b[2J");
     QVERIFY(screen.screenCtlSeen());
+}
+
+// 粗体亮色（bold-is-bright）：SGR 1;31 与 SGR 91 渲染成同一个颜色。
+// ls / dmesg / gcc 都用「1;3x」表达亮色，不映射会比 MobaXterm 显暗。
+void TermScreenTest::boldMapsIndexedToBright()
+{
+    TermScreen screen;
+    screen.resize(80, 2);
+    screen.feed("\x1b[1;31mA\x1b[m\x1b[91mB");
+
+    const TermLine *line = screen.lineAbsolute(0);
+    QVERIFY(line != nullptr && line->cells.size() >= 2);
+    const TermCell &bold = line->cells.at(0);
+    const TermCell &bright = line->cells.at(1);
+    QVERIFY(bold.attr & TermScreen::AttrBold);
+    QCOMPARE(bold.fg.index, quint8(1)); // 存储仍是普通红
+    QCOMPARE(bright.fg.index, quint8(9));
+    QCOMPARE(screen.foreground(bold), screen.foreground(bright)); // 画出来同色
 }
 
 QTEST_MAIN(TermScreenTest)

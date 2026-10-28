@@ -115,11 +115,11 @@ ShellChannel::Result ShellChannel::advanceOpening(QString *error)
         break;
     case Step::RequestPty:
         result = m_api.requestPtySize(
-            m_channel, QByteArrayLiteral("xterm"), m_cols, m_rows);
+            m_channel, QByteArrayLiteral("xterm-256color"), m_cols, m_rows);
         break;
     case Step::SetTerm:
         result = requestEnvBestEffort(QByteArrayLiteral("TERM"),
-                                      QByteArrayLiteral("xterm"));
+                                      QByteArrayLiteral("xterm-256color"));
         break;
     case Step::SetColorTerm:
         result = requestEnvBestEffort(QByteArrayLiteral("COLORTERM"),

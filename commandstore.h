@@ -34,6 +34,7 @@ struct ConnectionConfig
     QString flowControl = QStringLiteral("none"); // none / hardware（RTS/CTS）
     bool dtr = true; // 打开串口后的 DTR 电平（false 适合 DTR 接复位电路的板子）
     bool rts = true;
+    bool pureTerminal = true; // 终端档：对齐 SSH（设备回显、按键直通）；false = 调试档（本地代画代编辑）
 };
 
 struct Profile
@@ -86,6 +87,10 @@ public:
     // 终端关键词高亮规则（全局，串口 / SSH 两页共用）
     QList<KeywordRule> keywords() const { return m_keywords; }
     void setKeywords(const QList<KeywordRule> &rules) { m_keywords = rules; }
+    // 内置默认关键词：日志颜色惯例（grc/lnav 等一致）——错误红、警告黄、成功绿、
+    // 信息青，true/false 沿用 PASS/FAIL 的绿红语义。首次使用（配置里还没有
+    // keywords 键）时作为初始规则；之后就是普通规则，改删都不复活。
+    static QList<KeywordRule> defaultKeywords(bool dark);
 
     // 上次使用的工作模式: "serial" / "ssh"
     QString mode() const { return m_mode; }
