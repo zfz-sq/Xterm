@@ -9,6 +9,7 @@
 #include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QItemSelectionModel>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -133,6 +134,8 @@ void CommandBar::buildUi()
     m_list->setDropIndicatorShown(true); // 只保留插入位置指示线
     m_list->setDefaultDropAction(Qt::MoveAction);
     m_list->setAlternatingRowColors(true);
+    // 列表持焦点时（删除后焦点归还于此）拦截 Ctrl+Z 撤销删除
+    m_list->installEventFilter(this);
     panelLayout->addWidget(m_list, 1);
 
     auto *bottom = new QHBoxLayout;
@@ -144,12 +147,13 @@ void CommandBar::buildUi()
         b->setToolTip(tip);
         b->setAutoRaise(true);
         b->setIconSize(QSize(20, 20));
+        b->installEventFilter(this); // 按钮持焦点时（如点完删除）Ctrl+Z 撤销删除
         bottom->addWidget(b);
         return b;
     };
     m_copyBtn = mkBtn(QStringLiteral("copy.png"), tr("复制选中命令"));
     m_addBtn = mkBtn(QStringLiteral("add.png"), tr("添加命令"));
-    m_delBtn = mkBtn(QStringLiteral("remove.png"), tr("删除选中命令"));
+    m_delBtn = mkBtn(QStringLiteral("remove.png"), tr("删除选中命令（Ctrl+Z 撤销）"));
     m_upBtn = mkBtn(QStringLiteral("up.png"), tr("上移"));
     m_downBtn = mkBtn(QStringLiteral("down.png"), tr("下移"));
     panelLayout->addLayout(bottom);
@@ -263,6 +267,7 @@ void CommandBar::setCollapsed(bool collapsed)
 
 void CommandBar::setCommands(const QList<CommandItem> &commands)
 {
+    m_undoStack.clear(); // 整表来自外部（切换 Profile 等），删除历史作废
     QStringList texts;
     texts.reserve(commands.size());
     for (const CommandItem &c : commands)
@@ -346,6 +351,7 @@ void CommandBar::rebuildRows(const QStringList &texts, int selectRow)
         row->sendBtn->setFixedSize(30, 26);
         row->sendBtn->setToolTip(tr("发送此命令"));
         row->sendBtn->setEnabled(!texts[i].isEmpty());
+        row->sendBtn->installEventFilter(this); // 持焦点时 Ctrl+Z 撤销删除
 
         row->gripLabel = new QLabel(w);
         row->gripLabel->setPixmap(themedIcon(QStringLiteral("grip.png")).pixmap(16, 16));
@@ -452,9 +458,31 @@ void CommandBar::onRemoveClicked()
         return;
     }
     QStringList texts = currentTexts();
+    // 记下被删内容与原位置，Ctrl+Z 恢复（后删的先回来）
+    m_undoStack.append(RemovedCmd{ cur, texts.value(cur) });
+    if (m_undoStack.size() > 100)
+        m_undoStack.removeFirst();
     texts.removeAt(cur);
     const int sel = qBound(0, cur, qMax(0, texts.size() - 1));
     rebuildRows(texts, texts.isEmpty() ? -1 : sel);
+    // 被删行的控件已随重建销毁，焦点会飘走；还给列表，紧接着按 Ctrl+Z 即可撤销
+    m_list->setFocus();
+    emit commandsChanged();
+}
+
+// Ctrl+Z 撤销最近一次删除：命令回到被删时的行号（其间又有增删则就近
+// 放置）。只在设置页展开时生效；焦点在命令文本框里时 Ctrl+Z 归
+// QLineEdit 自己的文字撤销（eventFilter 不拦 QLineEdit）。
+void CommandBar::undoRemove()
+{
+    if (m_undoStack.isEmpty() || !m_editPanel->isVisible())
+        return;
+    const RemovedCmd cmd = m_undoStack.takeLast();
+    QStringList texts = currentTexts();
+    const int row = qBound(0, cmd.row, texts.size());
+    texts.insert(row, cmd.text);
+    rebuildRows(texts, row);
+    m_list->setFocus();
     emit commandsChanged();
 }
 
@@ -502,8 +530,30 @@ void CommandBar::onRowsReordered()
 
 // ---------- 拖动手柄: 把按压事件转发给列表视口以启动 InternalMove 拖动 ----------
 
+// 焦点落在命令栏自身（点过空白处）时的 Ctrl+Z
+void CommandBar::keyPressEvent(QKeyEvent *event)
+{
+    if (event->key() == Qt::Key_Z && event->modifiers() == Qt::ControlModifier
+        && !event->isAutoRepeat()) {
+        undoRemove();
+        event->accept();
+        return;
+    }
+    QWidget::keyPressEvent(event);
+}
+
 bool CommandBar::eventFilter(QObject *watched, QEvent *event)
 {
+    // 设置页里的 Ctrl+Z：撤销最近一次删除。只拦非 QLineEdit 的控件——
+    // 命令文本框内的 Ctrl+Z 是编辑框自己的文字撤销，不能劫持。
+    if (event->type() == QEvent::KeyPress) {
+        auto *ke = static_cast<QKeyEvent *>(event);
+        if (ke->key() == Qt::Key_Z && ke->modifiers() == Qt::ControlModifier
+            && !ke->isAutoRepeat() && qobject_cast<QLineEdit *>(watched) == nullptr) {
+            undoRemove();
+            return true;
+        }
+    }
     if (event->type() == QEvent::MouseButtonPress) {
         auto *grip = qobject_cast<QLabel *>(watched);
         auto *me = static_cast<QMouseEvent *>(event);

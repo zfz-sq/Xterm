@@ -42,6 +42,7 @@ private slots:
     void shrinkKeepsEverythingReachable();
     void resizeStormLosesNothing();
     void screenCtlFlagTracksPainterBlocks();
+    void feedStatsSeparatePromptFromViEcho();
     void boldMapsIndexedToBright();
 };
 
@@ -165,6 +166,30 @@ void TermScreenTest::screenCtlFlagTracksPainterBlocks()
     // 整屏擦除（clear / vi 起手）也算画屏
     screen.feed("\x1b[H\x1b[2J");
     QVERIFY(screen.screenCtlSeen());
+}
+
+// feed 统计把「提示符」与「vi 插入模式打字+回车的回显」分开：前者的字
+// 写在换行之后，后者的字全在换行之前（换行后只有 autoindent 缩进空格，
+// 空格不计可见字符）。ScreenView 依此决定何时从全屏直通恢复本地行编辑。
+void TermScreenTest::feedStatsSeparatePromptFromViEcho()
+{
+    TermScreen screen;
+    screen.resize(100, 34);
+
+    // vi 插入模式：打字 + 回车的回显并成一块（串口缓冲合并）
+    screen.feed("abc\r\n    ");
+    QCOMPARE(screen.feedPrintable(), 3);
+    QCOMPARE(screen.feedNewlines(), 1);
+    QCOMPARE(screen.feedPrintableAfterLf(), 0);
+
+    // shell 提示符：换行之后跟着写出的字
+    screen.feed("\r\nroot@board:~# ");
+    QCOMPARE(screen.feedNewlines(), 1);
+    QCOMPARE(screen.feedPrintableAfterLf(), 13);
+
+    // 每次 feed 重新起算
+    screen.feed("\r\n");
+    QCOMPARE(screen.feedPrintableAfterLf(), 0);
 }
 
 // 粗体亮色（bold-is-bright）：SGR 1;31 与 SGR 91 渲染成同一个颜色。

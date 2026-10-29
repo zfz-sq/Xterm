@@ -4,9 +4,11 @@
 //   vi 走备用屏（?1049h/l），期间按键直通且本地不代画。
 // 全程离屏 + 模拟字节流，不需要真实设备。
 #include <QApplication>
+#include <QClipboard>
 #include <QImage>
 #include <QKeyEvent>
 #include <QLineEdit>
+#include <QMouseEvent>
 #include <QObject>
 #include <QPixmap>
 #include <QScrollBar>
@@ -57,6 +59,8 @@ private slots:
     void topSuspendsLineEditUntilPrompt();
     void viAltScreenPassthrough();
     void busyBoxViInsertTypingKeepsPassthrough();
+    void viInsertEnterKeepsPassthrough();
+    void ctrlCInterruptsFullScreenProgram();
     void pureTerminalModeSendsKeysRaw();
     void localRedrawDoesNotSelfTrigger();
     void wheelBecomesArrowsWhileRemotePaints();
@@ -193,6 +197,104 @@ void ScreenViewTest::busyBoxViInsertTypingKeepsPassthrough()
     cap.reset();
     typePlain(view, "ls");
     QVERIFY(cap.sent.isEmpty()); // 回到行编辑，键入不上路
+}
+
+// vi 插入模式「打字 + 回车」的回显并成一块到达（串口缓冲合并）：可见字符、
+// 换行、行中光标（autoindent 缩进）全齐，形状像极了提示符，但字全在换行
+// 之前、换行之后只有空格。少了 feedPrintableAfterLf 判据时，这一块会被
+// 当成提示符退回本地行编辑，之后的按键全被扣住不发：vi「无法输入、ESC
+// 无效、也无法退出」。
+void ScreenViewTest::viInsertEnterKeepsPassthrough()
+{
+    ScreenView view;
+    view.resize(100 * 15, 34 * 18);
+    view.setLocalEcho(true);
+    Capture cap;
+    QObject::connect(&view, &ScreenView::sendData,
+                     [&cap](const QByteArray &bytes) { cap.sent += bytes; });
+
+    feed(view, QByteArray("root@board:~# "));
+    typePlain(view, "vi");
+    key(view, Qt::Key_Return, QStringLiteral("\r"));
+    cap.reset();
+
+    // BusyBox vi 开场：只发光标定位 + 整屏擦除，没有备用屏 → 直通
+    feed(view, QByteArray("\x1b[H\x1b[2J"));
+    feed(view, QByteArray("int main(void)\r\n{\r\n"));
+
+    // 插入模式打 abc 再回车：按键逐个直通，vi 的回显一次性到达
+    cap.reset();
+    typePlain(view, "abc");
+    key(view, Qt::Key_Return, QStringLiteral("\r"));
+    QCOMPARE(cap.sent, QByteArray("abc\r")); // 没有被行编辑扣到回车为止
+    feed(view, QByteArray("abc\r\n    "));
+
+    // 仍是直通：方向键是 vi 的光标键（不是本地翻历史），普通键立刻上路
+    cap.reset();
+    key(view, Qt::Key_Up);
+    QCOMPARE(cap.sent, QByteArray("\x1b[A"));
+    typePlain(view, "d");
+    QCOMPARE(cap.sent, QByteArray("\x1b[Ad"));
+
+    // 真提示符（换行之后有字）仍要恢复行编辑
+    feed(view, QByteArray("\r\nroot@board:~# "));
+    cap.reset();
+    typePlain(view, "ls");
+    QVERIFY(cap.sent.isEmpty()); // 回到行编辑，键入不上路
+}
+
+// 全屏程序（备用屏 / 远端画屏）期间 Ctrl+C 是 ETX 中断，是 vi 卡住时最后
+// 的逃生门；即使画面上有选区残留（在 vi 里双击选过词，vi 不滚动、选区
+// 一直留着）也不能被「有选区时 Ctrl+C=复制」截留。行编辑场景的
+// 「有选区 Ctrl+C=复制」惯例保持不变。
+void ScreenViewTest::ctrlCInterruptsFullScreenProgram()
+{
+    ScreenView view;
+    view.resize(100 * 15, 34 * 18);
+    view.setLocalEcho(true);
+    Capture cap;
+    QObject::connect(&view, &ScreenView::sendData,
+                     [&cap](const QByteArray &bytes) { cap.sent += bytes; });
+
+    feed(view, QByteArray("root@board:~# "));
+    typePlain(view, "vi");
+    key(view, Qt::Key_Return, QStringLiteral("\r"));
+    cap.reset();
+
+    // BusyBox vi 画屏（远端画屏直通），第 0 行有词可选
+    feed(view, QByteArray("\x1b[H\x1b[2J"));
+    feed(view, QByteArray("int main(void)\r\n{\r\n"));
+
+    // 双击第 0 行选词 → 选区成立（剪贴板为证），此时 Ctrl+C 仍必须发出 ETX
+    QClipboard *clip = QGuiApplication::clipboard();
+    clip->clear();
+    const QPointF pos(30, 12);
+    QMouseEvent press(QEvent::MouseButtonPress, pos, pos, Qt::LeftButton,
+                      Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent dblClick(QEvent::MouseButtonDblClick, pos, pos, Qt::LeftButton,
+                         Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&view, &press);
+    QApplication::sendEvent(&view, &dblClick);
+    QVERIFY(!clip->text().isEmpty()); // 双击选词成功，选区挂在画面上
+    key(view, Qt::Key_C, QStringLiteral("c"), Qt::ControlModifier);
+    QCOMPARE(cap.sent, QByteArray("\x03"));
+
+    // 备用屏（vim 式）同样直通
+    feed(view, QByteArray("\x1b[?1049h\x1b[H\x1b[2J"));
+    cap.reset();
+    key(view, Qt::Key_C, QStringLiteral("c"), Qt::ControlModifier);
+    QCOMPARE(cap.sent, QByteArray("\x03"));
+    feed(view, QByteArray("\x1b[?1049l"));
+
+    // 对照：回到提示符（行编辑）后，有选区时 Ctrl+C 仍是复制，不发给设备
+    feed(view, QByteArray("\r\nroot@board:~# "));
+    clip->clear();
+    QApplication::sendEvent(&view, &press);
+    QApplication::sendEvent(&view, &dblClick);
+    QVERIFY(!clip->text().isEmpty());
+    cap.reset();
+    key(view, Qt::Key_C, QStringLiteral("c"), Qt::ControlModifier);
+    QVERIFY(cap.sent.isEmpty()); // 只复制，不发字节
 }
 
 // 终端档（串口设置里的开关，落到视图就是 setLocalEcho(false)）：

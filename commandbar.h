@@ -9,6 +9,7 @@
 #include "commandstore.h"
 
 class QLabel;
+class QKeyEvent;
 class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
@@ -55,6 +56,7 @@ signals:
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
 
 private:
     struct Row
@@ -67,6 +69,13 @@ private:
         QLabel *gripLabel = nullptr;
     };
 
+    // 被删命令的恢复信息:原行号 + 命令文本(Ctrl+Z 撤销删除用)
+    struct RemovedCmd
+    {
+        int row = 0;
+        QString text;
+    };
+
     void buildUi();
     void rebuildRows(const QStringList &texts, int selectRow);
     void syncCommandButtons();
@@ -76,6 +85,7 @@ private:
 
     void onAddClicked();
     void onRemoveClicked();
+    void undoRemove(); // Ctrl+Z: 恢复最近一次删除的命令(设置页展开时)
     void onCopyClicked();
     void onMoveUpClicked();
     void onMoveDownClicked();
@@ -105,6 +115,7 @@ private:
     bool m_sendEnabled = false;
     bool m_rebuilding = false;
     bool m_collapsed = false; // 整栏是否收起成侧边按钮组（供持久化，isVisible 在窗口未显示时不可靠）
+    QList<RemovedCmd> m_undoStack; // 删除历史（后删的先恢复）；setCommands 整表重载时清空
 };
 
 #endif // COMMANDBAR_H

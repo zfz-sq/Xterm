@@ -36,6 +36,14 @@ bool wordChar(char32_t cp)
            || ch == QLatin1Char('.') || ch == QLatin1Char('/') || ch == QLatin1Char(':');
 }
 
+// 默认字体族 = 系统等宽字体，与「设置 → 字体」功能加入前完全一致。
+// 这里刻意不做任何“更好看”的替换：默认值必须稳定，选字体是用户自己的事，
+// 换了默认族会让老用户一升级就发现字形变了。
+QString systemFixedFamily()
+{
+    return QFontDatabase::systemFont(QFontDatabase::FixedFont).family();
+}
+
 } // namespace
 
 ScreenView::ScreenView(QWidget *parent)
@@ -51,6 +59,7 @@ ScreenView::ScreenView(QWidget *parent)
     m_font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     const int systemPt = m_font.pointSize();
     m_font.setPointSize(qMax(9, systemPt > 0 ? systemPt : 9) + 2);
+    m_familyId = m_font.family();
     m_font.setStyleHint(QFont::Monospace);
     m_font.setFixedPitch(true);
     m_font.setKerning(false);
@@ -309,6 +318,36 @@ void ScreenView::setFontSize(int pt)
     updateGrid();
     update();
     emit fontSizeChanged(next);
+}
+
+void ScreenView::setFontFamily(const QString &family)
+{
+    // 空串 / 本机没装的族一律回落到系统等宽，避免静默变成比例字体
+    QString next = family.trimmed();
+    if (next.isEmpty()
+        || !QFontDatabase::families().contains(next, Qt::CaseInsensitive)) {
+        next = systemFixedFamily();
+    }
+    if (next == m_familyId)
+        return;
+    m_familyId = next;
+    m_font.setFamily(next);
+    m_font.setStyleHint(QFont::Monospace);
+    m_font.setFixedPitch(true);
+    m_font.setKerning(false);
+    m_boldFont = m_font;
+    m_boldFont.setBold(true);
+    setFont(m_font);
+    // 换族会改字宽：格子尺寸、列数都要重算，并重新告知 pty
+    recalcMetrics();
+    updateGrid();
+    update();
+    emit fontFamilyChanged(next);
+}
+
+QString ScreenView::defaultFontFamily()
+{
+    return systemFixedFamily();
 }
 
 void ScreenView::setKeywords(const QList<KeywordRule> &rules)
@@ -716,11 +755,14 @@ bool ScreenView::localLineMode() const
 // 行编辑会把它们的按键全部扣到回车为止，vi 备用屏之外的一切也同理。
 // 所以远端一旦出现光标定位/整屏擦除，就判定「屏幕归远端管」：
 // 丢弃未发出的编辑草稿，按键、回显、粘贴全部直通。
-// 退出判定要保守，三样缺一不可：整块无画屏序列、写了可见字符且换过行、
-// 光标停在行中（提示符形状，如 "root@board:~# "）。必须见到换行是关键——
-// shell 提示符一定出现在新行上，而 vi 插入模式的逐字回显（纯文本、无控制
-// 序列、行中光标）形状几乎相同，只差没有换行；少这条判据会让 vi 里打一个
-// 字就退出直通，方向键被劫持成本地翻历史。误判的代价只是暂时像普通终端
+// 退出判定要保守，三样缺一不可：整块无画屏序列、换行之后仍写了可见字符、
+// 光标停在行中（提示符形状，如 "root@board:~# "）。两条判据各有分工：
+// 必须见到换行——shell 提示符一定出现在新行上，而 vi 插入模式的逐字回显
+// （纯文本、无控制序列、行中光标）形状几乎相同，只差没有换行；而可见字符
+// 必须写在换行之后——vi 插入模式里打了字再按回车，回显形状同样是
+// 「可见字符 + 换行」，但字全在换行前、换行后光标停在行首什么都没写。
+// 少了后一条，vi 里一按回车就掉回本地行编辑：按键被扣住不发、ESC 也像
+// 失效，vi 表现为「无法输入、无法退出」。误判的代价只是暂时像普通终端
 // 一样靠设备回显，不会丢键。
 void ScreenView::applyRemoteCtl()
 {
@@ -729,7 +771,7 @@ void ScreenView::applyRemoteCtl()
             enterRemoteRaw();
         return;
     }
-    if (m_remoteRaw && !m_screen.altScreen() && m_screen.feedPrintable() > 0
+    if (m_remoteRaw && !m_screen.altScreen() && m_screen.feedPrintableAfterLf() > 0
         && m_screen.feedNewlines() > 0 && m_screen.cursorCol() > 0) {
         exitRemoteRaw();
     }
@@ -1078,14 +1120,20 @@ void ScreenView::keyPressEvent(QKeyEvent *event)
     }
 
     if (ctrl && !alt) {
+        // 全屏程序（备用屏 / 远端画屏）期间 Ctrl+字母是程序自己的按键：
+        // vi 里 Ctrl+C 是卡住时唯一可靠的强退手段（ETX 中断），Ctrl+V 是
+        // 可视块模式，不能被「有选区时 Ctrl+C=复制」「Ctrl+V=粘贴」截留
+        // ——vi 画面上双击选中过词后选区一直残留，否则连退出都做不到。
+        // 粘贴仍有右键 / Shift+Insert / Ctrl+Shift+V 三条路，不受影响。
+        const bool fullScreen = m_screen.altScreen() || m_remoteRaw;
         const bool selected = m_anchor.valid && m_focus.valid
                               && (m_anchor.abs != m_focus.abs || m_anchor.col != m_focus.col);
-        if (key == Qt::Key_C && selected) {
+        if (key == Qt::Key_C && selected && !fullScreen) {
             copySelection();
             event->accept();
             return;
         }
-        if (key == Qt::Key_V || key == Qt::Key_Y) {
+        if ((key == Qt::Key_V || key == Qt::Key_Y) && !fullScreen) {
             pasteClipboard();
             event->accept();
             return;

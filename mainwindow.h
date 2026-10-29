@@ -75,6 +75,7 @@ private:
     void onFilesClicked();          // 打开 SFTP 文件管理器（SSH 会话的独立第二连接）
     void onMcpClicked();            // 弹出 MCP 提示词
     void openKeywordSettings();     // 设置菜单: 关键词高亮编辑（表格，改即预览）
+    void openFontSettings();        // 设置菜单: 终端字体族 + 字号（改即预览，两页同步）
     void applyKeywords(const QList<KeywordRule> &rules); // 规则落到存储并同步两个终端页
     void onHighlightRequested(const QString &word); // 终端选中词右键「高亮此词」
     void setMcpActive(bool on);     // MCP 在线角标: AI 正在访问本窗口时点亮
@@ -87,6 +88,8 @@ private:
 
     void sendRaw(const QByteArray &bytes);       // 唯一发送汇聚点 → 当前链路
     void sendLine(const QString &line);          // 预设命令按钮用
+    void toggleKmsgMute();                       // 状态栏「内核日志静音」开关
+    void updateKmsgMuteUi();                     // 开关文字/颜色/提示随状态刷新
 
     Transport *activeTransport() const;
     void focusActiveTerminal();
@@ -118,6 +121,8 @@ private:
     ScreenView *m_sshView = nullptr;
     CompletionEngine *m_completion = nullptr;
     QLabel *m_statusLabel = nullptr;
+    QToolButton *m_kmsgMuteBtn = nullptr; // 底部状态栏「内核日志静音」开关（仅串口页显示）
+    bool m_kmsgMuted = false;             // 客户端记住的期望状态；连接建立/断开时重置
     QTimer *m_saveTimer = nullptr; // 配置保存防抖（单发，见 scheduleProfileSave）
     class FileBrowserDialog *m_fileBrowser = nullptr; // SFTP 双栏窗口，挂在共享 SshSession 上
     AgentBridge *m_agent = nullptr;

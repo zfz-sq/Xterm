@@ -30,6 +30,11 @@ Profile CommandStore::defaultProfile()
         CommandItem(QStringLiteral("ls -l")),
         CommandItem(QStringLiteral("uname -a")),
         CommandItem(QStringLiteral("reboot")),
+        // 内核日志刷屏（WiFi/蓝牙驱动 printk）会异步插进 vi 的画面字节流，
+        // 终端侧无法分离，只能降低控制台日志级别挡住；dmesg 仍可随时查看。
+        // 1 = 只允许 KERN_EMERG 上控制台；7 = 恢复默认（全部输出）。
+        CommandItem(QStringLiteral("echo 1 > /proc/sys/kernel/printk")),
+        CommandItem(QStringLiteral("echo 7 > /proc/sys/kernel/printk")),
     };
     return p;
 }
@@ -193,6 +198,7 @@ bool CommandStore::load()
     m_mode = (mode == QStringLiteral("ssh")) ? QStringLiteral("ssh")
                                              : QStringLiteral("serial");
     m_fontSize = qBound(0, root.value(QStringLiteral("fontSize")).toInt(0), 72);
+    m_terminalFont = root.value(QStringLiteral("terminalFont")).toString();
     m_commandBarCollapsed = root.value(QStringLiteral("commandBarCollapsed")).toBool(false);
 
     m_keywords.clear();
@@ -264,6 +270,7 @@ bool CommandStore::save() const
         { QStringLiteral("theme"), m_theme },
         { QStringLiteral("mode"), m_mode },
         { QStringLiteral("fontSize"), m_fontSize },
+        { QStringLiteral("terminalFont"), m_terminalFont },
         { QStringLiteral("commandBarCollapsed"), m_commandBarCollapsed },
         { QStringLiteral("keywords"), kws },
         { QStringLiteral("profiles"), arr },

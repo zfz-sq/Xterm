@@ -53,6 +53,13 @@ public:
     // 字号（pt）。设置成功（有变化）时发 fontSizeChanged；全局设置由主窗口联动两页
     int fontSize() const { return m_font.pointSize(); }
     void setFontSize(int pt);
+    // 字体族。空串 = 走内置默认（见 defaultFontFamily）。与字号一样是全局设置，
+    // 由主窗口联动两页；改变时发 fontFamilyChanged（两页字体因此始终一致）
+    QString fontFamily() const { return m_familyId; }
+    void setFontFamily(const QString &family);
+    // 默认字体族 = 系统等宽字体（与引入字体设置前的行为一致）。
+    // 「设置 → 字体」的“恢复默认字体”返回它
+    static QString defaultFontFamily();
     // 关键词高亮：命中的文本按规则颜色绘制（不区分大小写，含滚动历史），
     // 选中 / Ctrl+F 查找高亮优先级更高。空列表即关闭。
     void setKeywords(const QList<KeywordRule> &rules);
@@ -64,6 +71,8 @@ signals:
     void terminalSizeChanged(int cols, int rows);
     void shellTitleChanged(const QString &title);
     void fontSizeChanged(int pt);
+    // 字体族变化（主窗口据此同步另一页并落盘）
+    void fontFamilyChanged(const QString &family);
     // 选中词右键「高亮此词」：把选中文本交给主窗口建关键词高亮规则
     void highlightRequested(const QString &word);
 
@@ -162,6 +171,7 @@ private:
     qint64 m_lastDoubleMs = 0;
     QFont m_font;
     QFont m_boldFont;
+    QString m_familyId; // 当前字体族（= m_font.family() 记录值，用于判断是否真的变了）
 
     int m_cellW = 8;
     int m_cellH = 16;

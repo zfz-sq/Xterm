@@ -16,6 +16,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFormLayout>
+#include <QFontComboBox>
 #include <QFontMetrics>
 #include <QGuiApplication>
 #include <QGridLayout>
@@ -35,6 +36,7 @@
 #include <QRegularExpression>
 #include <QSerialPortInfo>
 #include <QShortcut>
+#include <QSpinBox>
 #include <QStatusBar>
 #include <QStyle>
 #include <QTableWidget>
@@ -189,6 +191,15 @@ MainWindow::MainWindow(QWidget *parent)
     m_statusLabel = new QLabel(tr("未连接"), this);
     ui->statusbar->addPermanentWidget(m_statusLabel, 1);
 
+    // 「内核日志静音」开关：常驻状态栏最右（连接状态旁），仅串口页显示。
+    // 设备侧 printk 会异步直写串口控制台，插进 vi/top 画面的字节流里，
+    // 终端层无法分离——唯一根治是降低 console_loglevel，这里做成一键开关。
+    m_kmsgMuteBtn = new QToolButton(this);
+    m_kmsgMuteBtn->setAutoRaise(true);
+    connect(m_kmsgMuteBtn, &QToolButton::clicked, this, &MainWindow::toggleKmsgMute);
+    ui->statusbar->addPermanentWidget(m_kmsgMuteBtn, 0);
+    updateKmsgMuteUi();
+
     connectSignals();
 
     m_store->load();
@@ -199,6 +210,11 @@ MainWindow::MainWindow(QWidget *parent)
     if (const int savedPt = m_store->fontSize(); savedPt > 0) {
         m_serialView->setFontSize(savedPt);
         m_sshView->setFontSize(savedPt);
+    }
+    // 恢复上次保存的终端字体族（空 = 用内置默认，构造函数已设好）
+    if (const QString savedFont = m_store->terminalFont(); !savedFont.isEmpty()) {
+        m_serialView->setFontFamily(savedFont);
+        m_sshView->setFontFamily(savedFont);
     }
     // 恢复关键词高亮规则（全局，两页一致）
     applyKeywords(m_store->keywords());
@@ -251,6 +267,7 @@ void MainWindow::setupTitleBar()
         applyTheme();
     });
     setMenu->addAction(tr("关键词高亮"), this, [this] { openKeywordSettings(); });
+    setMenu->addAction(tr("字体"), this, [this] { openFontSettings(); });
     setMenu->addSeparator();
     auto *quitAction = setMenu->addAction(tr("退出"), this, &MainWindow::close);
     quitAction->setShortcut(QKeySequence::Quit);
@@ -653,6 +670,18 @@ void MainWindow::connectSignals()
         m_store->setFontSize(pt);
         m_store->save();
     });
+    // 字体族同样两页联动并落盘（setFontFamily 族相同则不发信号，不会回环）。
+    // 选回默认族时存空串：配置文件里保留“未设置”语义，以后系统等宽字体变了也跟着走
+    connect(m_serialView, &ScreenView::fontFamilyChanged, this, [this](const QString &family) {
+        m_sshView->setFontFamily(family);
+        m_store->setTerminalFont(family == ScreenView::defaultFontFamily() ? QString() : family);
+        m_store->save();
+    });
+    connect(m_sshView, &ScreenView::fontFamilyChanged, this, [this](const QString &family) {
+        m_serialView->setFontFamily(family);
+        m_store->setTerminalFont(family == ScreenView::defaultFontFamily() ? QString() : family);
+        m_store->save();
+    });
 
     // 模式切换 / 高级参数收展（主题切换已移到自定义标题栏）
     connect(m_mcpBtn, &QToolButton::clicked, this, &MainWindow::onMcpClicked);
@@ -703,6 +732,8 @@ void MainWindow::connectSignals()
     // ---- 串口链路 ----
     connect(m_serial, &SerialSession::opened, this, [this] {
         m_serialView->appendSystemMessage(tr("── 已连接 %1 ──").arg(connectionSummary()));
+        m_kmsgMuted = false; // printk 回到设备默认级别，静音状态重新计
+        updateKmsgMuteUi();
         updateConnectionUi();
         updatePersistentStatus();
         if (m_mode == Mode::Serial)
@@ -710,6 +741,8 @@ void MainWindow::connectSignals()
     });
     connect(m_serial, &SerialSession::closed, this, [this] {
         m_serialView->appendSystemMessage(tr("── 连接已断开 ──"));
+        m_kmsgMuted = false; // 断开后设备侧状态未知，回到「正常」
+        updateKmsgMuteUi();
         updateConnectionUi();
         updatePersistentStatus();
     });
@@ -1001,6 +1034,9 @@ void MainWindow::updateModeUi()
     // SFTP 走 SSH 通道：串口页不显示文件管理按钮（连同其左侧分隔线）
     ui->vline1->setVisible(!serial);
     ui->filesBtn->setVisible(!serial);
+    // 内核日志静音开关只对串口控制台有意义（printk 刷不进 SSH 的 pty）
+    if (m_kmsgMuteBtn)
+        m_kmsgMuteBtn->setVisible(serial);
     if (!serial && !m_shellTitle.isEmpty())
         setWindowTitle(tr("Xterm — %1").arg(m_shellTitle));
     else
@@ -1619,6 +1655,115 @@ void MainWindow::openKeywordSettings()
         applyKeywords(original); // 取消：还原打开前的规则
 }
 
+void MainWindow::openFontSettings()
+{
+    FramelessDialog dlg(this);
+    dlg.setDialogTitle(tr("字体"));
+    dlg.resize(480, 400);
+
+    // 取消要回滚：记下打开前的字体族与字号
+    const QString prevFamily = m_serialView->fontFamily();
+    const int prevSize = m_serialView->fontSize();
+
+    auto *content = new QWidget;
+    auto *lay = new QVBoxLayout(content);
+    lay->setContentsMargins(18, 14, 18, 14);
+    lay->setSpacing(12);
+
+    // 预览：与终端同底色，改字体/字号立刻看到真实效果
+    const bool dark = m_store->isDarkTheme();
+    auto *preview = new QLabel;
+    preview->setMinimumHeight(100);
+    preview->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    preview->setText(QStringLiteral("root@HPCS3900:~# uname -a\n"
+                                    "Linux HPCS3900 5.10.0 aarch64 GNU/Linux\n"
+                                    "root@HPCS3900:~# free -m"));
+    preview->setStyleSheet(QStringLiteral(
+                               "QLabel { background-color: %1; color: %2; border: 1px solid %3;"
+                               " border-radius: 6px; padding: 10px 12px; }")
+                               .arg(dark ? QStringLiteral("#1E1E1E") : QStringLiteral("#FFFFFF"),
+                                    dark ? QStringLiteral("#D4D4D4") : QStringLiteral("#1F1F1F"),
+                                    dark ? QStringLiteral("#3B3B40") : QStringLiteral("#C9C9CD")));
+
+    // 只列等宽字体：比例字体在格子里画终端会错位
+    auto *fontCombo = new QFontComboBox;
+    fontCombo->setFontFilters(QFontComboBox::MonospacedFonts);
+    fontCombo->setCurrentFont(QFont(m_serialView->fontFamily()));
+    fontCombo->setMinimumWidth(250);
+
+    auto *sizeSpin = new QSpinBox;
+    sizeSpin->setRange(8, 36);
+    sizeSpin->setSuffix(tr(" pt"));
+    sizeSpin->setValue(m_serialView->fontSize());
+    sizeSpin->setFixedWidth(96);
+
+    auto *form = new QGridLayout;
+    form->setHorizontalSpacing(14);
+    form->setVerticalSpacing(10);
+    form->addWidget(new QLabel(tr("字体")), 0, 0);
+    form->addWidget(fontCombo, 0, 1, Qt::AlignLeft);
+    form->addWidget(new QLabel(tr("字号")), 1, 0);
+    form->addWidget(sizeSpin, 1, 1, Qt::AlignLeft);
+
+    // 预览跟随：改动先落到两个终端页（信令再同步存储），预览单独设字
+    auto applyLive = [&](const QString &family, int pt) {
+        m_serialView->setFontFamily(family);
+        m_sshView->setFontFamily(family);
+        m_serialView->setFontSize(pt);
+        m_sshView->setFontSize(pt);
+        QFont f(m_serialView->fontFamily(), pt);
+        f.setStyleHint(QFont::Monospace);
+        f.setFixedPitch(true);
+        f.setKerning(false);
+        preview->setFont(f);
+    };
+    connect(fontCombo, &QFontComboBox::currentFontChanged, this,
+            [&](const QFont &f) { applyLive(f.family(), sizeSpin->value()); });
+    connect(sizeSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [&](int pt) { applyLive(fontCombo->currentFont().family(), pt); });
+    applyLive(m_serialView->fontFamily(), m_serialView->fontSize());
+
+    auto *resetBtn = new QPushButton(tr("恢复默认字体"));
+    auto *okBtn = new QPushButton(tr("确定"));
+    okBtn->setDefault(true);
+    auto *cancelBtn = new QPushButton(tr("取消"));
+    connect(resetBtn, &QPushButton::clicked, this, [&] {
+        fontCombo->setCurrentFont(QFont(ScreenView::defaultFontFamily()));
+    });
+    connect(okBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
+    connect(cancelBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
+
+    auto *hint = new QLabel(tr("只列出本机已装的等宽字体；字号也可以直接在终端里 Ctrl+滚轮 调整。"));
+    hint->setWordWrap(true);
+
+    auto *btnRow = new QHBoxLayout;
+    btnRow->addWidget(resetBtn);
+    btnRow->addStretch(1);
+    btnRow->addWidget(okBtn);
+    btnRow->addWidget(cancelBtn);
+
+    lay->addWidget(preview);
+    lay->addLayout(form);
+    lay->addWidget(hint);
+    lay->addStretch(1);
+    lay->addLayout(btnRow);
+    dlg.setContentLayout(lay);
+
+    if (dlg.exec() == QDialog::Accepted) {
+        // 显式写一次：用户没改动时也保证存储与当前显示一致。
+        // 等于默认族时存空串，保留“未设置”语义
+        const QString family = m_serialView->fontFamily();
+        m_store->setTerminalFont(family == ScreenView::defaultFontFamily() ? QString() : family);
+        m_store->setFontSize(m_serialView->fontSize());
+        m_store->save();
+    } else {
+        m_serialView->setFontFamily(prevFamily);
+        m_sshView->setFontFamily(prevFamily);
+        m_serialView->setFontSize(prevSize);
+        m_sshView->setFontSize(prevSize);
+    }
+}
+
 // ---------------------------------------------------------------- 发送
 
 void MainWindow::sendRaw(const QByteArray &bytes)
@@ -1654,6 +1799,47 @@ void MainWindow::sendLine(const QString &line)
     if (view)
         view->rememberSentLine(line);
     sendRaw(line.toUtf8() + QByteArrayLiteral("\n"));
+}
+
+// ------------------------------------------------------------ 内核日志静音开关
+//
+// 设备侧 printk（WiFi/蓝牙驱动刷屏）会异步直写串口控制台，插进 vi/top
+// 画面字节流的任意位置，任何终端仿真都无法分离——唯一根治是降低
+// console_loglevel。开关做的事只是发送：
+//   静音: echo 1 > /proc/sys/kernel/printk（仅 KERN_EMERG 上串口）
+//   恢复: echo 7 > /proc/sys/kernel/printk
+// 客户端记住的是「期望状态」；设备重启/重连后 printk 回默认值，状态随之
+// 重置（见 opened/closed），避免显示与实际脱节。
+void MainWindow::toggleKmsgMute()
+{
+    if (m_serial->state() != Transport::Connected) {
+        ui->statusbar->showMessage(tr("串口未连接，无法切换内核日志状态"), 5000);
+        return;
+    }
+    m_kmsgMuted = !m_kmsgMuted;
+    sendLine(QStringLiteral("echo %1 > /proc/sys/kernel/printk")
+                 .arg(m_kmsgMuted ? 1 : 7));
+    updateKmsgMuteUi();
+    m_serialView->appendSystemMessage(m_kmsgMuted
+        ? tr("── 内核日志已静音（仅 EMERG 级上串口，dmesg 仍可查看）──")
+        : tr("── 内核日志已恢复输出 ──"));
+}
+
+void MainWindow::updateKmsgMuteUi()
+{
+    if (!m_kmsgMuteBtn)
+        return;
+    m_kmsgMuteBtn->setText(m_kmsgMuted ? tr("内核日志：静音") : tr("内核日志：正常"));
+    m_kmsgMuteBtn->setToolTip(m_kmsgMuted
+        ? tr("内核日志已静音（echo 1 > /proc/sys/kernel/printk）。\n"
+             "点击恢复输出（echo 7）。设备重启后需重新静音。")
+        : tr("静音内核日志刷屏（echo 1 > /proc/sys/kernel/printk）：\n"
+             "WiFi/蓝牙驱动的 printk 会插进 vi/top 的画面，静音后仅紧急级\n"
+             "日志上串口，dmesg 随时仍可查看。再次点击恢复（echo 7）。"));
+    // 静音是「非默认」状态，用琥珀色提示（与「连接中」同色，两主题都读得清）
+    m_kmsgMuteBtn->setStyleSheet(m_kmsgMuted
+        ? QStringLiteral("color: #D89B2C; font-weight: 600;")
+        : QString());
 }
 
 // ---------------------------------------------------------------- 配置

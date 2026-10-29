@@ -80,6 +80,11 @@ public:
     int fontSize() const { return m_fontSize; }
     void setFontSize(int pt) { m_fontSize = pt; }
 
+    // 终端字体族（空 = 未设置，用内置默认：Cascadia Mono → Consolas → 系统等宽）。
+    // 全局设置，两页共用；只在「设置 → 字体」里改，字号仍可由 Ctrl+滚轮调
+    QString terminalFont() const { return m_terminalFont; }
+    void setTerminalFont(const QString &family) { m_terminalFont = family; }
+
     // 命令栏收起状态（true = 整栏收起，只剩右侧竖排按钮组）
     bool commandBarCollapsed() const { return m_commandBarCollapsed; }
     void setCommandBarCollapsed(bool collapsed) { m_commandBarCollapsed = collapsed; }
@@ -108,6 +113,7 @@ private:
     QString m_theme = QStringLiteral("dark");
     QString m_mode = QStringLiteral("serial");
     int m_fontSize = 0;
+    QString m_terminalFont;
     bool m_commandBarCollapsed = false;
     QList<KeywordRule> m_keywords;
 };

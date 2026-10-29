@@ -299,6 +299,7 @@ int TermScreen::feed(const QByteArray &data)
     m_clearRequested = false;
     m_feedScrolled = 0;
     m_feedPrintable = 0;
+    m_feedPrintableAfterLf = 0;
     m_feedNewlines = 0;
     m_feedCtl = 0;
     m_rowsErased = 0;
@@ -1096,8 +1097,10 @@ void TermScreen::putCp(char32_t cp)
     int width = glyphCols(cp);
     if (width <= 0)
         return;
-    if (cp != U' ' && cp != U'\u00A0')
+    if (cp != U' ' && cp != U'\u00A0') {
         ++m_feedPrintable;
+        ++m_feedPrintableAfterLf;
+    }
 
     if (m_wrapPending || m_col >= m_cols) {
         if (m_autowrap) {
@@ -1168,6 +1171,7 @@ void TermScreen::putControl(unsigned char b)
 void TermScreen::lineFeed()
 {
     m_wrapPending = false;
+    m_feedPrintableAfterLf = 0; // 换行后重新起算：提示符的字写在换行之后
     if (m_row == m_scrollBottom)
         scrollUp(1);
     else if (m_row < m_rows - 1)

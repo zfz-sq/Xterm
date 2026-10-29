@@ -76,6 +76,10 @@ public:
     // 本块处理的换行数（feed() 清零）。提示符一定出现在新行上，vi 插入模式
     // 的逐字回显永远不带换行——恢复行编辑前必须见到换行。
     int feedNewlines() const { return m_feedNewlines; }
+    // 本块最后一次换行之后写入的可见字符数（feed() 清零）。提示符的字一定
+    // 写在换行之后；vi 插入模式「打字+回车」的回显字全在换行之前——用它
+    // 把两者分开，防止 vi 里一按回车就掉回本地行编辑（按键被扣、vi 卡死）。
+    int feedPrintableAfterLf() const { return m_feedPrintableAfterLf; }
     bool takeBell();
     void setTitleHandler(std::function<void(const QString &)> title);
     // 清掉可见内容和滚动历史，光标回到左上角。返回 -1，视图据此跳到空白屏底。
@@ -170,6 +174,7 @@ private:
     int m_feedScrolled = 0;        // 本块推进滚动历史的行数
     int m_feedPrintable = 0;       // 本块写入的非空格字符数
     int m_feedNewlines = 0;        // 本块处理的换行数（提示符行的判据）
+    int m_feedPrintableAfterLf = 0; // 本块最后一次换行后写入的非空格字符数
     int m_rowsErased = 0;          // 本块被整行擦掉的屏幕行数
     int m_feedCtl = 0;             // 本块的光标定位/整屏擦除次数（全屏程序标志）
     quint8 m_rowErased[200] = {};
