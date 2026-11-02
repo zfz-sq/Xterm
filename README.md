@@ -95,7 +95,9 @@ powershell -File scripts/package.ps1 -BuildDir build
 ├── screenview.*          终端视图（自绘、查找、高亮）
 ├── commandbar.*          可收起命令栏
 ├── commandstore.*        配置持久化（profile / 关键词 / 命令）
-├── filebrowserdialog.*   SFTP 双栏文件管理
+├── filebrowserdialog.*   SFTP 双栏文件管理（UI 编排）
+├── filebrowsermodel.*    文件管理数据层（条目/命令/持久化/上传收集）
+├── transferqueue.*       传输队列网关（入队/编辑回传/批次跟踪）
 ├── transferdialog.*      传输队列窗口
 ├── agentbridge.*         MCP 桥（命名管道 + 令牌）
 ├── resources/            图标 / QSS 主题 / qrc
