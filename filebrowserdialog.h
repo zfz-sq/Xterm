@@ -1,39 +1,28 @@
 #ifndef FILEBROWSERDIALOG_H
 #define FILEBROWSERDIALOG_H
 
-#include <QByteArray>
 #include <QFileIconProvider>
-#include <QHash>
-#include <QSet>
 
+#include "filebrowsermodel.h"
 #include "framelessdialog.h"
 #include "sftpclient.h"
 #include "sshtarget.h"
 
 class PathBar;
 class QFileSystemModel;
-class QFileSystemWatcher;
 class QLabel;
 class QMenu;
 class QModelIndex;
 class QSortFilterProxyModel;
 class QProcess;
 class QProgressBar;
-class QTimer;
 class QToolButton;
 class QTreeWidget;
 class QTreeWidgetItem;
 class QTreeView;
 class SshSession;
-class TransferDialog;
-
-// 文件自定义命令。! 当前文件，!& 全部选中，!/ 当前目录。
-struct FileCommand
-{
-    QString name;
-    QString command;
-    bool remote = true;
-};
+class TransferQueue;
+struct PendingFetch;
 
 /*
  * FileBrowserDialog: SFTP 双栏文件管理器（WinSCP 风格）。
@@ -43,6 +32,12 @@ struct FileCommand
  * AppConfigLocation/filebrowser.json。主机 IP 变化后仍回到该目录。
  * 直接复用终端的 SshSession（同一条 SSH 连接上的共享 SFTP 通道）：
  * 会话断开时本窗口一并关闭；关闭窗口只取消文件请求，shell 不受影响。
+ *
+ * 组成（见各文件头注释）：
+ *  - filebrowsermodel.*   数据与模型工具（条目/命令结构、持久化、上传任务收集）
+ *  - transferqueue.*      传输队列网关（入队、编辑回传监视、文件夹批次跟踪）
+ *  - filebrowserwidgets.* 支撑控件（路径栏、chmod/属性/命令管理对话框）
+ *  - 本文件               UI 编排（工具栏、菜单、导航与操作分发）
  */
 class FileBrowserDialog : public FramelessDialog
 {
@@ -56,8 +51,6 @@ private slots:
     void onListed(const QString &path, const QVector<SftpEntry> &entries);
     void onListedFailed(const QString &path, const QString &error);
     void onOpFinished(const QString &op, const QString &arg, bool ok, const QString &error);
-    void onTransferFinished(int id, bool ok, const QString &error);
-    void onQueueJobFinished(int id); // 文件夹上传批次全部收尾时刷一次远程列表
     void onTransferProgressInfo(const QString &text, int percent, bool active); // 底栏进度
 
     void showTransferQueue();
@@ -70,29 +63,14 @@ private slots:
     void updateActionStates();
 
 private:
-    struct RemoteItem
-    {
-        QString name;
-        bool isDir = false;
-        bool isLink = false;
-        quint32 permissions = 0;
-        quint64 size = 0;
-        qint64 mtime = 0;
-    };
-    struct PendingFetch
-    {
-        bool edit = false;       // 下载后打开编辑器并监视回传
-        bool uploadBack = false; // 这次传输是编辑回传
-        QString local;
-        QString remote;
-        QByteArray previousDigest;
-    };
+    // TransferQueue 的 fetchFinished：下载完成后的打开/编辑登记（弹窗、openUrl）
+    void onFetchFinished(const PendingFetch &job, bool ok, const QString &error);
 
     QToolButton *makePaneButton(const QString &iconName, const QString &text);
     QToolButton *makeNewButton(bool remote);
 
-    void loadBrowserState();
-    void saveBrowserState() const;
+    void restoreBrowserState();
+    void persistBrowserState() const;
     QString sessionKey() const;
 
     void onLocalContextMenu(const QPoint &pos);
@@ -125,10 +103,6 @@ private:
     void copyLocalNames(bool fullPath);
     void copyRemoteNames(bool fullPath, bool asUrl);
 
-    void onEditFileChanged(const QString &path);
-    void commitEditUpload();
-    void enqueueFetch(bool edit, const QString &remotePath, qint64 size);
-    QString cacheFile(bool edit, const QString &remotePath) const;
     void beginCommandBatch();
     void queueRemoteCommand(const QString &command);
     void endCommandBatch();
@@ -148,16 +122,13 @@ private:
     void setRemotePath(const QString &path);
     void syncLocalBar();
     void syncRemoteBar();
-    QString remoteJoin(const QString &base, const QString &name) const;
-    static QString localJoin(const QString &base, const QString &name);
-    static QString permString(quint32 perm, bool isDir, bool isLink);
     QStringList selectedLocalPaths() const;
     QVector<RemoteItem> selectedRemote() const;
 
     SshSession *m_session = nullptr;   // 共享的终端会话，不拥有
     SshTarget m_target;                // 会话目标的副本，仅用于标题/路径键/URL
     SftpClient *m_client = nullptr;    // 会话之上的 GUI 适配器（parent=this）
-    TransferDialog *m_transfer = nullptr;
+    TransferQueue *m_queue = nullptr;  // 传输队列网关（parent=this，内部持有队列窗口）
 
     QFileSystemModel *m_fsModel = nullptr;
     QSortFilterProxyModel *m_fsProxy = nullptr; // 本地列表排序：目录置顶 + 字母序
@@ -190,15 +161,6 @@ private:
     QFileIconProvider m_iconProvider;
 
     QList<FileCommand> m_commands;
-    QFileSystemWatcher *m_editWatcher = nullptr;
-    QTimer *m_editTimer = nullptr;
-    QString m_editTimerPath;
-    QHash<QString, QString> m_watchedEdit;          // 本地缓存 -> 远程路径
-    QHash<QString, QByteArray> m_editDigest;        // 上次已同步内容
-    QHash<int, PendingFetch> m_pendingFetch;
-    QSet<int> m_folderUploadIds;    // 本轮文件夹上传的全部任务 id（建目录 + 文件）
-    QSet<QString> m_folderMkdirs;   // 文件夹上传要建的远程目录，onOpFinished 里静默放行
-
     QProcess *m_localProc = nullptr;
     QStringList m_localCmdQueue;
     QString m_localLog;

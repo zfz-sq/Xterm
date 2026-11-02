@@ -1,3 +1,8 @@
+param(
+    # vcpkg triplet：与 CMakeLists.txt 的 XTERM_VCPKG_TRIPLET 保持一致
+    [string]$Triplet = 'x64-mingw-dynamic'
+)
+
 $ErrorActionPreference = 'Stop'
 
 $VcpkgCommit = '7bb3ef7c1aebcb18a9ad7f5d7c6e3ea3be006196'
@@ -86,13 +91,13 @@ Invoke-Checked -FilePath $Bootstrap -ArgumentList @('-disableMetrics')
 $Vcpkg = Join-Path $VcpkgRoot 'vcpkg.exe'
 Invoke-Checked -FilePath $Vcpkg -ArgumentList @(
     'install',
-    '--triplet', 'x64-mingw-dynamic',
-    '--host-triplet', 'x64-mingw-dynamic',
+    '--triplet', $Triplet,
+    '--host-triplet', $Triplet,
     "--overlay-ports=$OverlayRoot",
     "--x-install-root=$InstallRoot"
 )
 
-$RuntimeDir = Join-Path $InstallRoot 'x64-mingw-dynamic/bin'
+$RuntimeDir = Join-Path $InstallRoot "$Triplet/bin"
 $LibsshRuntime = @(
     (Join-Path $RuntimeDir 'libssh.dll'),
     (Join-Path $RuntimeDir 'ssh.dll')
@@ -107,7 +112,7 @@ if (-not (Test-Path $LibcryptoRuntime)) {
 }
 
 $LibsshConfig = Get-ChildItem `
-    -Path (Join-Path $InstallRoot 'x64-mingw-dynamic') `
+    -Path (Join-Path $InstallRoot $Triplet) `
     -Recurse `
     -File `
     -Include 'libssh-config.cmake', 'libsshConfig.cmake' |

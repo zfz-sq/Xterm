@@ -1,8 +1,11 @@
 #include "filebrowserdialog.h"
 
+#include "filebrowsermodel.h"
+#include "filebrowserwidgets.h"
 #include "icons.h"
 #include "sshsession.h"
 #include "transferdialog.h"
+#include "transferqueue.h"
 
 #include <QAction>
 #include <QCheckBox>
@@ -69,730 +72,6 @@
 #include <shlwapi.h>
 #endif
 
-namespace {
-
-constexpr int kRoleDir = Qt::UserRole;
-constexpr int kRoleLink = Qt::UserRole + 1;
-constexpr int kRoleSize = Qt::UserRole + 2;
-constexpr int kRolePerm = Qt::UserRole + 3;
-constexpr int kRoleMtime = Qt::UserRole + 4;
-
-QString stateFilePath()
-{
-    const QString base = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
-    return QDir(base).filePath(QStringLiteral("filebrowser.json"));
-}
-
-QString shellQuote(const QString &text)
-{
-    QString escaped = text;
-    escaped.replace(QLatin1Char('\''), QLatin1String("'\\''"));
-    return QLatin1Char('\'') + escaped + QLatin1Char('\'');
-}
-
-QString cmdQuote(const QString &text)
-{
-    QString escaped = text;
-    escaped.replace(QLatin1Char('"'), QLatin1String("\\\""));
-    return QLatin1Char('"') + escaped + QLatin1Char('"');
-}
-
-bool validFileName(const QString &name)
-{
-    return !name.isEmpty()
-        && name != QLatin1String(".")
-        && name != QLatin1String("..")
-        && !name.contains(QLatin1Char('/'))
-        && !name.contains(QLatin1Char('\\'));
-}
-
-bool commandUsesEachFile(const QString &command)
-{
-    for (int i = 0; i < command.size(); ++i) {
-        if (command.at(i) != QLatin1Char('!'))
-            continue;
-        const QChar next = (i + 1 < command.size()) ? command.at(i + 1) : QChar();
-        if (next == QLatin1Char('&') || next == QLatin1Char('/'))
-            continue;
-        return true;
-    }
-    return false;
-}
-
-bool commandNeedsSelection(const QString &command)
-{
-    return command.contains(QLatin1String("!&")) || commandUsesEachFile(command);
-}
-
-QByteArray fileDigest(const QString &path)
-{
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly))
-        return {};
-    QCryptographicHash hash(QCryptographicHash::Sha256);
-    if (!hash.addData(&file))
-        return {};
-    return hash.result();
-}
-
-QString humanSize(quint64 size)
-{
-    return QLocale().formattedDataSize(qint64(size));
-}
-
-void showCommandOutput(QWidget *parent, const QString &title, const QString &text)
-{
-    auto *dlg = new FramelessDialog(parent);
-    dlg->setAttribute(Qt::WA_DeleteOnClose);
-    dlg->setDialogTitle(title);
-    dlg->resize(640, 380);
-    auto *edit = new QPlainTextEdit(dlg);
-    edit->setReadOnly(true);
-    edit->setPlainText(text);
-    auto *closeBtn = new QPushButton(QObject::tr("关闭"), dlg);
-    QObject::connect(closeBtn, &QPushButton::clicked, dlg, &QDialog::close);
-    auto *lay = new QVBoxLayout;
-    lay->addWidget(edit, 1);
-    auto *row = new QHBoxLayout;
-    row->addStretch(1);
-    row->addWidget(closeBtn);
-    lay->addLayout(row);
-    dlg->setContentLayout(lay);
-    dlg->show();
-}
-
-QFrame *vsep(QWidget *parent)
-{
-    auto *line = new QFrame(parent);
-    line->setFrameShape(QFrame::VLine);
-    line->setFrameShadow(QFrame::Sunken);
-    return line;
-}
-
-// 本地列表「大小」列右对齐（与远程端一致）；QFileSystemModel 默认左对齐
-class SizeColumnDelegate : public QStyledItemDelegate
-{
-public:
-    using QStyledItemDelegate::QStyledItemDelegate;
-
-protected:
-    void initStyleOption(QStyleOptionViewItem *option, const QModelIndex &index) const override
-    {
-        QStyledItemDelegate::initStyleOption(option, index);
-        option->displayAlignment = Qt::AlignRight | Qt::AlignVCenter;
-    }
-};
-
-// 本地列表排序：目录永远在文件前面，名称不区分大小写按字母序。
-// QFileSystemModel 的默认枚举序两者都不保证（NTFS 是纯字母混排），
-// 列头也不参与排序——顺序恒定可预期。
-class LocalSortProxy : public QSortFilterProxyModel
-{
-public:
-    using QSortFilterProxyModel::QSortFilterProxyModel;
-
-protected:
-    bool lessThan(const QModelIndex &left, const QModelIndex &right) const override
-    {
-        auto *fs = static_cast<QFileSystemModel *>(sourceModel());
-        const bool leftDir = fs->isDir(left);
-        const bool rightDir = fs->isDir(right);
-        if (leftDir != rightDir)
-            return leftDir;
-        return left.data().toString().compare(right.data().toString(),
-                                              Qt::CaseInsensitive) < 0;
-    }
-};
-
-#ifdef Q_OS_WIN
-bool showWindowsShellMenu(const QStringList &paths, HWND hwnd)
-{
-    if (paths.isEmpty())
-        return false;
-    QVector<PIDLIST_ABSOLUTE> pidls;
-    for (const QString &path : paths) {
-        PIDLIST_ABSOLUTE pidl = nullptr;
-        if (SUCCEEDED(SHParseDisplayName(reinterpret_cast<PCWSTR>(path.utf16()), nullptr, &pidl, 0, nullptr))
-            && pidl) {
-            pidls.append(pidl);
-        }
-    }
-    if (pidls.isEmpty())
-        return false;
-
-    IShellFolder *folder = nullptr;
-    LPCITEMIDLIST child = nullptr;
-    HRESULT hr = SHBindToParent(pidls.first(), IID_IShellFolder, reinterpret_cast<void **>(&folder), &child);
-    if (FAILED(hr) || !folder) {
-        for (auto *pidl : pidls)
-            CoTaskMemFree(pidl);
-        return false;
-    }
-
-    QVector<LPCITEMIDLIST> children;
-    children.reserve(pidls.size());
-    for (auto *pidl : pidls)
-        children.append(ILFindLastID(pidl));
-
-    IContextMenu *menu = nullptr;
-    hr = folder->GetUIObjectOf(hwnd, UINT(children.size()),
-                               const_cast<LPCITEMIDLIST *>(children.constData()),
-                               IID_IContextMenu, nullptr, reinterpret_cast<void **>(&menu));
-    if (FAILED(hr) || !menu) {
-        folder->Release();
-        for (auto *pidl : pidls)
-            CoTaskMemFree(pidl);
-        return false;
-    }
-
-    HMENU hmenu = CreatePopupMenu();
-    if (!hmenu) {
-        menu->Release();
-        folder->Release();
-        for (auto *pidl : pidls)
-            CoTaskMemFree(pidl);
-        return false;
-    }
-    menu->QueryContextMenu(hmenu, 0, 1, 0x7FFF, CMF_NORMAL | CMF_EXPLORE);
-    POINT pt;
-    GetCursorPos(&pt);
-    const int cmd = int(TrackPopupMenuEx(hmenu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
-                                          pt.x, pt.y, hwnd, nullptr));
-    if (cmd > 0) {
-        CMINVOKECOMMANDINFOEX info{};
-        info.cbSize = sizeof(info);
-        info.fMask = CMIC_MASK_UNICODE;
-        info.hwnd = hwnd;
-        info.lpVerb = MAKEINTRESOURCEA(cmd - 1);
-        info.lpVerbW = MAKEINTRESOURCEW(cmd - 1);
-        info.nShow = SW_SHOWNORMAL;
-        menu->InvokeCommand(reinterpret_cast<LPCMINVOKECOMMANDINFO>(&info));
-    }
-    DestroyMenu(hmenu);
-    menu->Release();
-    folder->Release();
-    for (auto *pidl : pidls)
-        CoTaskMemFree(pidl);
-    return true;
-}
-#endif
-
-class ChmodDialog : public FramelessDialog
-{
-public:
-    ChmodDialog(const QString &titleText, const QString &extra, quint32 mode, QWidget *parent)
-        : FramelessDialog(parent)
-        , m_mode(mode & 07777)
-    {
-        setDialogTitle(tr("属性"));
-        resize(380, 320);
-        const quint32 bits[9] = { 0400, 0200, 0100, 0040, 0020, 0010, 0004, 0002, 0001 };
-        auto *grid = new QGridLayout;
-        grid->addWidget(new QLabel(tr("读取")), 0, 1, Qt::AlignCenter);
-        grid->addWidget(new QLabel(tr("写入")), 0, 2, Qt::AlignCenter);
-        grid->addWidget(new QLabel(tr("执行")), 0, 3, Qt::AlignCenter);
-        const QStringList rows = { tr("所有者"), tr("用户组"), tr("其他人") };
-        for (int r = 0; r < 3; ++r) {
-            grid->addWidget(new QLabel(rows.at(r)), r + 1, 0);
-            for (int c = 0; c < 3; ++c) {
-                auto *box = new QCheckBox;
-                const quint32 bit = bits[r * 3 + c];
-                box->setChecked(m_mode & bit);
-                m_bits.append({ bit, box });
-                grid->addWidget(box, r + 1, c + 1, Qt::AlignCenter);
-                connect(box, &QCheckBox::toggled, this, [this] { syncFromChecks(); });
-            }
-        }
-        m_setuid = new QCheckBox(tr("setuid"));
-        m_setgid = new QCheckBox(tr("setgid"));
-        m_sticky = new QCheckBox(tr("sticky"));
-        m_setuid->setChecked(m_mode & 04000);
-        m_setgid->setChecked(m_mode & 02000);
-        m_sticky->setChecked(m_mode & 01000);
-        for (QCheckBox *box : { m_setuid, m_setgid, m_sticky })
-            connect(box, &QCheckBox::toggled, this, [this] { syncFromChecks(); });
-
-        m_octal = new QLineEdit;
-        m_octal->setText(QStringLiteral("%1").arg(m_mode, 4, 8, QLatin1Char('0')));
-        connect(m_octal, &QLineEdit::editingFinished, this, [this] { syncFromOctal(); });
-
-        auto *root = new QVBoxLayout;
-        root->addWidget(new QLabel(titleText));
-        if (!extra.isEmpty()) {
-            auto *detail = new QLabel(extra);
-            detail->setWordWrap(true);
-            root->addWidget(detail);
-        }
-        root->addSpacing(6);
-        root->addLayout(grid);
-        auto *special = new QHBoxLayout;
-        special->addWidget(m_setuid);
-        special->addWidget(m_setgid);
-        special->addWidget(m_sticky);
-        special->addStretch(1);
-        root->addLayout(special);
-        auto *oct = new QHBoxLayout;
-        oct->addWidget(new QLabel(tr("八进制")));
-        oct->addWidget(m_octal, 1);
-        root->addLayout(oct);
-        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-        connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
-        connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
-        root->addWidget(buttons);
-        setContentLayout(root);
-    }
-
-    quint32 mode() const { return m_mode & 07777; }
-
-private:
-    struct Bit
-    {
-        quint32 bit;
-        QCheckBox *box;
-    };
-
-    void syncFromChecks()
-    {
-        if (m_guard)
-            return;
-        quint32 mode = 0;
-        for (const Bit &bit : m_bits) {
-            if (bit.box->isChecked())
-                mode |= bit.bit;
-        }
-        if (m_setuid->isChecked())
-            mode |= 04000;
-        if (m_setgid->isChecked())
-            mode |= 02000;
-        if (m_sticky->isChecked())
-            mode |= 01000;
-        m_mode = mode;
-        m_guard = true;
-        m_octal->setText(QStringLiteral("%1").arg(m_mode, 4, 8, QLatin1Char('0')));
-        m_guard = false;
-    }
-
-    void syncFromOctal()
-    {
-        if (m_guard)
-            return;
-        bool ok = false;
-        const uint value = m_octal->text().trimmed().toUInt(&ok, 8);
-        if (!ok)
-            return;
-        m_mode = quint32(value) & 07777;
-        m_guard = true;
-        for (const Bit &bit : m_bits)
-            bit.box->setChecked(m_mode & bit.bit);
-        m_setuid->setChecked(m_mode & 04000);
-        m_setgid->setChecked(m_mode & 02000);
-        m_sticky->setChecked(m_mode & 01000);
-        m_guard = false;
-    }
-
-    QVector<Bit> m_bits;
-    QCheckBox *m_setuid = nullptr;
-    QCheckBox *m_setgid = nullptr;
-    QCheckBox *m_sticky = nullptr;
-    QLineEdit *m_octal = nullptr;
-    quint32 m_mode = 0;
-    bool m_guard = false;
-};
-
-class LocalPropsDialog : public FramelessDialog
-{
-public:
-    explicit LocalPropsDialog(const QString &path, QWidget *parent)
-        : FramelessDialog(parent)
-        , m_path(path)
-    {
-        const QFileInfo info(path);
-        setDialogTitle(tr("属性"));
-        auto *form = new QFormLayout;
-        form->addRow(tr("名称"), new QLabel(info.fileName()));
-        form->addRow(tr("位置"), new QLabel(QDir::toNativeSeparators(info.absolutePath())));
-        form->addRow(tr("类型"), new QLabel(info.isDir() ? tr("目录") : tr("文件")));
-        if (!info.isDir())
-            form->addRow(tr("大小"), new QLabel(humanSize(quint64(info.size()))));
-        form->addRow(tr("修改时间"),
-                     new QLabel(info.lastModified().toString(QStringLiteral("yyyy-MM-dd hh:mm:ss"))));
-        m_readonly = new QCheckBox(tr("只读"));
-        m_readonly->setChecked(!(info.permissions() & QFile::WriteUser));
-#ifdef Q_OS_WIN
-        const QString native = QDir::toNativeSeparators(path);
-        const DWORD attr = GetFileAttributesW(reinterpret_cast<LPCWSTR>(native.utf16()));
-        m_hidden = new QCheckBox(tr("隐藏"));
-        m_hidden->setChecked(attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_HIDDEN));
-#endif
-        auto *root = new QVBoxLayout;
-        root->addLayout(form);
-        root->addWidget(m_readonly);
-#ifdef Q_OS_WIN
-        root->addWidget(m_hidden);
-#endif
-        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-        connect(buttons, &QDialogButtonBox::accepted, this, [this] {
-            apply();
-            accept();
-        });
-        connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
-        root->addWidget(buttons);
-        setContentLayout(root);
-        resize(420, 220);
-    }
-
-private:
-    void apply()
-    {
-        QFile::Permissions perm = QFile::permissions(m_path);
-        if (m_readonly->isChecked())
-            perm &= ~(QFile::WriteUser | QFile::WriteGroup | QFile::WriteOther);
-        else
-            perm |= QFile::WriteUser;
-        QFile::setPermissions(m_path, perm);
-#ifdef Q_OS_WIN
-        const QString native = QDir::toNativeSeparators(m_path);
-        DWORD attr = GetFileAttributesW(reinterpret_cast<LPCWSTR>(native.utf16()));
-        if (m_hidden && attr != INVALID_FILE_ATTRIBUTES) {
-            if (m_hidden->isChecked())
-                attr |= FILE_ATTRIBUTE_HIDDEN;
-            else
-                attr &= ~DWORD(FILE_ATTRIBUTE_HIDDEN);
-            SetFileAttributesW(reinterpret_cast<LPCWSTR>(native.utf16()), attr);
-        }
-#endif
-    }
-
-    QString m_path;
-    QCheckBox *m_readonly = nullptr;
-    QCheckBox *m_hidden = nullptr;
-};
-
-class CommandManagerDialog : public FramelessDialog
-{
-public:
-    explicit CommandManagerDialog(const QList<FileCommand> &initial, QWidget *parent)
-        : FramelessDialog(parent)
-        , m_commands(initial)
-    {
-        setDialogTitle(tr("文件自定义命令"));
-        resize(620, 380);
-        m_list = new QListWidget(this);
-        for (const FileCommand &command : m_commands)
-            m_list->addItem(command.name);
-        m_name = new QLineEdit(this);
-        m_command = new QLineEdit(this);
-        m_command->setPlaceholderText(QStringLiteral("gzip -k !"));
-        m_remote = new QCheckBox(tr("在远程执行"), this);
-        auto *addBtn = new QPushButton(tr("添加"), this);
-        auto *delBtn = new QPushButton(tr("删除"), this);
-        connect(addBtn, &QPushButton::clicked, this, [this] { addCommand(); });
-        connect(delBtn, &QPushButton::clicked, this, [this] { removeCommand(); });
-        connect(m_list, &QListWidget::currentRowChanged, this, [this](int row) { loadRow(row); });
-        connect(m_name, &QLineEdit::textEdited, this, [this] { storeRow(); });
-        connect(m_command, &QLineEdit::textEdited, this, [this] { storeRow(); });
-        connect(m_remote, &QCheckBox::toggled, this, [this](bool) { storeRow(); });
-
-        auto *fields = new QFormLayout;
-        fields->addRow(tr("名称"), m_name);
-        fields->addRow(tr("命令"), m_command);
-        fields->addRow(QString(), m_remote);
-        auto *help = new QLabel(tr("占位符：! 当前文件，!& 全部选中，!/ 当前目录。路径会自动加引号。\n"
-                                   "含 ! 时对每个选中文件各执行一次。远程命令在服务器 shell 执行，"
-                                   "本地命令通过 cmd /c 执行。"),
-                                this);
-        help->setWordWrap(true);
-        auto *sideBtns = new QHBoxLayout;
-        sideBtns->addWidget(addBtn);
-        sideBtns->addWidget(delBtn);
-        sideBtns->addStretch(1);
-        auto *left = new QVBoxLayout;
-        left->addWidget(m_list, 1);
-        left->addLayout(sideBtns);
-        auto *right = new QVBoxLayout;
-        right->addLayout(fields);
-        right->addWidget(help);
-        right->addStretch(1);
-        auto *columns = new QHBoxLayout;
-        columns->addLayout(left, 1);
-        columns->addLayout(right, 2);
-        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-        connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
-        connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
-        auto *root = new QVBoxLayout;
-        root->addLayout(columns, 1);
-        root->addWidget(buttons);
-        setContentLayout(root);
-        if (m_list->count() > 0)
-            m_list->setCurrentRow(0);
-        else
-            setFieldsEnabled(false);
-    }
-
-    QList<FileCommand> result() const { return m_commands; }
-
-private:
-    void setFieldsEnabled(bool on)
-    {
-        m_name->setEnabled(on);
-        m_command->setEnabled(on);
-        m_remote->setEnabled(on);
-    }
-
-    void loadRow(int row)
-    {
-        m_guard = true;
-        m_row = row;
-        if (row < 0 || row >= m_commands.size()) {
-            m_name->clear();
-            m_command->clear();
-            m_remote->setChecked(true);
-            setFieldsEnabled(false);
-            m_guard = false;
-            return;
-        }
-        setFieldsEnabled(true);
-        const FileCommand &command = m_commands.at(row);
-        m_name->setText(command.name);
-        m_command->setText(command.command);
-        m_remote->setChecked(command.remote);
-        m_guard = false;
-    }
-
-    void storeRow()
-    {
-        if (m_guard || m_row < 0 || m_row >= m_commands.size())
-            return;
-        FileCommand &command = m_commands[m_row];
-        command.name = m_name->text();
-        command.command = m_command->text();
-        command.remote = m_remote->isChecked();
-        if (QListWidgetItem *item = m_list->item(m_row))
-            item->setText(command.name.isEmpty() ? tr("(未命名)") : command.name);
-    }
-
-    void addCommand()
-    {
-        m_commands.append(FileCommand{ tr("新命令"), QString(), true });
-        m_list->addItem(tr("新命令"));
-        m_list->setCurrentRow(m_list->count() - 1);
-    }
-
-    void removeCommand()
-    {
-        const int row = m_list->currentRow();
-        if (row < 0)
-            return;
-        m_guard = true;
-        m_commands.removeAt(row);
-        delete m_list->takeItem(row);
-        m_guard = false;
-        loadRow(m_list->currentRow());
-    }
-
-    QList<FileCommand> m_commands;
-    QListWidget *m_list = nullptr;
-    QLineEdit *m_name = nullptr;
-    QLineEdit *m_command = nullptr;
-    QCheckBox *m_remote = nullptr;
-    int m_row = -1;
-    bool m_guard = false;
-};
-
-} // namespace
-
-// 路径栏：每一段目录名可点，跳到那一级。右侧按钮或双击空白处改成手动输入。
-class PathBar : public QFrame
-{
-public:
-    explicit PathBar(QWidget *parent = nullptr)
-        : QFrame(parent)
-    {
-        setObjectName(QStringLiteral("pathBar"));
-        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        setFixedHeight(28);
-
-        m_scroll = new QScrollArea(this);
-        m_scroll->setFrameShape(QFrame::NoFrame);
-        m_scroll->setWidgetResizable(false);
-        m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        m_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        m_scroll->viewport()->setAutoFillBackground(false);
-
-        m_host = new QWidget;
-        m_host->setObjectName(QStringLiteral("pathCrumbs"));
-        m_host->setAutoFillBackground(false);
-        m_layout = new QHBoxLayout(m_host);
-        m_layout->setContentsMargins(4, 0, 4, 0);
-        m_layout->setSpacing(0);
-        m_scroll->setWidget(m_host);
-        m_host->installEventFilter(this);
-        m_scroll->viewport()->installEventFilter(this);
-
-        m_edit = new QLineEdit(this);
-        m_edit->setObjectName(QStringLiteral("pathEdit"));
-        m_edit->hide();
-        m_edit->installEventFilter(this);
-
-        m_editBtn = new QToolButton(this);
-        m_editBtn->setObjectName(QStringLiteral("pathEditBtn"));
-        m_editBtn->setToolTip(tr("输入路径"));
-        m_editBtn->setFocusPolicy(Qt::NoFocus);
-        m_editBtn->setAutoRaise(true);
-        connect(m_editBtn, &QToolButton::clicked, this, [this] { showEdit(); });
-
-        auto *row = new QHBoxLayout(this);
-        row->setContentsMargins(0, 0, 2, 0);
-        row->setSpacing(0);
-        row->addWidget(m_scroll, 1);
-        row->addWidget(m_edit, 1);
-        row->addWidget(m_editBtn);
-    }
-
-    void setEditIcon(const QIcon &icon)
-    {
-        m_editBtn->setIcon(icon);
-        m_editBtn->setIconSize(QSize(14, 14));
-        m_editBtn->setText(QString());
-    }
-
-    void setSegments(const QVector<QPair<QString, QString>> &segments, const QString &editText,
-                     const QString &separator)
-    {
-        m_segments = segments;
-        m_editText = editText;
-        m_separator = separator;
-        rebuild();
-        showCrumbs();
-    }
-
-    QString submittedText() const { return m_submitted; }
-
-    std::function<void(const QString &)> onJump;
-    std::function<void(const QString &)> onSubmit;
-
-protected:
-    bool eventFilter(QObject *watched, QEvent *event) override
-    {
-        if ((watched == m_host || watched == m_scroll->viewport())
-            && event->type() == QEvent::MouseButtonDblClick) {
-            showEdit();
-            return true;
-        }
-        if (watched == m_edit && event->type() == QEvent::KeyPress) {
-            const auto *key = static_cast<const QKeyEvent *>(event);
-            if (key->key() == Qt::Key_Escape) {
-                showCrumbs();
-                return true;
-            }
-            // QLineEdit 会把回车交给对话框的默认按钮。这里吃掉，避免打开传输队列。
-            if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) {
-                commitEdit();
-                return true;
-            }
-        }
-        if (watched == m_edit && event->type() == QEvent::FocusOut && m_editing) {
-            const auto *focus = static_cast<const QFocusEvent *>(event);
-            if (focus->reason() != Qt::PopupFocusReason && focus->reason() != Qt::ActiveWindowFocusReason) {
-                QTimer::singleShot(0, this, [this] {
-                    if (m_editing && !m_edit->hasFocus())
-                        showCrumbs();
-                });
-            }
-        }
-        return QFrame::eventFilter(watched, event);
-    }
-
-private:
-    void showEdit()
-    {
-        m_editing = true;
-        m_scroll->hide();
-        m_edit->setText(m_editText);
-        m_edit->show();
-        m_edit->setFocus();
-        m_edit->selectAll();
-    }
-
-    void showCrumbs()
-    {
-        m_editing = false;
-        m_edit->hide();
-        m_scroll->show();
-        fitCrumbs();
-    }
-
-    void commitEdit()
-    {
-        m_submitted = m_edit->text();
-        showCrumbs();
-        if (onSubmit)
-            onSubmit(m_submitted);
-    }
-
-    void rebuild()
-    {
-        while (QLayoutItem *item = m_layout->takeAt(0)) {
-            delete item->widget();
-            delete item;
-        }
-        for (int i = 0; i < m_segments.size(); ++i) {
-            if (i > 0) {
-                const QString previous = m_segments.at(i - 1).first;
-                QString sepText = m_separator;
-                if (previous == QStringLiteral("/"))
-                    sepText.clear();
-                else if (m_segments.at(i - 1).second.isEmpty())
-                    sepText = QStringLiteral(" ");
-                if (!sepText.isEmpty()) {
-                    auto *sep = new QLabel(sepText, m_host);
-                    sep->setObjectName(QStringLiteral("pathSep"));
-                    m_layout->addWidget(sep);
-                }
-            }
-            auto *button = new QToolButton(m_host);
-            button->setObjectName(QStringLiteral("pathCrumb"));
-            button->setText(m_segments.at(i).first);
-            button->setToolTip(m_segments.at(i).second.isEmpty()
-                                   ? m_segments.at(i).first
-                                   : QDir::toNativeSeparators(m_segments.at(i).second));
-            button->setAutoRaise(true);
-            button->setFocusPolicy(Qt::NoFocus);
-            button->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Preferred);
-            const QString target = m_segments.at(i).second;
-            connect(button, &QToolButton::clicked, this, [this, target] {
-                if (onJump)
-                    onJump(target);
-            });
-            m_layout->addWidget(button);
-        }
-        m_layout->addStretch(1);
-        fitCrumbs();
-    }
-
-    void fitCrumbs()
-    {
-        m_host->adjustSize();
-        const int width = qMax(m_host->sizeHint().width(), m_scroll->viewport()->width());
-        const int height = qMax(m_scroll->viewport()->height(), 24);
-        m_host->resize(width, height);
-        QTimer::singleShot(0, m_scroll, [this] {
-            m_scroll->horizontalScrollBar()->setValue(m_scroll->horizontalScrollBar()->maximum());
-        });
-    }
-
-    QScrollArea *m_scroll = nullptr;
-    QWidget *m_host = nullptr;
-    QHBoxLayout *m_layout = nullptr;
-    QLineEdit *m_edit = nullptr;
-    QToolButton *m_editBtn = nullptr;
-    QVector<QPair<QString, QString>> m_segments;
-    QString m_separator = QStringLiteral("/");
-    QString m_editText;
-    QString m_submitted;
-    bool m_editing = false;
-};
-
 FileBrowserDialog::FileBrowserDialog(SshSession *session, QWidget *parent)
     : FramelessDialog(parent)
     , m_session(session)
@@ -807,13 +86,23 @@ FileBrowserDialog::FileBrowserDialog(SshSession *session, QWidget *parent)
         resize(1040, 680);
 
     m_client = new SftpClient(m_session, this);
-    m_transfer = new TransferDialog(m_client, this);
-    connect(m_transfer, &TransferDialog::jobFinished, this, &FileBrowserDialog::onQueueJobFinished);
-    connect(m_transfer, &TransferDialog::progressChanged, this, &FileBrowserDialog::onTransferProgressInfo);
-    m_editWatcher = new QFileSystemWatcher(this);
-    m_editTimer = new QTimer(this);
-    m_editTimer->setSingleShot(true);
-    m_editTimer->setInterval(800);
+    // 传输队列网关：入队/批次跟踪/编辑回传都在里面，语义事件转到这里刷 UI
+    m_queue = new TransferQueue(m_client, sessionKey(), this, this);
+    connect(m_queue, &TransferQueue::folderBatchFinished, this, &FileBrowserDialog::refreshRemote);
+    connect(m_queue, &TransferQueue::fetchFinished, this, &FileBrowserDialog::onFetchFinished);
+    connect(m_queue, &TransferQueue::editUploadStarted, this, [this](const QString &fileName) {
+        m_status->setText(tr("正在回传 %1").arg(fileName));
+    });
+    connect(m_queue, &TransferQueue::editUploadFinished, this,
+            [this](bool ok, const QString &fileName, const QString &remote, const QString &error) {
+        if (ok) {
+            m_status->setText(tr("已回传 %1").arg(fileName));
+            return;
+        }
+        FramelessDialog::message(this, tr("回传失败"), tr("%1\n%2").arg(remote, error));
+    });
+    connect(m_queue->dialog(), &TransferDialog::progressChanged,
+            this, &FileBrowserDialog::onTransferProgressInfo);
     m_localProc = new QProcess(this);
 
     m_localUpload = makePaneButton(QStringLiteral("upload.png"), tr("上传"));
@@ -973,7 +262,7 @@ FileBrowserDialog::FileBrowserDialog(SshSession *session, QWidget *parent)
     root->addLayout(statusRow);
     setContentLayout(root);
 
-    loadBrowserState();
+    restoreBrowserState();
     const QString savedLocal = m_localPath;
     m_localPath.clear();
     if (!savedLocal.isEmpty() && QDir(savedLocal).exists())
@@ -984,7 +273,6 @@ FileBrowserDialog::FileBrowserDialog(SshSession *session, QWidget *parent)
     connect(m_client, &SftpClient::listed, this, &FileBrowserDialog::onListed);
     connect(m_client, &SftpClient::listedFailed, this, &FileBrowserDialog::onListedFailed);
     connect(m_client, &SftpClient::opFinished, this, &FileBrowserDialog::onOpFinished);
-    connect(m_client, &SftpClient::transferFinished, this, &FileBrowserDialog::onTransferFinished);
     // 共享会话断了，文件管理器没有独立生命，跟着收摊。
     // 关闭只销毁适配器并取消文件请求，不影响 shell 本身。
     connect(m_session, &SshSession::closed, this, &QDialog::close);
@@ -1005,8 +293,6 @@ FileBrowserDialog::FileBrowserDialog(SshSession *session, QWidget *parent)
             this, &FileBrowserDialog::onLocalContextMenu);
     connect(m_remoteTree, &QWidget::customContextMenuRequested,
             this, &FileBrowserDialog::onRemoteContextMenu);
-    connect(m_editWatcher, &QFileSystemWatcher::fileChanged, this, &FileBrowserDialog::onEditFileChanged);
-    connect(m_editTimer, &QTimer::timeout, this, &FileBrowserDialog::commitEditUpload);
     connect(m_localProc, &QProcess::finished, this, [this](int code, QProcess::ExitStatus) {
         const QString chunk = QString::fromLocal8Bit(m_localProc->readAllStandardOutput())
                               + QString::fromLocal8Bit(m_localProc->readAllStandardError());
@@ -1050,7 +336,7 @@ FileBrowserDialog::FileBrowserDialog(SshSession *session, QWidget *parent)
 
 FileBrowserDialog::~FileBrowserDialog()
 {
-    saveBrowserState();
+    persistBrowserState();
 }
 
 QToolButton *FileBrowserDialog::makePaneButton(const QString &iconName, const QString &text)
@@ -1090,92 +376,22 @@ QString FileBrowserDialog::sessionKey() const
     return user + QLatin1Char('@') + m_target.host + QLatin1Char(':') + QString::number(port);
 }
 
-void FileBrowserDialog::loadBrowserState()
+void FileBrowserDialog::restoreBrowserState()
 {
-    QFile file(stateFilePath());
-    if (!file.open(QIODevice::ReadOnly))
-        return;
-    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
-    if (!doc.isObject())
-        return;
-    const QJsonObject root = doc.object();
-    QString local = root.value(QStringLiteral("local")).toString();
-    QString remote = root.value(QStringLiteral("remote")).toString();
-    // 旧文件按 user@host:port 分条。IP 会变，读不到新字段时把已有记录并成一份。
-    if (local.isEmpty() && remote.isEmpty()) {
-        const QJsonObject paths = root.value(QStringLiteral("paths")).toObject();
-        const QJsonObject current = paths.value(sessionKey()).toObject();
-        local = current.value(QStringLiteral("local")).toString();
-        remote = current.value(QStringLiteral("remote")).toString();
-        for (auto it = paths.constBegin(); it != paths.constEnd() && (local.isEmpty() || remote.isEmpty()); ++it) {
-            const QJsonObject one = it.value().toObject();
-            if (local.isEmpty())
-                local = one.value(QStringLiteral("local")).toString();
-            if (remote.isEmpty())
-                remote = one.value(QStringLiteral("remote")).toString();
-        }
-    }
-    m_localPath = local;
-    m_savedRemote = remote;
-    m_persistedRemote = remote;
-    m_commands.clear();
-    const QJsonArray commands = root.value(QStringLiteral("commands")).toArray();
-    for (const QJsonValue &value : commands) {
-        const QJsonObject obj = value.toObject();
-        FileCommand command;
-        command.name = obj.value(QStringLiteral("name")).toString();
-        command.command = obj.value(QStringLiteral("command")).toString();
-        command.remote = obj.value(QStringLiteral("remote")).toBool(true);
-        if (!command.name.isEmpty() || !command.command.isEmpty())
-            m_commands.append(command);
-    }
+    const BrowserState state = loadBrowserState(sessionKey());
+    m_localPath = state.local;
+    m_savedRemote = state.remote;
+    m_persistedRemote = state.remote;
+    m_commands = state.commands;
 }
 
-void FileBrowserDialog::saveBrowserState() const
+void FileBrowserDialog::persistBrowserState() const
 {
-    const QString path = stateFilePath();
-    QJsonObject root;
-    {
-        // 读完即关。句柄还开着时，Windows 上 QSaveFile 替换会失败，目录就写不进去。
-        QFile in(path);
-        if (in.open(QIODevice::ReadOnly)) {
-            const QJsonDocument existing = QJsonDocument::fromJson(in.readAll());
-            if (existing.isObject())
-                root = existing.object();
-        }
-    }
-    root.remove(QStringLiteral("paths"));
-    // 停在「此电脑」时 m_localPath 为空，不要把上次的本地目录清掉。
-    if (!m_localPath.isEmpty())
-        root.insert(QStringLiteral("local"), m_localPath);
-    if (!m_persistedRemote.isEmpty())
-        root.insert(QStringLiteral("remote"), m_persistedRemote);
-    else
-        root.remove(QStringLiteral("remote"));
-
-    QJsonArray commands;
-    for (const FileCommand &command : m_commands) {
-        commands.append(QJsonObject{
-            { QStringLiteral("name"), command.name },
-            { QStringLiteral("command"), command.command },
-            { QStringLiteral("remote"), command.remote },
-        });
-    }
-    root.insert(QStringLiteral("commands"), commands);
-
-    QDir().mkpath(QFileInfo(path).absolutePath());
-    const QByteArray payload = QJsonDocument(root).toJson(QJsonDocument::Indented);
-    {
-        QSaveFile out(path);
-        if (out.open(QIODevice::WriteOnly)) {
-            out.write(payload);
-            if (out.commit())
-                return;
-        }
-    }
-    QFile plain(path);
-    if (plain.open(QIODevice::WriteOnly | QIODevice::Truncate))
-        plain.write(payload);
+    BrowserState state;
+    state.local = m_localPath;
+    state.remote = m_persistedRemote;
+    state.commands = m_commands;
+    saveBrowserState(state);
 }
 
 void FileBrowserDialog::onListed(const QString &path, const QVector<SftpEntry> &entries)
@@ -1210,7 +426,7 @@ void FileBrowserDialog::onListed(const QString &path, const QVector<SftpEntry> &
         item->setData(0, kRolePerm, entry.permissions);
         item->setData(0, kRoleMtime, entry.mtime);
     }
-    saveBrowserState();
+    persistBrowserState();
     updateActionStates();
 }
 
@@ -1230,7 +446,7 @@ void FileBrowserDialog::onListedFailed(const QString &path, const QString &error
 void FileBrowserDialog::onOpFinished(const QString &op, const QString &arg, bool ok, const QString &error)
 {
     // 文件夹上传的建目录结果由传输队列行展示（远程已存在等），这里静默放行
-    if (op == QLatin1String("mkdir") && m_folderMkdirs.remove(arg))
+    if (op == QLatin1String("mkdir") && m_queue->consumeFolderMkdir(arg))
         return;
     if (op == QLatin1String("exec")) {
         handleExecFinished(ok, arg, error);
@@ -1269,43 +485,15 @@ void FileBrowserDialog::onOpFinished(const QString &op, const QString &arg, bool
     refreshRemote();
 }
 
-void FileBrowserDialog::onTransferFinished(int id, bool ok, const QString &error)
+void FileBrowserDialog::onFetchFinished(const PendingFetch &job, bool ok, const QString &error)
 {
-    if (!m_pendingFetch.contains(id))
-        return;
-    const PendingFetch job = m_pendingFetch.take(id);
-    if (job.uploadBack) {
-        if (!ok) {
-            m_editDigest.insert(job.local, job.previousDigest);
-            FramelessDialog::message(this, tr("回传失败"),
-                                 tr("%1\n%2").arg(job.remote, error));
-        } else {
-            m_status->setText(tr("已回传 %1").arg(QFileInfo(job.local).fileName()));
-        }
-        return;
-    }
     if (!ok) {
         FramelessDialog::message(this, tr(job.edit ? "编辑失败" : "打开失败"), error);
         return;
     }
-    if (job.edit) {
-        m_editDigest.insert(job.local, fileDigest(job.local));
-        m_watchedEdit.insert(job.local, job.remote);
-        if (!m_editWatcher->files().contains(job.local))
-            m_editWatcher->addPath(job.local);
-    }
+    if (job.edit)
+        m_queue->watchEditFile(job.local, job.remote);
     QDesktopServices::openUrl(QUrl::fromLocalFile(job.local));
-}
-
-void FileBrowserDialog::onQueueJobFinished(int id)
-{
-    if (!m_folderUploadIds.contains(id))
-        return;
-    m_folderUploadIds.remove(id);
-    if (m_folderUploadIds.isEmpty()) { // 整批（建目录 + 文件）收尾
-        m_folderMkdirs.clear();
-        refreshRemote();
-    }
 }
 
 void FileBrowserDialog::onTransferProgressInfo(const QString &text, int percent, bool active)
@@ -1317,9 +505,9 @@ void FileBrowserDialog::onTransferProgressInfo(const QString &text, int percent,
 
 void FileBrowserDialog::showTransferQueue()
 {
-    m_transfer->show();
-    m_transfer->raise();
-    m_transfer->activateWindow();
+    m_queue->dialog()->show();
+    m_queue->dialog()->raise();
+    m_queue->dialog()->activateWindow();
 }
 
 void FileBrowserDialog::onLocalActivated(const QModelIndex &index)
@@ -1528,92 +716,36 @@ void FileBrowserDialog::uploadSelected()
     const QModelIndexList rows = m_localView->selectionModel()->selectedRows(0);
     if (rows.isEmpty() || !m_connected)
         return;
-    struct FileTask
-    {
-        QString local;
-        QString remote;
-        qint64 size = 0;
-    };
-    struct DirTask
-    {
-        QString local;
-        QString remote;
-    };
-    QVector<FileTask> files;
-    QVector<DirTask> dirs;  // 要在远程新建的目录（先根后子，按 remote 排序保证父在前）
-    QStringList conflicts;  // 远程已存在的顶层目录，合并前需确认
-    int skippedLinks = 0;
+    QStringList localPaths;
+    localPaths.reserve(rows.size());
+    for (const QModelIndex &idx : rows)
+        localPaths << m_fsModel->filePath(mapToSource(idx));
+    // 任务收集（递归展开、链接跳过、同名目录冲突）是纯数据活，交给模型层
+    const UploadBatch batch = collectUploadTasks(
+        localPaths, m_remotePath, [this](const QString &name) { return remoteNameExists(name); });
 
-    for (const QModelIndex &idx : rows) {
-        const QString path = m_fsModel->filePath(mapToSource(idx));
-        const QFileInfo info(path);
-        if (info.isSymLink()) { // 链接/junction 可能成环，直接跳过不递归
-            ++skippedLinks;
-            continue;
-        }
-        const QString remoteRoot = remoteJoin(m_remotePath, info.fileName());
-        if (!info.isDir()) {
-            FileTask task;
-            task.local = path;
-            task.remote = remoteRoot;
-            task.size = info.size();
-            files.append(task);
-            continue;
-        }
-        if (remoteNameExists(info.fileName()))
-            conflicts << info.fileName();
-        // 递归收集子项：目录进 dirs、文件进 files，远程路径保持同样的相对结构
-        dirs.append(DirTask{path, remoteRoot});
-        const QDir root(path);
-        QDirIterator it(path, QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot,
-                        QDirIterator::Subdirectories);
-        while (it.hasNext()) {
-            it.next();
-            const QFileInfo entry = it.fileInfo();
-            if (entry.isSymLink()) {
-                ++skippedLinks;
-                continue;
-            }
-            const QString remote = remoteRoot + QLatin1Char('/')
-                + root.relativeFilePath(entry.absoluteFilePath());
-            if (entry.isDir()) {
-                dirs.append(DirTask{entry.absoluteFilePath(), remote});
-                continue;
-            }
-            FileTask task;
-            task.local = entry.absoluteFilePath();
-            task.remote = remote;
-            task.size = entry.size();
-            files.append(task);
-        }
-    }
-    // 字典序里父目录是子目录的前缀，天然父先子后
-    std::sort(dirs.begin(), dirs.end(),
-              [](const DirTask &a, const DirTask &b) { return a.remote < b.remote; });
-
-    if (!conflicts.isEmpty()
+    if (!batch.conflicts.isEmpty()
         && !FramelessDialog::question(
                this, tr("合并确认"),
                tr("远程已存在同名目录：\n%1\n\n合并上传？其中同名文件将被覆盖。")
-                   .arg(conflicts.join(QLatin1Char('\n')))))
+                   .arg(batch.conflicts.join(QLatin1Char('\n')))))
         return;
-    if (rows.size() == 1 && files.size() == 1 && dirs.isEmpty()
-        && remoteNameExists(QFileInfo(files.first().local).fileName())
+    if (rows.size() == 1 && batch.files.size() == 1 && batch.dirs.isEmpty()
+        && remoteNameExists(QFileInfo(batch.files.first().local).fileName())
         && !FramelessDialog::question(
-               this, tr("覆盖确认"), tr("远程已存在 %1，覆盖？").arg(files.first().remote)))
+               this, tr("覆盖确认"), tr("远程已存在 %1，覆盖？").arg(batch.files.first().remote)))
         return;
-    if (skippedLinks > 0)
-        m_status->setText(tr("已跳过 %1 个链接").arg(skippedLinks));
+    if (batch.skippedLinks > 0)
+        m_status->setText(tr("已跳过 %1 个链接").arg(batch.skippedLinks));
 
     // 建目录任务在前、文件在后入队；队列串行执行，保证目录先于其中的文件就位。
-    // 批次 id 全部记下，收尾时（onQueueJobFinished）刷新一次远程列表。
-    for (const DirTask &task : dirs) {
-        m_folderMkdirs.insert(task.remote);
-        m_folderUploadIds.insert(m_transfer->enqueueDir(task.local, task.remote));
+    // 批次 id 全部记下，收尾时（folderBatchFinished）刷新一次远程列表。
+    for (const UploadDirTask &task : batch.dirs) {
+        m_queue->noteFolderMkdir(task.remote);
+        m_queue->trackFolderJob(m_queue->uploadDir(task.local, task.remote));
     }
-    for (const FileTask &task : files) {
-        m_folderUploadIds.insert(m_transfer->enqueue(true, task.local, task.remote, task.size));
-    }
+    for (const UploadTask &task : batch.files)
+        m_queue->trackFolderJob(m_queue->upload(task.local, task.remote, task.size));
 }
 
 void FileBrowserDialog::downloadSelected()
@@ -1634,7 +766,7 @@ void FileBrowserDialog::downloadSelected()
                     this, tr("覆盖确认"), tr("本地已存在 %1，覆盖？").arg(local)))
                 return;
         }
-        m_transfer->enqueue(false, local, remote, qint64(item.size));
+        m_queue->download(local, remote, qint64(item.size));
     }
     if (!skippedDirs.isEmpty()) {
         FramelessDialog::message(this, tr("不支持目录下载"),
@@ -1733,7 +865,7 @@ void FileBrowserDialog::editRemote()
     const QVector<RemoteItem> items = selectedRemote();
     if (!m_connected || items.size() != 1 || items.first().isDir)
         return;
-    enqueueFetch(true, remoteJoin(m_remotePath, items.first().name), qint64(items.first().size));
+    m_queue->fetch(true, remoteJoin(m_remotePath, items.first().name), qint64(items.first().size));
 }
 
 void FileBrowserDialog::openLocal()
@@ -1758,7 +890,7 @@ void FileBrowserDialog::openRemote()
     }
     for (const RemoteItem &item : items) {
         if (!item.isDir)
-            enqueueFetch(false, remoteJoin(m_remotePath, item.name), qint64(item.size));
+            m_queue->fetch(false, remoteJoin(m_remotePath, item.name), qint64(item.size));
     }
 }
 
@@ -1916,7 +1048,7 @@ void FileBrowserDialog::manageCommands()
     if (dlg.exec() != QDialog::Accepted)
         return;
     m_commands = dlg.result();
-    saveBrowserState();
+    persistBrowserState();
 }
 
 void FileBrowserDialog::runCustomCommand(int index)
@@ -1983,7 +1115,7 @@ void FileBrowserDialog::showSystemMenu()
     native.reserve(paths.size());
     for (const QString &path : paths)
         native << QDir::toNativeSeparators(path);
-    if (!showWindowsShellMenu(native, reinterpret_cast<HWND>(winId())))
+    if (!showWindowsShellMenu(native, winId()))
         FramelessDialog::message(this, tr("系统菜单"), tr("无法打开系统右键菜单"));
 #else
     Q_UNUSED(m_shellMenuPos);
@@ -2024,76 +1156,6 @@ void FileBrowserDialog::copyRemoteNames(bool fullPath, bool asUrl)
     }
     QGuiApplication::clipboard()->setText(lines.join(QLatin1Char('\n')));
     m_status->setText(tr("已复制 %n 条到剪贴板", "", int(lines.size())));
-}
-
-void FileBrowserDialog::onEditFileChanged(const QString &path)
-{
-    const QString normalized = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
-    QString key;
-    if (m_watchedEdit.contains(normalized)) {
-        key = normalized;
-    } else {
-        for (auto it = m_watchedEdit.cbegin(); it != m_watchedEdit.cend(); ++it) {
-            if (QDir::cleanPath(QFileInfo(it.key()).absoluteFilePath()) == normalized) {
-                key = it.key();
-                break;
-            }
-        }
-    }
-    if (key.isEmpty())
-        return;
-    if (QFileInfo::exists(key))
-        m_editWatcher->addPath(key);
-    m_editTimerPath = key;
-    m_editTimer->start();
-}
-
-void FileBrowserDialog::commitEditUpload()
-{
-    const QString local = m_editTimerPath;
-    if (!m_watchedEdit.contains(local) || !QFileInfo::exists(local))
-        return;
-    const QByteArray digest = fileDigest(local);
-    if (digest.isEmpty() || digest == m_editDigest.value(local))
-        return;
-    const QByteArray previous = m_editDigest.value(local);
-    m_editDigest.insert(local, digest);
-    const int id = m_transfer->enqueue(true, local, m_watchedEdit.value(local),
-                                       QFileInfo(local).size());
-    PendingFetch job;
-    job.uploadBack = true;
-    job.local = local;
-    job.remote = m_watchedEdit.value(local);
-    job.previousDigest = previous;
-    m_pendingFetch.insert(id, job);
-    m_status->setText(tr("正在回传 %1").arg(QFileInfo(local).fileName()));
-}
-
-void FileBrowserDialog::enqueueFetch(bool edit, const QString &remotePath, qint64 size)
-{
-    const QString local = cacheFile(edit, remotePath);
-    const int id = m_transfer->enqueue(false, local, remotePath, size);
-    PendingFetch job;
-    job.edit = edit;
-    job.local = local;
-    job.remote = remotePath;
-    m_pendingFetch.insert(id, job);
-}
-
-QString FileBrowserDialog::cacheFile(bool edit, const QString &remotePath) const
-{
-    QString key = sessionKey();
-    key.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9._-]+")), QStringLiteral("_"));
-    const QString base = edit
-                             ? QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
-                             : QStandardPaths::writableLocation(QStandardPaths::TempLocation);
-    QString relative = remotePath;
-    while (relative.startsWith(QLatin1Char('/')))
-        relative.remove(0, 1);
-    const QString folder = edit ? QStringLiteral("sftp-edit") : QStringLiteral("sftp-open");
-    const QString local = QDir(base).filePath(folder + QLatin1Char('/') + key + QLatin1Char('/') + relative);
-    QDir().mkpath(QFileInfo(local).absolutePath());
-    return QDir::cleanPath(local);
 }
 
 void FileBrowserDialog::beginCommandBatch()
@@ -2263,7 +1325,7 @@ void FileBrowserDialog::setLocalPath(const QString &path)
     m_localPath = dir.absolutePath();
     m_localView->setRootIndex(m_fsProxy->mapFromSource(m_fsModel->index(m_localPath)));
     syncLocalBar();
-    saveBrowserState();
+    persistBrowserState();
 }
 
 void FileBrowserDialog::syncLocalBar()
@@ -2323,31 +1385,6 @@ void FileBrowserDialog::setRemotePath(const QString &path)
     refreshRemote();
 }
 
-QString FileBrowserDialog::remoteJoin(const QString &base, const QString &name) const
-{
-    if (base.endsWith(QLatin1Char('/')))
-        return base + name;
-    return base + QLatin1Char('/') + name;
-}
-
-QString FileBrowserDialog::localJoin(const QString &base, const QString &name)
-{
-    return QDir(base).filePath(name);
-}
-
-QString FileBrowserDialog::permString(quint32 perm, bool isDir, bool isLink)
-{
-    QString text;
-    text += isLink ? QChar::fromLatin1('l') : (isDir ? QChar::fromLatin1('d') : QChar::fromLatin1('-'));
-    const quint32 masks[3] = { 0400, 0200, 0100 };
-    const char sym[3] = { 'r', 'w', 'x' };
-    for (int group = 0; group < 3; ++group) {
-        for (int bit = 0; bit < 3; ++bit)
-            text += QChar::fromLatin1((perm & (masks[bit] >> (group * 3))) ? sym[bit] : '-');
-    }
-    return text;
-}
-
 QStringList FileBrowserDialog::selectedLocalPaths() const
 {
     QStringList paths;
@@ -2364,7 +1401,7 @@ QModelIndex FileBrowserDialog::mapToSource(const QModelIndex &viewIndex) const
     return m_fsProxy ? m_fsProxy->mapToSource(viewIndex) : viewIndex;
 }
 
-QVector<FileBrowserDialog::RemoteItem> FileBrowserDialog::selectedRemote() const
+QVector<RemoteItem> FileBrowserDialog::selectedRemote() const
 {
     QVector<RemoteItem> items;
     const QList<QTreeWidgetItem *> selected = m_remoteTree->selectedItems();

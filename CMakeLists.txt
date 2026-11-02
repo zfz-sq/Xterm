@@ -7,8 +7,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(CTest)
 
+# vcpkg triplet 决定 .deps/vcpkg_installed/ 下的安装目录名；
+# 换工具链（如 MSVC x64-windows）时改这里或用 -DXTERM_VCPKG_TRIPLET=... 覆盖。
+set(XTERM_VCPKG_TRIPLET
+    "x64-mingw-dynamic"
+    CACHE STRING "vcpkg triplet of the libssh/OpenSSL install")
 set(XTERM_SSH_DEPS_ROOT
-    "${CMAKE_CURRENT_SOURCE_DIR}/.deps/vcpkg_installed/x64-mingw-dynamic"
+    "${CMAKE_CURRENT_SOURCE_DIR}/.deps/vcpkg_installed/${XTERM_VCPKG_TRIPLET}"
     CACHE PATH "Root of dynamic libssh/OpenSSL dependencies")
 list(PREPEND CMAKE_PREFIX_PATH "${XTERM_SSH_DEPS_ROOT}")
 find_package(libssh CONFIG REQUIRED)
@@ -86,6 +91,12 @@ qt_add_executable(Xterm
     hoststats.h
     filebrowserdialog.cpp
     filebrowserdialog.h
+    filebrowsermodel.cpp
+    filebrowsermodel.h
+    filebrowserwidgets.cpp
+    filebrowserwidgets.h
+    transferqueue.cpp
+    transferqueue.h
     transferdialog.cpp
     transferdialog.h
     ssh/libsshapi.cpp
@@ -126,8 +137,12 @@ target_link_libraries(Xterm
 
 xterm_deploy_ssh_runtime(Xterm)
 
-add_subdirectory(tools/sshtest)
-add_subdirectory(tools/sftptest)
+# tools/ 下的 SSH/SFTP 调试工具，日常构建用不到，默认不编（需要时 -DXTERM_BUILD_TOOLS=ON）
+option(XTERM_BUILD_TOOLS "Build the sshtest/sftptest debug tools" OFF)
+if(XTERM_BUILD_TOOLS)
+    add_subdirectory(tools/sshtest)
+    add_subdirectory(tools/sftptest)
+endif()
 
 if(BUILD_TESTING)
     add_subdirectory(tests)
