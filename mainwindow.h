@@ -121,6 +121,7 @@ private:
     ScreenView *m_sshView = nullptr;
     CompletionEngine *m_completion = nullptr;
     QLabel *m_statusLabel = nullptr;
+    QLabel *m_xoffLabel = nullptr;      // 状态栏 XOFF 提示：发出 Ctrl+S 亮、Ctrl+Q 灭
     QToolButton *m_kmsgMuteBtn = nullptr; // 底部状态栏「内核日志静音」开关（仅串口页显示）
     bool m_kmsgMuted = false;             // 客户端记住的期望状态；连接建立/断开时重置
     QTimer *m_saveTimer = nullptr; // 配置保存防抖（单发，见 scheduleProfileSave）

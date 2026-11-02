@@ -1,6 +1,7 @@
 #include "screenview.h"
 
 #include <QClipboard>
+#include <QApplication>
 #include <QFocusEvent>
 #include <QFontDatabase>
 #include <QFontMetrics>
@@ -103,6 +104,28 @@ ScreenView::ScreenView(QWidget *parent)
     connect(m_bellTimer, &QTimer::timeout, this, [this] {
         m_bell = false;
         update();
+    });
+
+    // 光标闪烁：半周期跟随系统设置（QApplication::cursorFlashTime()/2，
+    // 默认约 530ms）。系统设为 0（禁闪烁）时 interval 为 0，光标保持常亮。
+    // 只在有焦点且光标未隐藏时运行；打字/光标移动立即点亮并重新起算。
+    m_cursorTimer = new QTimer(this);
+    {
+        const int flash = QApplication::cursorFlashTime();
+        m_cursorTimer->setInterval(flash > 0 ? qMax(120, flash / 2) : 0);
+    }
+    connect(m_cursorTimer, &QTimer::timeout, this, [this] {
+        m_cursorBlink = !m_cursorBlink;
+        if (m_screen.cursorHidden())
+            return;
+        // 只重绘光标那一小格，不刷整屏
+        const bool alt = m_screen.altScreen();
+        const int abs = alt ? m_screen.cursorRow()
+                            : m_screen.historySize() + m_screen.cursorRow();
+        const TermLine *line = m_screen.lineAbsolute(abs);
+        const TermCell cell = cellOrBlank(line, m_screen.cursorCol());
+        const int span = (cell.flags & TermScreen::FlagWide) ? 2 : 1;
+        update(cursorRect(abs, m_screen.cursorCol(), span));
     });
 
     m_find = new QLineEdit(this);
@@ -273,6 +296,7 @@ void ScreenView::afterOutput(int dropped)
         m_bell = true;
         m_bellTimer->start(140);
     }
+    syncCursorBlink(); // 输出后光标多半移动了：重置闪烁相位（立即点亮）
     // 输出是成块到达的（top 一轮刷新就是 3 块），逐块立绘会把半帧画出来。
     // 统一走短合并窗：8ms 内到达的块合成一次重绘（对键入回显的延迟不可感）；
     // 同步更新（BSA 2026）期间窗口放宽到 80ms 等帧尾，结束后回落 8ms 立即收帧。
@@ -386,16 +410,27 @@ void ScreenView::collectKeywordHits(const TermLine *line, int cols,
     for (const KeywordRule &rule : m_keywords) {
         if (!rule.enabled || rule.text.isEmpty())
             continue;
+        // 词边界：命中向两侧扩到完整单词（字母/数字/下划线）。子串只染
+        // 半截很破碎：Successfully 只染前半的 Success、fully 留灰色。
+        const auto isWordChar = [](const QChar &c) {
+            return c.isLetterOrNumber() || c == QLatin1Char('_');
+        };
         int from = 0;
         while (true) {
             const int idx = text.indexOf(rule.text, from, Qt::CaseInsensitive);
             if (idx < 0)
                 break;
-            const int last = idx + rule.text.size() - 1;
-            const int start = colOf.at(idx);
+            int wordStart = idx;
+            int wordEnd = idx + rule.text.size();
+            while (wordStart > 0 && isWordChar(text.at(wordStart - 1)))
+                --wordStart;
+            while (wordEnd < text.size() && isWordChar(text.at(wordEnd)))
+                ++wordEnd;
+            const int last = wordEnd - 1;
+            const int start = colOf.at(wordStart);
             const int end = colOf.at(last) + qMax(spanOf.at(last), 1) - 1;
             hits->append({ start, end, rule.color });
-            from = idx + rule.text.size();
+            from = wordEnd;
         }
     }
 }
@@ -687,6 +722,8 @@ void ScreenView::paintCursor(QPainter &painter)
         painter.drawRect(x, y, span * m_cellW - 1, m_cellH - 1);
         return;
     }
+    if (!m_cursorBlink)
+        return; // 闪烁的熄灭相位：这一帧不画光标
     QColor fg = m_screen.foreground(cell);
     QColor bg = m_screen.background(cell);
     if (cell.attr & TermScreen::AttrInverse)
@@ -742,6 +779,13 @@ void ScreenView::emitInput(const QByteArray &bytes)
         return;
     emit sendData(bytes);
     echoLocal(bytes);
+    // XOFF/XON 提示：发出 Ctrl+S(0x13)后设备 tty 可能按软件流控挂起输出
+    // （画面假死、按键仍在发送），亮提示教用户按 Ctrl+Q；0x11 熄灭。
+    // 两者同在（粘贴的文本）以 0x13 为准——宁可多亮，不能漏亮。
+    if (bytes.contains('\x13'))
+        emit xoffChanged(true);
+    else if (bytes.contains('\x11'))
+        emit xoffChanged(false);
 }
 
 bool ScreenView::localLineMode() const
@@ -1578,15 +1622,58 @@ void ScreenView::wheelEvent(QWheelEvent *event)
     event->accept();
 }
 
+QRect ScreenView::cursorRect(int absRow, int col, int span) const
+{
+    const int origin = m_screen.altScreen() ? 0 : m_origin;
+    const int viewRow = absRow - origin;
+    const int x = m_pad + col * m_cellW;
+    const int y = m_pad + qMax(0, viewRow) * m_cellH;
+    return QRect(x, y, qMax(1, span) * m_cellW, m_cellH);
+}
+
+// 光标位置/焦点变化后调整闪烁：光标移动（打字回显、vi 跳转）立即点亮并
+// 重新起算周期——闪烁期间按键也能随时看清位置；失焦/隐藏则停止（回显
+// 相位），系统禁闪烁（interval 0）时光标常亮不启动定时器。
+void ScreenView::syncCursorBlink()
+{
+    const bool hidden = m_screen.cursorHidden();
+    const bool alt = m_screen.altScreen();
+    const int abs = hidden ? -1
+        : (alt ? m_screen.cursorRow() : m_screen.historySize() + m_screen.cursorRow());
+    const int col = m_screen.cursorCol();
+    const bool moved = (abs != m_lastCursorAbs || col != m_lastCursorCol
+                        || hidden != m_lastCursorHidden);
+    m_lastCursorAbs = abs;
+    m_lastCursorCol = col;
+    m_lastCursorHidden = hidden;
+
+    if (m_cursorTimer->interval() <= 0) { // 系统关闭了光标闪烁：常亮
+        m_cursorBlink = true;
+        return;
+    }
+    if (!hasFocus() || hidden) {
+        m_cursorTimer->stop();
+        m_cursorBlink = true; // 回到显示相位（失焦空心框、隐藏不画）
+    } else if (!m_cursorTimer->isActive()) {
+        m_cursorBlink = true;
+        m_cursorTimer->start();
+    } else if (moved) {
+        m_cursorBlink = true;
+        m_cursorTimer->start(); // 移动了：点亮，周期重算
+    }
+}
+
 void ScreenView::focusInEvent(QFocusEvent *event)
 {
     QWidget::focusInEvent(event);
+    syncCursorBlink();
     update();
 }
 
 void ScreenView::focusOutEvent(QFocusEvent *event)
 {
     QWidget::focusOutEvent(event);
+    syncCursorBlink();
     update();
 }
 

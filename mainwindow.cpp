@@ -191,6 +191,16 @@ MainWindow::MainWindow(QWidget *parent)
     m_statusLabel = new QLabel(tr("未连接"), this);
     ui->statusbar->addPermanentWidget(m_statusLabel, 1);
 
+    // XOFF 提示：发出 Ctrl+S(0x13)后设备 tty 可能按软件流控挂起输出，
+    // 琥珀色常亮提示按 Ctrl+Q(0x11)恢复；发出 Ctrl+Q 或断开连接时熄灭。
+    // 放 permanent 区不会被其他临时消息（错误提示等）挤掉。
+    m_xoffLabel = new QLabel(tr("XOFF · Ctrl+Q 恢复"), this);
+    m_xoffLabel->setStyleSheet(QStringLiteral("color: #D89B2C; font-weight: 600;"));
+    m_xoffLabel->setToolTip(tr("按 Ctrl+S（XOFF）后设备输出可能被挂起：画面不更新，"
+                               "但按键仍在发送。按 Ctrl+Q（XON）恢复。"));
+    m_xoffLabel->hide();
+    ui->statusbar->addPermanentWidget(m_xoffLabel, 0);
+
     // 「内核日志静音」开关：常驻状态栏最右（连接状态旁），仅串口页显示。
     // 设备侧 printk 会异步直写串口控制台，插进 vi/top 画面的字节流里，
     // 终端层无法分离——唯一根治是降低 console_loglevel，这里做成一键开关。
@@ -743,6 +753,7 @@ void MainWindow::connectSignals()
         m_serialView->appendSystemMessage(tr("── 连接已断开 ──"));
         m_kmsgMuted = false; // 断开后设备侧状态未知，回到「正常」
         updateKmsgMuteUi();
+        m_xoffLabel->hide(); // 设备侧流控状态已不可知，提示熄灭
         updateConnectionUi();
         updatePersistentStatus();
     });
@@ -751,6 +762,10 @@ void MainWindow::connectSignals()
         m_serialView->appendSystemMessage(tr("── %1 ──").arg(msg));
     });
     connect(m_serial, &SerialSession::received, m_serialView, &ScreenView::receiveData);
+    // Ctrl+S(XOFF)可能挂起设备输出：状态栏亮提示，Ctrl+Q(XON)熄灭
+    for (ScreenView *view : { m_serialView, m_sshView })
+        connect(view, &ScreenView::xoffChanged, this,
+                [this](bool paused) { m_xoffLabel->setVisible(paused); });
     connect(m_serial, &SerialSession::stateChanged, this,
             [this](Transport::State) { updateConnectionUi(); updatePersistentStatus(); });
 
@@ -768,6 +783,7 @@ void MainWindow::connectSignals()
     connect(m_ssh, &SshSession::closed, this, [this] {
         m_ssh->stopStats();
         clearHostStats();
+        m_xoffLabel->hide(); // 设备侧流控状态已不可知，提示熄灭
         updateConnectionUi();
         updatePersistentStatus();
     });

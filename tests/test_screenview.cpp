@@ -61,6 +61,7 @@ private slots:
     void busyBoxViInsertTypingKeepsPassthrough();
     void viInsertEnterKeepsPassthrough();
     void ctrlCInterruptsFullScreenProgram();
+    void xoffHintTogglesWithKey();
     void pureTerminalModeSendsKeysRaw();
     void localRedrawDoesNotSelfTrigger();
     void wheelBecomesArrowsWhileRemotePaints();
@@ -241,6 +242,38 @@ void ScreenViewTest::viInsertEnterKeepsPassthrough()
     cap.reset();
     typePlain(view, "ls");
     QVERIFY(cap.sent.isEmpty()); // 回到行编辑，键入不上路
+}
+
+// Ctrl+S（0x13/XOFF）可能挂起设备 tty 的输出，Ctrl+Q（0x11）恢复：
+// 状态栏提示纯按按键时刻点亮/熄灭，不做无输出检测。
+void ScreenViewTest::xoffHintTogglesWithKey()
+{
+    ScreenView view;
+    view.resize(100 * 15, 34 * 18);
+    view.setLocalEcho(true);
+    Capture cap;
+    QObject::connect(&view, &ScreenView::sendData,
+                     [&cap](const QByteArray &bytes) { cap.sent += bytes; });
+    QSignalSpy xoff(&view, &ScreenView::xoffChanged);
+
+    feed(view, QByteArray("root@board:~# "));
+    feed(view, QByteArray("\x1b[H\x1b[2J")); // vi 式画屏，进入直通
+
+    // vi 里随手 Ctrl+S：0x13 透传，提示亮起
+    key(view, Qt::Key_S, QStringLiteral("s"), Qt::ControlModifier);
+    QCOMPARE(cap.sent, QByteArray("\x13"));
+    QCOMPARE(xoff.count(), 1);
+    QVERIFY(xoff.at(0).at(0).toBool());
+
+    // 普通按键不影响提示状态
+    typePlain(view, "x");
+    QCOMPARE(xoff.count(), 1);
+
+    // Ctrl+Q：0x11 透传，提示熄灭
+    key(view, Qt::Key_Q, QStringLiteral("q"), Qt::ControlModifier);
+    QCOMPARE(cap.sent.right(1), QByteArray("\x11"));
+    QCOMPARE(xoff.count(), 2);
+    QVERIFY(!xoff.at(1).at(0).toBool());
 }
 
 // 全屏程序（备用屏 / 远端画屏）期间 Ctrl+C 是 ETX 中断，是 vi 卡住时最后

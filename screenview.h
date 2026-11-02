@@ -71,6 +71,9 @@ signals:
     void terminalSizeChanged(int cols, int rows);
     void shellTitleChanged(const QString &title);
     void fontSizeChanged(int pt);
+    // XOFF 流控提示（纯按键时刻，不做输出检测）：发出 Ctrl+S(0x13)后
+    // 设备 tty 可能挂起输出，主窗口亮提示；发出 Ctrl+Q(0x11)后熄灭。
+    void xoffChanged(bool paused);
     // 字体族变化（主窗口据此同步另一页并落盘）
     void fontFamilyChanged(const QString &family);
     // 选中词右键「高亮此词」：把选中文本交给主窗口建关键词高亮规则
@@ -134,6 +137,10 @@ private:
     void collectKeywordHits(const TermLine *line, int cols, QList<KeywordHit> *hits) const;
     QByteArray arrowKey(char letter) const;
     void paintCursor(QPainter &painter);
+    // 光标占的像素区（局部重绘用）；span 为占格数（宽字符 2）
+    QRect cursorRect(int absRow, int col, int span) const;
+    // 光标位置/焦点变化后调整闪烁：移动立即点亮重起周期，失焦/隐藏停止
+    void syncCursorBlink();
     void emitInput(const QByteArray &bytes);
     void echoLocal(const QByteArray &bytes);
     bool localLineMode() const;
@@ -160,6 +167,11 @@ private:
     QTimer *m_pump = nullptr;
     QTimer *m_syncHold = nullptr;
     QTimer *m_bellTimer = nullptr;
+    QTimer *m_cursorTimer = nullptr; // 光标闪烁（有焦点且未隐藏时跑；interval 0 = 系统禁闪）
+    bool m_cursorBlink = true;       // 闪烁的可见相位；打字/光标移动时立即点亮
+    int m_lastCursorAbs = -1;        // 上次的光标位置（绝对行/列/隐藏），变了就重置闪烁
+    int m_lastCursorCol = -1;
+    bool m_lastCursorHidden = false;
     QLineEdit *m_find = nullptr;
     QByteArray m_rx;
     int m_rxUsed = 0;

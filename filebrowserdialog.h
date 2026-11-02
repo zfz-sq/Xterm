@@ -16,6 +16,7 @@ class QFileSystemWatcher;
 class QLabel;
 class QMenu;
 class QModelIndex;
+class QSortFilterProxyModel;
 class QProcess;
 class QProgressBar;
 class QTimer;
@@ -140,6 +141,8 @@ private:
     bool askRemoteDest(const QString &title, const QString &defaultName, bool editName,
                        QString *dirOut, QString *nameOut);
     bool remoteNameExists(const QString &name) const;
+    // 视图（经排序代理）索引 → QFileSystemModel 源索引
+    QModelIndex mapToSource(const QModelIndex &viewIndex) const;
 
     void setLocalPath(const QString &path);
     void setRemotePath(const QString &path);
@@ -157,6 +160,7 @@ private:
     TransferDialog *m_transfer = nullptr;
 
     QFileSystemModel *m_fsModel = nullptr;
+    QSortFilterProxyModel *m_fsProxy = nullptr; // 本地列表排序：目录置顶 + 字母序
     QTreeView *m_localView = nullptr;
     QTreeWidget *m_remoteTree = nullptr;
     PathBar *m_localPathBar = nullptr;

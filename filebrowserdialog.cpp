@@ -47,9 +47,11 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QShortcut>
+#include <QSortFilterProxyModel>
 #include <QSizePolicy>
 #include <QSplitter>
 #include <QStandardPaths>
+#include <QStyledItemDelegate>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -166,6 +168,41 @@ QFrame *vsep(QWidget *parent)
     line->setFrameShadow(QFrame::Sunken);
     return line;
 }
+
+// 本地列表「大小」列右对齐（与远程端一致）；QFileSystemModel 默认左对齐
+class SizeColumnDelegate : public QStyledItemDelegate
+{
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+protected:
+    void initStyleOption(QStyleOptionViewItem *option, const QModelIndex &index) const override
+    {
+        QStyledItemDelegate::initStyleOption(option, index);
+        option->displayAlignment = Qt::AlignRight | Qt::AlignVCenter;
+    }
+};
+
+// 本地列表排序：目录永远在文件前面，名称不区分大小写按字母序。
+// QFileSystemModel 的默认枚举序两者都不保证（NTFS 是纯字母混排），
+// 列头也不参与排序——顺序恒定可预期。
+class LocalSortProxy : public QSortFilterProxyModel
+{
+public:
+    using QSortFilterProxyModel::QSortFilterProxyModel;
+
+protected:
+    bool lessThan(const QModelIndex &left, const QModelIndex &right) const override
+    {
+        auto *fs = static_cast<QFileSystemModel *>(sourceModel());
+        const bool leftDir = fs->isDir(left);
+        const bool rightDir = fs->isDir(right);
+        if (leftDir != rightDir)
+            return leftDir;
+        return left.data().toString().compare(right.data().toString(),
+                                              Qt::CaseInsensitive) < 0;
+    }
+};
 
 #ifdef Q_OS_WIN
 bool showWindowsShellMenu(const QStringList &paths, HWND hwnd)
@@ -825,10 +862,21 @@ FileBrowserDialog::FileBrowserDialog(SshSession *session, QWidget *parent)
     m_fsModel = new QFileSystemModel(this);
     m_fsModel->setRootPath(QString());
     m_fsModel->setFilter(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden);
+    // 排序代理：目录置顶 + 名称不区分大小写字母序；dynamicSortFilter 让
+    // QFileSystemModel 异步填充出来的条目自动落位有序
+    m_fsProxy = new LocalSortProxy(this);
+    m_fsProxy->setSourceModel(m_fsModel);
+    m_fsProxy->setDynamicSortFilter(true);
+    m_fsProxy->sort(0, Qt::AscendingOrder);
     m_localView = new QTreeView(this);
-    m_localView->setModel(m_fsModel);
-    for (int c = m_localView->header()->count() - 1; c >= 1; --c)
-        m_localView->hideColumn(c);
+    m_localView->setModel(m_fsProxy);
+    // 与远程端对齐显示 名称/大小/修改时间：隐藏「类型」列（第 2 列，信息量低）
+    m_localView->hideColumn(2);
+    m_localView->setColumnWidth(1, 90);  // 大小
+    m_localView->setColumnWidth(3, 150); // 修改时间（系统格式较长）
+    // 大小列右对齐；列头不参与排序（顺序恒定：目录置顶 + 字母序）
+    m_localView->setItemDelegateForColumn(1, new SizeColumnDelegate(m_localView));
+    m_localView->header()->setSectionsClickable(false);
     m_localView->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_localView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_localView->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -1278,10 +1326,11 @@ void FileBrowserDialog::onLocalActivated(const QModelIndex &index)
 {
     if (!index.isValid())
         return;
-    if (m_fsModel->isDir(index))
-        setLocalPath(m_fsModel->filePath(index));
+    const QModelIndex src = mapToSource(index);
+    if (m_fsModel->isDir(src))
+        setLocalPath(m_fsModel->filePath(src));
     else
-        QDesktopServices::openUrl(QUrl::fromLocalFile(m_fsModel->filePath(index)));
+        QDesktopServices::openUrl(QUrl::fromLocalFile(m_fsModel->filePath(src)));
 }
 
 void FileBrowserDialog::onLocalPathChosen()
@@ -1346,7 +1395,7 @@ void FileBrowserDialog::updateActionStates()
     const QModelIndexList localRows = m_localView->selectionModel()->selectedRows(0);
     int localFiles = 0;
     for (const QModelIndex &idx : localRows) {
-        if (!m_fsModel->isDir(idx))
+        if (!m_fsModel->isDir(mapToSource(idx)))
             ++localFiles;
     }
     const QVector<RemoteItem> remote = selectedRemote();
@@ -1496,7 +1545,7 @@ void FileBrowserDialog::uploadSelected()
     int skippedLinks = 0;
 
     for (const QModelIndex &idx : rows) {
-        const QString path = m_fsModel->filePath(idx);
+        const QString path = m_fsModel->filePath(mapToSource(idx));
         const QFileInfo info(path);
         if (info.isSymLink()) { // 链接/junction 可能成环，直接跳过不递归
             ++skippedLinks;
@@ -2203,7 +2252,8 @@ void FileBrowserDialog::setLocalPath(const QString &path)
         if (!drives.isEmpty())
             anchor = drives.first().absoluteFilePath();
         const QModelIndex drive = m_fsModel->index(anchor);
-        m_localView->setRootIndex(drive.isValid() ? drive.parent() : QModelIndex());
+        m_localView->setRootIndex(m_fsProxy->mapFromSource(
+            drive.isValid() ? drive.parent() : QModelIndex()));
         syncLocalBar();
         return;
     }
@@ -2211,7 +2261,7 @@ void FileBrowserDialog::setLocalPath(const QString &path)
     if (!dir.exists() || !dir.isReadable())
         return;
     m_localPath = dir.absolutePath();
-    m_localView->setRootIndex(m_fsModel->index(m_localPath));
+    m_localView->setRootIndex(m_fsProxy->mapFromSource(m_fsModel->index(m_localPath)));
     syncLocalBar();
     saveBrowserState();
 }
@@ -2304,8 +2354,14 @@ QStringList FileBrowserDialog::selectedLocalPaths() const
     const QModelIndexList rows = m_localView->selectionModel()->selectedRows(0);
     paths.reserve(rows.size());
     for (const QModelIndex &idx : rows)
-        paths << m_fsModel->filePath(idx);
+        paths << m_fsModel->filePath(mapToSource(idx));
     return paths;
+}
+
+// 视图（经排序代理）索引 → QFileSystemModel 源索引；文件路径与目录判断都以源模型为准
+QModelIndex FileBrowserDialog::mapToSource(const QModelIndex &viewIndex) const
+{
+    return m_fsProxy ? m_fsProxy->mapToSource(viewIndex) : viewIndex;
 }
 
 QVector<FileBrowserDialog::RemoteItem> FileBrowserDialog::selectedRemote() const
