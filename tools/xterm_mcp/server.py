@@ -171,6 +171,7 @@ TOOLS = [
                 "text": {"type": "string", "description": "一行内容，不要带换行"},
                 "wait": {"type": "string", "description": "发完后等待屏幕里新出现的文本"},
                 "timeout_ms": {"type": "integer", "description": "等待毫秒，默认 3000，最大 30000"},
+                "interval_ms": {"type": "integer", "description": "打字间隔毫秒，默认 20，最大 1000（慢速演示）"},
             },
             "required": ["text"],
         },

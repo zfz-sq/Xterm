@@ -310,7 +310,8 @@ void AgentBridge::handleLine(QLocalSocket *sock, const QByteArray &line)
         }
         // 打字机逐字发送：用户看得见输入过程，且随时可被自己的操作打断
         const QString needle = params.value(QStringLiteral("wait")).toString();
-        const int interval = qBound(5, params.value(QStringLiteral("interval_ms")).toInt(20), 120);
+        // 上限 1 秒/字符：常规命令 20ms 默认，慢速演示/留足打断窗口时用大间隔
+        const int interval = qBound(5, params.value(QStringLiteral("interval_ms")).toInt(20), 1000);
         startTyping(sock, id, text, needle,
                     clampTimeout(params.value(QStringLiteral("timeout_ms")).toInt()), interval);
         return;

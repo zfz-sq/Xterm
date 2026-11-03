@@ -191,6 +191,11 @@ MainWindow::MainWindow(QWidget *parent)
     m_statusLabel = new QLabel(tr("未连接"), this);
     ui->statusbar->addPermanentWidget(m_statusLabel, 1);
 
+    // 常驻 MCP 状态（就绪/AI 在线/输入中/未启用），随在线与打字状态切换
+    m_mcpStatusLabel = new QLabel(this);
+    m_mcpStatusLabel->hide(); // start() 后 refreshMcpStatus 决定显示
+    ui->statusbar->addPermanentWidget(m_mcpStatusLabel, 0);
+
     // XOFF 提示：发出 Ctrl+S(0x13)后设备 tty 可能按软件流控挂起输出，
     // 琥珀色常亮提示按 Ctrl+Q(0x11)恢复；发出 Ctrl+Q 或断开连接时熄灭。
     // 放 permanent 区不会被其他临时消息（错误提示等）挤掉。
@@ -293,7 +298,10 @@ MainWindow::MainWindow(QWidget *parent)
             ui->statusbar->showMessage(QString());
             m_mcpActiveTimer->start(); // 恢复 30 秒无活动自动熄灭
         }
+        refreshMcpStatus();
     });
+
+    refreshMcpStatus(); // 初始：就绪 / 未启用（管道被其他实例占用时）
 }
 
 MainWindow::~MainWindow()
@@ -1435,6 +1443,36 @@ void MainWindow::setMcpActive(bool on)
         return;
     m_mcpActive = on;
     refreshMcpIcon();
+    refreshMcpStatus();
+}
+
+void MainWindow::refreshMcpStatus()
+{
+    if (!m_mcpStatusLabel)
+        return;
+    if (m_agent && m_agent->isTyping()) {
+        m_mcpStatusLabel->setText(tr("MCP · AI 输入中"));
+        m_mcpStatusLabel->setStyleSheet(QStringLiteral("color: #E05252; font-weight: 600;"));
+        m_mcpStatusLabel->setToolTip(
+            tr("AI（MCP）正在逐字输入命令，普通输入已锁定，按 Ctrl+C 打断"));
+    } else if (m_mcpActive) {
+        m_mcpStatusLabel->setText(tr("MCP · AI 在线"));
+        m_mcpStatusLabel->setStyleSheet(QStringLiteral("color: #4CAF50; font-weight: 600;"));
+        m_mcpStatusLabel->setToolTip(
+            tr("AI 正在通过 MCP 访问本窗口（30 秒无活动自动转回就绪）"));
+    } else if (m_agent && m_agent->isServing()) {
+        m_mcpStatusLabel->setText(tr("MCP 就绪"));
+        m_mcpStatusLabel->setStyleSheet(QString());
+        m_mcpStatusLabel->setToolTip(
+            tr("本机 AI（Claude 等）可通过 MCP 工具操作此窗口连接的设备；"
+               "连接信息在配置目录 agent.json"));
+    } else {
+        m_mcpStatusLabel->setText(tr("MCP 未启用"));
+        m_mcpStatusLabel->setStyleSheet(QStringLiteral("color: #888888;"));
+        m_mcpStatusLabel->setToolTip(
+            tr("MCP 管道被另一个 Xterm 实例占用，AI 只能操作那个窗口"));
+    }
+    m_mcpStatusLabel->show();
 }
 
 void MainWindow::refreshMcpIcon()

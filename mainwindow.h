@@ -80,6 +80,7 @@ private:
     void onHighlightRequested(const QString &word); // 终端选中词右键「高亮此词」
     void setMcpActive(bool on);     // MCP 在线角标: AI 正在访问本窗口时点亮
     void refreshMcpIcon();          // 按当前主题 + 在线状态重建 MCP 按钮图标
+    void refreshMcpStatus();        // 状态栏常驻 MCP 状态（就绪/AI 在线/未启用/输入中）
 
     QJsonObject agentStatus() const;
     QString agentRecentText(int maxLines) const;
@@ -122,6 +123,7 @@ private:
     CompletionEngine *m_completion = nullptr;
     QLabel *m_statusLabel = nullptr;
     QLabel *m_xoffLabel = nullptr;      // 状态栏 XOFF 提示：发出 Ctrl+S 亮、Ctrl+Q 灭
+    QLabel *m_mcpStatusLabel = nullptr; // 状态栏常驻 MCP 状态（就绪/AI 在线/未启用）
     QLabel *m_agentLockLabel = nullptr; // 状态栏「AI 锁定」提示：AI 打字时常亮，Ctrl+C 打断
     QToolButton *m_kmsgMuteBtn = nullptr; // 底部状态栏「内核日志静音」开关（仅串口页显示）
     bool m_kmsgMuted = false;             // 客户端记住的期望状态；连接建立/断开时重置

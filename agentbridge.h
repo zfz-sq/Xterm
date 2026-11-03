@@ -51,6 +51,8 @@ public:
     // 监听成功后写 agent.json。已经有实例占着管道时什么都不改。
     void start(Hooks hooks, const QString &agentFile = QString());
     QString pipeName() const { return m_pipeName; }
+    // 本实例是否在服务管道（false = 被另一个 Xterm 实例占用）
+    bool isServing() const { return m_server != nullptr; }
 
     // 用户在终端里有了动作（键盘/粘贴/命令栏）：立即中止 AI 的打字机，
     // 剩余字符丢弃，对应的 send_line 请求以 interrupted 错误应答。
