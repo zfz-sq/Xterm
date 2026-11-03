@@ -1371,6 +1371,29 @@ QString ScreenView::recentText(int maxLines) const
     return lines.join(QLatin1Char('\n'));
 }
 
+int ScreenView::recentLineCount() const
+{
+    return m_screen.altScreen() ? m_screen.rows()
+                                : m_screen.historySize() + m_screen.rows();
+}
+
+QString ScreenView::recentTextFrom(int fromLine, int maxLines) const
+{
+    maxLines = qBound(1, maxLines, 400);
+    if (fromLine < 0)
+        return QString();
+    const int total = recentLineCount();
+    const int begin = qMax(fromLine, total - maxLines); // 起点不早于窗口底
+    if (begin >= total)
+        return QString();
+    QStringList lines;
+    for (int abs = begin; abs < total; ++abs)
+        lines << lineToPlain(m_screen.lineAbsolute(abs));
+    while (!lines.isEmpty() && lines.last().isEmpty())
+        lines.removeLast();
+    return lines.join(QLatin1Char('\n'));
+}
+
 void ScreenView::resetCompletionCycle()
 {
     m_cycle.clear();

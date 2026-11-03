@@ -43,6 +43,13 @@ public:
     QString screenText() const;
     // 滚动历史末尾加上当前屏，供本机控制口读取。maxLines 含当前屏。
     QString recentText(int maxLines) const;
+    // 滚动历史 + 当前屏的总行数（备用屏时仅当前屏行数）。
+    // 单调递增（主屏），可作为「自某时刻起新增」的行锚点。
+    int recentLineCount() const;
+    // 自 fromLine（含）起的新增文本，最多 maxLines 行。fromLine 越界返回空。
+    // wait 命中判定用它：滑动窗口内的出现次数差在高频刷屏下不会增长，
+    // 必须只看锚点之后的新行。
+    QString recentTextFrom(int fromLine, int maxLines) const;
     bool usingAltScreen() const { return m_screen.altScreen(); }
     // 本地回显打开时，把已经发出去的字节画到屏幕上（不再次发送）。
     void showOutbound(const QByteArray &bytes);

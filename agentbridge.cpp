@@ -321,12 +321,12 @@ void AgentBridge::handleLine(QLocalSocket *sock, const QByteArray &line)
             reply(sock, id, false, {}, QStringLiteral("wait 需要 contains"));
             return;
         }
-        const QString after = m_hooks.recentText ? m_hooks.recentText(clampLines(0)) : QString();
         Waiter w;
         w.sock = sock;
         w.id = id;
         w.needle = needle;
-        w.beforeCount = after.count(needle);
+        // 同 send_line：以行锚点判「新增」，高频刷屏下依旧可靠
+        w.fromLine = m_hooks.recentLineCount ? m_hooks.recentLineCount() : -1;
         w.timeoutMs = clampTimeout(params.value(QStringLiteral("timeout_ms")).toInt());
         w.deadlineMs = QDateTime::currentMSecsSinceEpoch() + w.timeoutMs;
         m_waiters.append(w);
@@ -347,9 +347,12 @@ void AgentBridge::pollWaiters()
     const qint64 clock = QDateTime::currentMSecsSinceEpoch();
     for (int i = m_waiters.size() - 1; i >= 0; --i) {
         const Waiter w = m_waiters.at(i);
-        const int count = now.count(w.needle);
-        // 命中条件: 新出现次数达到 minNew（普通为 1，回显免疫场景为 2）
-        const bool hit = count - w.beforeCount >= w.minNew;
+        // 命中条件: 锚点之后的新增文本里 needle 出现次数达到 minNew
+        // （普通为 1，回显免疫场景为 2）
+        const QString fresh = (m_hooks.recentTextFrom && w.fromLine >= 0)
+                                  ? m_hooks.recentTextFrom(w.fromLine, 400) : QString();
+        const int count = fresh.count(w.needle);
+        const bool hit = count >= w.minNew;
         const bool timedOut = clock >= w.deadlineMs;
         if (!hit && !timedOut)
             continue;
@@ -435,7 +438,9 @@ void AgentBridge::typingTick()
     w.sock = sock;
     w.id = id;
     w.needle = needle;
-    w.beforeCount = after.count(needle);
+    // 行锚点：命中只看挂起之后新增的行——滑动窗口里的出现次数差
+    // 在高频刷屏设备上不会增长（旧的滚出、新的滚入，相互抵消）。
+    w.fromLine = m_hooks.recentLineCount ? m_hooks.recentLineCount() : -1;
     w.minNew = minNew;
     w.timeoutMs = timeoutMs;
     w.deadlineMs = QDateTime::currentMSecsSinceEpoch() + w.timeoutMs;

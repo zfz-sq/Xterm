@@ -247,6 +247,15 @@ MainWindow::MainWindow(QWidget *parent)
     m_agent->start({
         [this] { return agentStatus(); },
         [this](int maxLines) { return agentRecentText(maxLines); },
+        // wait 的行锚点：命中只看「挂起之后新增」的行，高频刷屏下才不会误判
+        [this] {
+            const ScreenView *view = (m_mode == Mode::Serial) ? m_serialView : m_sshView;
+            return view ? view->recentLineCount() : 0;
+        },
+        [this](int fromLine, int maxLines) {
+            const ScreenView *view = (m_mode == Mode::Serial) ? m_serialView : m_sshView;
+            return view ? view->recentTextFrom(fromLine, maxLines) : QString();
+        },
         [this](const QString &text) { return agentSendLine(text); },
         [this](const QByteArray &bytes) { return agentSendBytes(bytes); },
         // 打字机用的链路行尾与「整行发完」回调（记输入历史）

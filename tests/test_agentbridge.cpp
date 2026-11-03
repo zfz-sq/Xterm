@@ -22,6 +22,7 @@ private slots:
     void typingCompletes();
     void typingInterrupted();
     void typingWaits();
+    void waitTimesOutWhenNeedleNotNew();
     void clearAIsInstant();
 
 private:
@@ -37,6 +38,8 @@ private:
     QStringList m_sentLines;   // lineSent 记录（打字机完整发完的行）
     QStringList m_directLines; // sendLine 记录（clear -a 整行直达）
     QString m_recentText;      // recentText 可变内容
+    int m_lineCount = 0;       // recentLineCount 可变（行锚点）
+    QString m_freshText;       // recentTextFrom 可变（锚点之后的新增）
 };
 
 void AgentBridgeTest::initTestCase()
@@ -47,6 +50,8 @@ void AgentBridgeTest::initTestCase()
     m_bridge->start({
         [] { return QJsonObject(); },
         [this](int) { return m_recentText; },
+        [this] { return m_lineCount; },
+        [this](int, int) { return m_freshText; },
         [this](const QString &text) { m_directLines.append(text); return QString(); },
         [this](const QByteArray &bytes) { m_sink += bytes; return QString(); },
         [] { return '\n'; },
@@ -143,21 +148,51 @@ void AgentBridgeTest::typingWaits()
     sock.connectToServer(m_pipe);
     QVERIFY(sock.waitForConnected(2000));
 
-    m_recentText = QStringLiteral("before");
+    // 模拟高频刷屏设备：recentText（120 行滑动窗）里 needle 一直都在，
+    // 但行锚点之后真正「新增」的文本一开始没有 needle——旧实现按窗口内
+    // 次数差判新增，会既不命中也不增长；新实现只看锚点后的新增。
+    m_recentText = QStringLiteral("CoreBoard send\nCoreBoard recv\nCoreBoard send");
+    m_lineCount = 100;
+    m_freshText = QString();
     QJsonObject params;
     params.insert(QStringLiteral("text"), QStringLiteral("uptime"));
-    params.insert(QStringLiteral("wait"), QStringLiteral("load average"));
+    params.insert(QStringLiteral("wait"), QStringLiteral("CoreBoard"));
     params.insert(QStringLiteral("interval_ms"), 5);
     params.insert(QStringLiteral("timeout_ms"), 3000);
     sendRequest(&sock, 3, QStringLiteral("send_line"), params);
 
-    QTest::qWait(80); // 打字已结束、wait 已挂上
-    m_recentText = QStringLiteral("load average: 0.10 0.20 0.30");
+    QTest::qWait(80); // 打字已结束、wait 已挂上（此时新增里还没有 needle）
+    m_lineCount = 115; // 设备刷了 15 行新内容，其中出现 needle
+    m_freshText = QStringLiteral("CoreBoard send\nvol_data: 1786");
     const QJsonObject resp = waitReply(&sock);
     QCOMPARE(resp.value(QStringLiteral("id")).toInt(), 3);
     QVERIFY(resp.value(QStringLiteral("ok")).toBool());
     QVERIFY(resp.value(QStringLiteral("result")).toObject()
                 .value(QStringLiteral("matched")).toBool());
+    sock.disconnectFromServer();
+}
+
+void AgentBridgeTest::waitTimesOutWhenNeedleNotNew()
+{
+    QLocalSocket sock;
+    sock.connectToServer(m_pipe);
+    QVERIFY(sock.waitForConnected(2000));
+
+    // needle 只存在于锚点之前的历史里：新增为空 → 超时，不误命中
+    m_recentText = QStringLiteral("old CoreBoard lines");
+    m_lineCount = 100;
+    m_freshText = QString();
+    QJsonObject params;
+    params.insert(QStringLiteral("text"), QStringLiteral("uptime"));
+    params.insert(QStringLiteral("wait"), QStringLiteral("CoreBoard"));
+    params.insert(QStringLiteral("interval_ms"), 5);
+    params.insert(QStringLiteral("timeout_ms"), 200);
+    sendRequest(&sock, 5, QStringLiteral("send_line"), params);
+
+    const QJsonObject resp = waitReply(&sock);
+    QVERIFY(resp.value(QStringLiteral("ok")).toBool());
+    QVERIFY(resp.value(QStringLiteral("result")).toObject()
+                .value(QStringLiteral("timed_out")).toBool());
     sock.disconnectFromServer();
 }
 

@@ -28,6 +28,10 @@ public:
     {
         std::function<QJsonObject()> status;
         std::function<QString(int maxLines)> recentText;
+        // 滚动历史 + 当前屏的总行数（单调递增），wait 的「新增」锚点。
+        std::function<int()> recentLineCount;
+        // 自 fromLine 起的新增文本（wait 命中只看这段）。
+        std::function<QString(int fromLine, int maxLines)> recentTextFrom;
         // 空字符串表示已交给当前链路；非空是可以直接返回给调用方的错误。
         // 整行直达（clear -a 等本地命令走这里）。
         std::function<QString(const QString &text)> sendLine;
@@ -72,8 +76,8 @@ private:
         QLocalSocket *sock = nullptr;
         QJsonValue id;
         QString needle;
-        int beforeCount = 0;
-        int minNew = 1; // needle 需「新出现」的最少次数（回显免疫时为 2）
+        int fromLine = -1; // 挂起时的行锚点：命中只看这之后的新增文本
+        int minNew = 1;    // needle 需在新增里出现的最少次数（回显免疫时为 2）
         int timeoutMs = 3000;
         qint64 deadlineMs = 0;
     };
