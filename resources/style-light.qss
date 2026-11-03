@@ -56,6 +56,45 @@ QComboBox::down-arrow {
     width: 12px;
     height: 12px;
 }
+/* 字号等数字输入：与 QLineEdit 同款（浅色主题保持一致观感） */
+QSpinBox {
+    background-color: #FFFFFF;
+    border: 1px solid #C9C9CD;
+    border-radius: 4px;
+    padding: 3px 8px;
+    min-height: 20px;
+}
+QSpinBox:hover {
+    background-color: #F6F6F8;
+    border-color: #AFAFB5;
+}
+QSpinBox:focus {
+    border-color: #007ACC;
+}
+QSpinBox:disabled {
+    color: #9A9A9E;
+    background-color: #F0F0F2;
+    border-color: #DCDCDE;
+}
+QSpinBox::up-button, QSpinBox::down-button {
+    subcontrol-origin: border;
+    border: none;
+    width: 20px;
+    background-color: transparent;
+}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+    background-color: #F6F6F8;
+}
+QSpinBox::up-arrow {
+    image: url(:/icons/light/up.png);
+    width: 12px;
+    height: 12px;
+}
+QSpinBox::down-arrow {
+    image: url(:/icons/light/down.png);
+    width: 12px;
+    height: 12px;
+}
 QComboBox#baudCombo {
     min-height: 30px;
     max-height: 30px;
@@ -116,6 +155,7 @@ QComboBox {
 }
 QComboBox QAbstractItemView {
     background-color: #FFFFFF;
+    color: #1F1F1F;
     border: 1px solid #C9C9CD;
     selection-background-color: #D6E9FF;
     selection-color: #1F1F1F;
