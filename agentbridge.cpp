@@ -401,9 +401,11 @@ void AgentBridge::typingTick()
 {
     if (!m_typing.active)
         return;
-    // 长命令自动加速：短命令接近真人手速，几百字符的脚本也不会拖太久
-    const int left = m_typing.rest.size();
-    const int chunk = left > 160 ? 6 : (left > 48 ? 3 : 1);
+    // 自适应加速：整条命令的打字总时长控制在 ~1.2 秒内（tick 数 ≈ 1200/间隔），
+    // 短命令保持逐字手速（可见的"AI 在输入"），长命令自动多个字符一并进，
+    // 真实批量执行时几乎无感延迟。慢速档（大 interval_ms）仍用于演示/打断窗口。
+    const int maxTicks = qMax(1, 1200 / qMax(1, m_typeTimer->interval()));
+    const int chunk = qMax(1, (m_typing.rest.size() + maxTicks - 1) / maxTicks);
     const QByteArray part = m_typing.rest.left(chunk);
     const QString err = m_hooks.sendBytes ? m_hooks.sendBytes(part) : QStringLiteral("未连接");
     if (!err.isEmpty()) {
