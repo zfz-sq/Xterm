@@ -123,7 +123,9 @@ void AgentBridgeTest::typingInterrupted()
 
     QTest::qWait(70); // 只打出去一小截
     QVERIFY(m_sink.size() < longCmd.size());
+    QVERIFY(m_bridge->isTyping()); // 锁定状态依据
     QVERIFY(m_bridge->interruptTyping());
+    QVERIFY(!m_bridge->isTyping());
 
     const QJsonObject resp = waitReply(&sock);
     QCOMPARE(resp.value(QStringLiteral("id")).toInt(), 2);

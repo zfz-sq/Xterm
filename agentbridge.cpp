@@ -57,9 +57,10 @@ QString AgentBridge::instructions()
         "无需用引号拆分等技巧绕开回显。\n"
         "\n"
         "send_line 是打字机式逐字发送，用户在界面上能看到输入过程。"
-        "打字期间用户在终端里的任何操作都会立即打断它：剩余字符不会发出，"
-        "你会收到 interrupted 错误——此时用户正在亲自操作设备，"
-        "应停止当前动作并询问用户，不要原样重试同一条命令。\n"
+        "打字期间用户终端的普通输入被锁定，用户按 Ctrl+C 会主动打断 AI 输入："
+        "剩余字符不会发出，你会收到 interrupted by user 错误——"
+        "这不是设备或网络故障，也不代表命令失败，是用户要亲自操作设备，"
+        "应停止当前动作，等待用户指示后再继续。\n"
         "\n"
         "不要用这些工具操作 top、vim 等全屏程序。\n"
         "\n"
@@ -465,8 +466,10 @@ bool AgentBridge::interruptTyping()
     const int left = m_typing.rest.size();
     finishTyping(true);
     reply(sock, id, false, {},
-          QStringLiteral("interrupted: 用户正在操作终端，AI 输入被打断"
-                         "（%1 剩 %2 字符未发送）。请停止当前动作并询问用户。")
+          QStringLiteral("interrupted by user: 用户按 Ctrl+C 主动打断了 AI 输入"
+                         "（%1 剩 %2 字符未发送）。这不是设备或网络故障，"
+                         "也不代表命令执行失败——用户现在要亲自操作终端。"
+                         "请停止当前动作，等待用户指示后再继续。")
               .arg(command.left(40), QString::number(left)));
     return true;
 }

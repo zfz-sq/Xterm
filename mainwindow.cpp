@@ -201,6 +201,16 @@ MainWindow::MainWindow(QWidget *parent)
     m_xoffLabel->hide();
     ui->statusbar->addPermanentWidget(m_xoffLabel, 0);
 
+    // 「AI 锁定」提示：AI 打字机输入期间常亮。普通输入被锁定，
+    // 唯一的人工接管方式是 Ctrl+C（打断 AI 并释放）。
+    m_agentLockLabel = new QLabel(tr("AI 正在操作 · 输入已锁定（Ctrl+C 打断）"), this);
+    m_agentLockLabel->setStyleSheet(QStringLiteral("color: #E05252; font-weight: 600;"));
+    m_agentLockLabel->setToolTip(tr("AI（MCP）正在向终端逐字输入命令。\n"
+                                    "为避免人机输入交错，普通按键已被锁定。\n"
+                                    "按 Ctrl+C 立即打断 AI 并恢复人工输入。"));
+    m_agentLockLabel->hide();
+    ui->statusbar->addPermanentWidget(m_agentLockLabel, 0);
+
     // 「内核日志静音」开关：常驻状态栏最右（连接状态旁），仅串口页显示。
     // 设备侧 printk 会异步直写串口控制台，插进 vi/top 画面的字节流里，
     // 终端层无法分离——唯一根治是降低 console_loglevel，这里做成一键开关。
@@ -258,17 +268,19 @@ MainWindow::MainWindow(QWidget *parent)
         setMcpActive(true);
         m_mcpActiveTimer->start();
     });
-    // AI 打字机：状态栏实时显示正在输入的命令，打完/被打断时清除
+    // AI 打字机：状态栏常亮锁定提示 + 命令进度，打完/被打断时释放
     connect(m_agent, &AgentBridge::agentTypingChanged, this,
             [this](bool active, const QString &text) {
         if (active) {
             setMcpActive(true);
             m_mcpActiveTimer->stop(); // 打字期间角标常亮，不因 30 秒超时熄灭
+            m_agentLockLabel->show();
             const QString shown = text.size() > 40
                                       ? text.left(40) + QStringLiteral("…") : text;
             ui->statusbar->showMessage(
-                tr("AI 正在输入: %1（你的任何按键都会打断它）").arg(shown));
+                tr("AI 正在输入: %1（按 Ctrl+C 打断）").arg(shown));
         } else {
+            m_agentLockLabel->hide();
             ui->statusbar->showMessage(QString());
             m_mcpActiveTimer->start(); // 恢复 30 秒无活动自动熄灭
         }
@@ -598,6 +610,29 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         // 下拉框自己的 resize 会把编辑框缩回去，等它排完再拉满到箭头前。
         QTimer::singleShot(0, this, [this] { fitSshPortEdit(); });
     }
+    // AI 打字机输入期间锁定终端键盘：比 ScreenView 更早拦截，
+    // 只有 Ctrl+C 放行为「打断 AI」（在这里直接处理，不转发成 0x03，
+    // 也不会被 ScreenView 的「有选区 Ctrl+C=复制」分支吃掉）。
+    if (m_agent && (watched == m_serialView || watched == m_sshView)
+        && event->type() == QEvent::KeyPress && m_agent->isTyping()) {
+        const auto *key = static_cast<const QKeyEvent *>(event);
+        const bool ctrlC = (key->modifiers() & Qt::ControlModifier)
+                           && !(key->modifiers() & Qt::ShiftModifier)
+                           && !(key->modifiers() & Qt::AltModifier)
+                           && key->key() == Qt::Key_C;
+        if (ctrlC) {
+            if (m_agent->interruptTyping())
+                ui->statusbar->showMessage(tr("已打断 AI 输入，恢复人工操作"), 3000);
+            return true; // 不发给设备：用户意图是打断 AI，不是杀远端进程
+        }
+        if (key->key() != Qt::Key_Control && key->key() != Qt::Key_Shift
+            && key->key() != Qt::Key_Alt && key->key() != Qt::Key_Meta) {
+            // 修饰键本身放行（避免组合键状态错乱），其余全部吞掉
+            ui->statusbar->showMessage(
+                tr("AI 正在操作，输入已锁定 —— 按 Ctrl+C 打断"), 2000);
+        }
+        return true;
+    }
     return QMainWindow::eventFilter(watched, event);
 }
 
@@ -685,15 +720,22 @@ void MainWindow::connectSignals()
     });
 
     // 终端键盘直通 / 预设按钮
-    // 用户亲自输入（键盘/粘贴）优先于 AI：先打断 AI 打字机，再发送自己的字节
+    // 键盘在 eventFilter 里按「AI 锁定」策略整体拦截；能走到这里的
+    // 用户输入只剩粘贴等异步路径——AI 打字期间同样锁定并提示。
+    m_serialView->installEventFilter(this);
+    m_sshView->installEventFilter(this);
     connect(m_serialView, &ScreenView::sendData, this, [this](const QByteArray &bytes) {
-        if (m_agent && m_agent->interruptTyping())
-            ui->statusbar->showMessage(tr("已打断 AI 输入"), 3000);
+        if (m_agent && m_agent->isTyping()) {
+            ui->statusbar->showMessage(tr("AI 正在操作，输入已锁定 —— 按 Ctrl+C 打断"), 3000);
+            return;
+        }
         sendRaw(bytes);
     });
     connect(m_sshView, &ScreenView::sendData, this, [this](const QByteArray &bytes) {
-        if (m_agent && m_agent->interruptTyping())
-            ui->statusbar->showMessage(tr("已打断 AI 输入"), 3000);
+        if (m_agent && m_agent->isTyping()) {
+            ui->statusbar->showMessage(tr("AI 正在操作，输入已锁定 —— 按 Ctrl+C 打断"), 3000);
+            return;
+        }
         sendRaw(bytes);
     });
     connect(m_sshView, &ScreenView::terminalSizeChanged, this,
@@ -1834,9 +1876,11 @@ void MainWindow::sendRaw(const QByteArray &bytes)
 
 void MainWindow::sendLine(const QString &line)
 {
-    // 命令栏按钮也是用户操作：同样优先于 AI 打字机
-    if (m_agent && m_agent->interruptTyping())
-        ui->statusbar->showMessage(tr("已打断 AI 输入"), 3000);
+    // 命令栏按钮也是人为输入：AI 打字期间同样锁定（唯一出口是终端里的 Ctrl+C）
+    if (m_agent && m_agent->isTyping()) {
+        ui->statusbar->showMessage(tr("AI 正在操作，输入已锁定 —— 按 Ctrl+C 打断"), 3000);
+        return;
+    }
     if (line.trimmed() == QLatin1String("clear -a")) {
         ScreenView *view = (m_mode == Mode::Serial) ? m_serialView : m_sshView;
         if (view) {

@@ -53,6 +53,9 @@ public:
     // 返回是否真的中止了一次打字。
     bool interruptTyping();
 
+    // 打字机是否正在输入（用于界面锁定人工输入）
+    bool isTyping() const { return m_typing.active; }
+
     static QString instructions();
 
 signals:
