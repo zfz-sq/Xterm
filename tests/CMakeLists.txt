@@ -75,6 +75,31 @@ set_target_properties(test_knownhosts PROPERTIES
 
 add_test(NAME test_knownhosts COMMAND test_knownhosts)
 
+# MCP 桥（独立管道名 + 临时 agent.json，不依赖真实配置和网络）
+add_executable(test_agentbridge
+    test_agentbridge.cpp
+    "${CMAKE_SOURCE_DIR}/agentbridge.cpp"
+    "${CMAKE_SOURCE_DIR}/commandstore.cpp"
+)
+
+target_include_directories(test_agentbridge
+    PRIVATE
+        "${CMAKE_SOURCE_DIR}"
+)
+
+target_link_libraries(test_agentbridge
+    PRIVATE
+        Qt6::Test
+        Qt6::Network
+        Qt6::Gui
+)
+
+set_target_properties(test_agentbridge PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)
+
+add_test(NAME test_agentbridge COMMAND test_agentbridge)
+
 add_executable(test_libsshconnection
     test_libsshconnection.cpp
     "${CMAKE_SOURCE_DIR}/ssh/libsshapi.cpp"

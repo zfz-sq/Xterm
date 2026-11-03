@@ -239,6 +239,13 @@ MainWindow::MainWindow(QWidget *parent)
         [this](int maxLines) { return agentRecentText(maxLines); },
         [this](const QString &text) { return agentSendLine(text); },
         [this](const QByteArray &bytes) { return agentSendBytes(bytes); },
+        // 打字机用的链路行尾与「整行发完」回调（记输入历史）
+        [this] { return m_mode == Mode::Serial ? '\n' : '\r'; },
+        [this](const QString &line) {
+            ScreenView *view = (m_mode == Mode::Serial) ? m_serialView : m_sshView;
+            if (view)
+                view->rememberSentLine(line);
+        },
     });
 
     // MCP 在线角标: 有合法请求时点亮，30 秒无活动自动熄灭
@@ -250,6 +257,21 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_agent, &AgentBridge::agentActive, this, [this] {
         setMcpActive(true);
         m_mcpActiveTimer->start();
+    });
+    // AI 打字机：状态栏实时显示正在输入的命令，打完/被打断时清除
+    connect(m_agent, &AgentBridge::agentTypingChanged, this,
+            [this](bool active, const QString &text) {
+        if (active) {
+            setMcpActive(true);
+            m_mcpActiveTimer->stop(); // 打字期间角标常亮，不因 30 秒超时熄灭
+            const QString shown = text.size() > 40
+                                      ? text.left(40) + QStringLiteral("…") : text;
+            ui->statusbar->showMessage(
+                tr("AI 正在输入: %1（你的任何按键都会打断它）").arg(shown));
+        } else {
+            ui->statusbar->showMessage(QString());
+            m_mcpActiveTimer->start(); // 恢复 30 秒无活动自动熄灭
+        }
     });
 }
 
@@ -663,8 +685,17 @@ void MainWindow::connectSignals()
     });
 
     // 终端键盘直通 / 预设按钮
-    connect(m_serialView, &ScreenView::sendData, this, &MainWindow::sendRaw);
-    connect(m_sshView, &ScreenView::sendData, this, &MainWindow::sendRaw);
+    // 用户亲自输入（键盘/粘贴）优先于 AI：先打断 AI 打字机，再发送自己的字节
+    connect(m_serialView, &ScreenView::sendData, this, [this](const QByteArray &bytes) {
+        if (m_agent && m_agent->interruptTyping())
+            ui->statusbar->showMessage(tr("已打断 AI 输入"), 3000);
+        sendRaw(bytes);
+    });
+    connect(m_sshView, &ScreenView::sendData, this, [this](const QByteArray &bytes) {
+        if (m_agent && m_agent->interruptTyping())
+            ui->statusbar->showMessage(tr("已打断 AI 输入"), 3000);
+        sendRaw(bytes);
+    });
     connect(m_sshView, &ScreenView::terminalSizeChanged, this,
             [this](int cols, int rows) { m_ssh->setPtySize(cols, rows); });
 
@@ -1803,6 +1834,9 @@ void MainWindow::sendRaw(const QByteArray &bytes)
 
 void MainWindow::sendLine(const QString &line)
 {
+    // 命令栏按钮也是用户操作：同样优先于 AI 打字机
+    if (m_agent && m_agent->interruptTyping())
+        ui->statusbar->showMessage(tr("已打断 AI 输入"), 3000);
     if (line.trimmed() == QLatin1String("clear -a")) {
         ScreenView *view = (m_mode == Mode::Serial) ? m_serialView : m_sshView;
         if (view) {
