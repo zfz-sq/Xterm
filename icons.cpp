@@ -1,7 +1,7 @@
 #include "icons.h"
 
 namespace {
-bool g_dark = true; // 与 CommandStore 默认主题一致，applyTheme 会立刻覆盖
+bool g_dark = true; // 与 CommandStore 默认主题一致，ThemeManager::applyNow 会立刻覆盖     
 }
 
 void setIconThemeDark(bool dark)

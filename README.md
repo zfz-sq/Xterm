@@ -89,6 +89,7 @@ powershell -File scripts/package.ps1 -BuildDir build
 ├── CMakeLists.txt        构建入口
 ├── vcpkg.json            第三方依赖清单（libssh / OpenSSL）
 ├── ssh/                  libssh 封装：连接、shell/SFTP/stats 通道、known_hosts
+├── mainwindow.*          主窗口胶水层（会话/UI/快捷键/主题/MCP 拆为同目录协作类）
 ├── sshsession.*          SSH 会话 facade（GUI 线程）
 ├── serialsession.*       串口会话
 ├── termscreen.*          终端模型（VT 解析、滚动历史）

@@ -73,24 +73,31 @@
 ## 技术架构（简）
 
 ```
-MainWindow ──┬─ Transport 契约（接口）
-             │    ├─ SerialSession   （QSerialPort，独占串口）
-             │    └─ SshSession      （libssh facade，GUI 线程）
-             │          └─ SshWorker（私有 QThread，命令/事件全队列投递）
-             │                ├─ ShellChannel   终端
-             │                ├─ SftpChannel    文件（与终端共享同一条连接）
-             │                └─ StatsChannel   主机 CPU/内存
-             ├─ TermScreen / ScreenView   终端仿真与自绘视图
-             ├─ CommandBar / CompletionEngine  命令栏与补全
-             ├─ FileBrowserDialog   SFTP 双栏（model / transferqueue / widgets 分层）
-             ├─ TransferDialog      传输队列窗口
-             ├─ AgentBridge   MCP 命名管道服务
-             └─ FramelessDialog / TitleBar  统一无边框 UI
+MainWindow（胶水层：构造编排、信号接线、关闭流程）
+ ├─ 五协作类
+ │    ├─ SessionController  会话生命周期（串口/SSH 建立、断开、切模式、认证、配置档）
+ │    ├─ UiBuilder          UI 编排（标题栏、连接组合框、状态栏、模式/连接态刷新）
+ │    ├─ HotkeyManager      窗口级快捷键（F5/F9/F10）
+ │    ├─ ThemeManager       主题切换 + QSS 应用
+ │    └─ McpMainHook        MCP 角标与挂钩
+ ├─ Transport 契约（接口，由 SessionController 持有）
+ │    ├─ SerialSession   （QSerialPort，独占串口）
+ │    └─ SshSession      （libssh facade，GUI 线程）
+ │          └─ SshWorker（私有 QThread，命令/事件全队列投递）
+ │                ├─ ShellChannel   终端
+ │                ├─ SftpChannel    文件（与终端共享同一条连接）
+ │                └─ StatsChannel   主机 CPU/内存（HostStats 汇聚展示）
+ ├─ TermScreen / ScreenView   终端仿真与自绘视图（UiBuilder 创建）
+ ├─ CommandBar / CompletionEngine  命令栏与补全
+ ├─ FileBrowserDialog   SFTP 双栏（model / transferqueue / widgets 分层，SessionController 持有）
+ ├─ TransferDialog      传输队列窗口
+ ├─ AgentBridge   MCP 命名管道服务（main 组装 Hooks 后启动）
+ └─ FramelessDialog / TitleBar  统一无边框 UI
 ```
 
 - 依赖：Qt 6.8（Widgets / SerialPort / Network）+ libssh + OpenSSL（vcpkg 管理）
 - 构建：CMake ≥ 3.19，Windows llvm-mingw 工具链；自动部署 SSH 相关 DLL（步骤与构建选项详见 [README.md](../README.md)，含 `XTERM_BUILD_TOOLS`、`XTERM_VCPKG_TRIPLET`）
-- 测试：9 个单测目标（终端解析、视图渲染、SSH 连接/会话/SFTP 通道/客户端、known_hosts、主机统计解析），当前 9/9 通过；另有 sshtest / sftptest 调试工具（默认不构建，`-DXTERM_BUILD_TOOLS=ON` 开启）
+- 测试：14 个单测目标（终端解析、视图渲染、SSH 连接/会话/SFTP 通道/客户端、known_hosts、主机统计解析、AgentBridge、主题、快捷键、MCP 挂钩、会话控制器组装），当前 14/14 通过；另有 sshtest / sftptest 调试工具（默认不构建，`-DXTERM_BUILD_TOOLS=ON` 开启）
 
 ## 当前状态与已知边界
 

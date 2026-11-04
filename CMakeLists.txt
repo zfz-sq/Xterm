@@ -62,6 +62,10 @@ qt_add_executable(Xterm
     icons.h
     mainwindow.cpp
     mainwindow.h
+    thememanager.cpp
+    thememanager.h
+    hotkeymanager.cpp
+    hotkeymanager.h
     titlebar.cpp
     titlebar.h
     framelessdialog.cpp
@@ -69,6 +73,14 @@ qt_add_executable(Xterm
     mainwindow.ui
     agentbridge.cpp
     agentbridge.h
+    mcpmainhook.cpp
+    mcpmainhook.h
+    sessioncontroller.cpp
+    sessioncontroller.h
+    uibuilder.cpp
+    uibuilder.h
+    kmsgmutetoggle.cpp
+    kmsgmutetoggle.h
     serialsession.cpp
     serialsession.h
     transport.h

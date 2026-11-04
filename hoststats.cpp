@@ -107,6 +107,50 @@ void HostStats::resetDelta()
     m_prevIdle = 0;
 }
 
+void HostStats::clearCache()
+{
+    m_cpuOk = false;
+    m_cpuPercent = 0;
+    m_memOk = false;
+    m_memPercentOk = false;
+    m_memPercent = 0;
+    m_usedKiB = 0;
+    m_totalKiB = 0;
+}
+
+QString HostStats::statusText() const
+{
+    QString id;
+    if (m_session) {
+        const SshTarget t = m_session->target();
+        if (!t.user.isEmpty())
+            id = t.user + QLatin1Char('@');
+        id += t.host;
+        id += QStringLiteral(":%1").arg(t.port > 0 ? t.port : 22);
+    }
+
+    const QString cpu = m_cpuOk ? QString::number(m_cpuPercent) : QStringLiteral("--");
+    const QString memPct = m_memPercentOk ? QString::number(m_memPercent)
+                                          : QStringLiteral("--");
+    QString mem = QStringLiteral("--/--");
+    if (m_memOk && m_totalKiB > 0) {
+        if (m_totalKiB >= 1024 * 1024) {
+            const auto gib = [](qint64 kib) {
+                return QString::number(double(kib) / (1024.0 * 1024.0), 'f', 1);
+            };
+            mem = QStringLiteral("%1/%2G").arg(gib(m_usedKiB), gib(m_totalKiB));
+        } else {
+            const auto mib = [](qint64 kib) {
+                return QString::number(qRound(double(kib) / 1024.0));
+            };
+            mem = QStringLiteral("%1/%2M").arg(mib(m_usedKiB), mib(m_totalKiB));
+        }
+    }
+    return id + QStringLiteral("      ·     CPU ") + cpu
+           + QStringLiteral("% · 内存 ") + memPct
+           + QStringLiteral("% · ") + mem;
+}
+
 void HostStats::testApplySample(const QString &sample)
 {
     applySample(sample);
@@ -114,11 +158,15 @@ void HostStats::testApplySample(const QString &sample)
 
 void HostStats::onSample(const QString &sample)
 {
+    // 断开后仍在途的帧直接丢弃，不污染展示缓存（原 MainWindow 逻辑下沉）
+    if (m_session && m_session->state() != Transport::Connected)
+        return;
     applySample(sample);
 }
 
 void HostStats::onDegraded()
 {
+    updateCache(false, 0, false, false, 0, 0, 0);
     emit statsUpdated(false, 0, false, false, 0, 0, 0);
 }
 
@@ -146,4 +194,19 @@ void HostStats::applySample(const QString &sample)
 
     emit statsUpdated(cpuOk, cpuPercent, mem.ok, mem.percentOk, mem.percent,
                       mem.usedKiB, mem.totalKiB);
+    updateCache(cpuOk, cpuPercent, mem.ok, mem.percentOk, mem.percent,
+                mem.usedKiB, mem.totalKiB);
+}
+
+void HostStats::updateCache(bool cpuOk, int cpuPercent, bool memOk,
+                            bool memPercentOk, int memPercent,
+                            qint64 usedKiB, qint64 totalKiB)
+{
+    m_cpuOk = cpuOk;
+    m_cpuPercent = cpuPercent;
+    m_memOk = memOk;
+    m_memPercentOk = memPercentOk;
+    m_memPercent = memPercent;
+    m_usedKiB = usedKiB;
+    m_totalKiB = totalKiB;
 }

@@ -27,9 +27,9 @@ public:
     void setDialogTitle(const QString &title);
     // 内容区布局交进来（边距由调用方定）；重复调用会替换旧内容
     void setContentLayout(QLayout *layout);
-    // 标题栏按钮字形深浅，与 MainWindow::applyTheme 联动
+    // 标题栏按钮字形深浅，与 ThemeManager 主题切换联动
     void applyTheme(bool dark);
-    // 全局主题提示：主窗口 applyTheme 时同步一次，之后新建的实例自动取用
+    // 全局主题提示：ThemeManager::applyNow 时同步一次，之后新建的实例自动取用
     // （背景/标题栏底色走全局 QSS 自动生效，只有自画字形色需要这个布尔）
     static void setThemeHint(bool dark) { s_darkHint = dark; }
 
