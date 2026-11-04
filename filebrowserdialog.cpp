@@ -617,14 +617,14 @@ void FileBrowserDialog::onLocalContextMenu(const QPoint &pos)
     const QStringList paths = selectedLocalPaths();
     const int n = paths.size();
     QMenu menu(this);
-    menu.addAction(themedIcon(QStringLiteral("open.png")), tr("在文件资源管理器中显示"), this, &FileBrowserDialog::revealLocal)
-        ->setEnabled(n > 0 || !m_localPath.isEmpty());
     menu.addAction(themedIcon(QStringLiteral("upload.png")), tr("上传"), this, &FileBrowserDialog::uploadSelected)
         ->setEnabled(m_connected && n > 0);
     menu.addAction(themedIcon(QStringLiteral("trash.png")), tr("删除"), this, &FileBrowserDialog::deleteLocal)
         ->setEnabled(n > 0);
     menu.addAction(themedIcon(QStringLiteral("rename.png")), tr("重命名"), this, &FileBrowserDialog::renameLocal)
         ->setEnabled(n == 1);
+    menu.addAction(themedIcon(QStringLiteral("open.png")), tr("在文件资源管理器中显示"), this, &FileBrowserDialog::revealLocal)
+        ->setEnabled(n > 0 || !m_localPath.isEmpty());
     menu.addSeparator();
     fillCommandMenu(menu.addMenu(themedIcon(QStringLiteral("command.png")), tr("文件自定义命令(&C)")), false);
     QMenu *names = menu.addMenu(themedIcon(QStringLiteral("name.png")), tr("文件名(&F)"));
@@ -656,10 +656,6 @@ void FileBrowserDialog::onRemoteContextMenu(const QPoint &pos)
     menu.addAction(themedIcon(QStringLiteral("download.png")), tr("下载"), this, &FileBrowserDialog::downloadSelected)
         ->setEnabled(m_connected && n > 0);
     menu.addSeparator();
-    menu.addAction(themedIcon(QStringLiteral("copy.png")), tr("远程复制"), this, &FileBrowserDialog::copyRemoteSelected)
-        ->setEnabled(m_connected && n > 0);
-    menu.addAction(themedIcon(QStringLiteral("move.png")), tr("远程移动"), this, &FileBrowserDialog::moveRemoteSelected)
-        ->setEnabled(m_connected && n > 0);
     menu.addAction(themedIcon(QStringLiteral("trash.png")), tr("删除"), this, &FileBrowserDialog::deleteRemote)
         ->setEnabled(m_connected && n > 0);
     menu.addAction(themedIcon(QStringLiteral("rename.png")), tr("重命名"), this, &FileBrowserDialog::renameRemote)
@@ -878,58 +874,6 @@ void FileBrowserDialog::fetchRemoteFile(const QString &remotePath)
     if (!m_connected)
         return;
     m_queue->fetch(false, remotePath, -1);
-}
-
-void FileBrowserDialog::copyRemoteSelected()
-{
-    const QVector<RemoteItem> items = selectedRemote();
-    if (items.isEmpty() || !m_connected)
-        return;
-    const bool single = items.size() == 1;
-    QString dir;
-    QString name;
-    if (!askRemoteDest(tr("远程复制"), single ? items.first().name : QString(), single, &dir, &name))
-        return;
-    for (const RemoteItem &item : items) {
-        const QString destName = single ? name : item.name;
-        if (!validFileName(destName))
-            continue;
-        if (dir == m_remotePath && destName == item.name) {
-            FramelessDialog::message(this, tr("远程复制"), tr("目标和源相同：%1").arg(item.name));
-            continue;
-        }
-        if (dir == m_remotePath && remoteNameExists(destName)) {
-            if (!FramelessDialog::question(
-                    this, tr("覆盖确认"), tr("远程已存在 %1，覆盖？").arg(destName)))
-                continue;
-        }
-        m_client->copyRemote(remoteJoin(m_remotePath, item.name), remoteJoin(dir, destName), item.isDir);
-    }
-}
-
-void FileBrowserDialog::moveRemoteSelected()
-{
-    const QVector<RemoteItem> items = selectedRemote();
-    if (items.isEmpty() || !m_connected)
-        return;
-    const bool single = items.size() == 1;
-    QString dir;
-    QString name;
-    if (!askRemoteDest(tr("远程移动"), single ? items.first().name : QString(), single, &dir, &name))
-        return;
-    for (const RemoteItem &item : items) {
-        const QString destName = single ? name : item.name;
-        if (!validFileName(destName))
-            continue;
-        if (dir == m_remotePath && destName == item.name)
-            continue;
-        if (dir == m_remotePath && remoteNameExists(destName)) {
-            if (!FramelessDialog::question(
-                    this, tr("覆盖确认"), tr("远程已存在 %1，覆盖？").arg(destName)))
-                continue;
-        }
-        m_client->renameEntry(remoteJoin(m_remotePath, item.name), remoteJoin(dir, destName));
-    }
 }
 
 void FileBrowserDialog::propsLocal()
@@ -1242,42 +1186,6 @@ bool FileBrowserDialog::askName(const QString &title, const QString &initial, QS
         return false;
     }
     *out = name;
-    return true;
-}
-
-bool FileBrowserDialog::askRemoteDest(const QString &title, const QString &defaultName, bool editName,
-                                      QString *dirOut, QString *nameOut)
-{
-    FramelessDialog dlg(this);
-    dlg.setDialogTitle(title);
-    auto *dirEdit = new QLineEdit(m_remotePath);
-    auto *nameEdit = new QLineEdit(defaultName);
-    nameEdit->setEnabled(editName);
-    auto *form = new QFormLayout;
-    form->addRow(tr("目标目录"), dirEdit);
-    form->addRow(tr("名称"), nameEdit);
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    auto *lay = new QVBoxLayout;
-    lay->addWidget(new QLabel(tr("目标目录需要已经存在。多个条目时保留原名。")));
-    lay->addLayout(form);
-    lay->addWidget(buttons);
-    dlg.setContentLayout(lay);
-    if (dlg.exec() != QDialog::Accepted)
-        return false;
-    QString dir = dirEdit->text().trimmed();
-    const QString name = nameEdit->text().trimmed();
-    if (dir.isEmpty())
-        return false;
-    if (!dir.startsWith(QLatin1Char('/')))
-        dir = remoteJoin(m_remotePath, dir);
-    if (editName && !validFileName(name)) {
-        FramelessDialog::message(this, title, tr("名称无效"));
-        return false;
-    }
-    *dirOut = dir;
-    *nameOut = name;
     return true;
 }
 

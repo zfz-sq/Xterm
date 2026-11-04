@@ -90,8 +90,6 @@ private:
     void editLocal();
     void editRemote();
     void revealLocal();
-    void copyRemoteSelected();
-    void moveRemoteSelected();
     void propsLocal();
     void propsRemote();
     void newLocalDir();
@@ -115,8 +113,6 @@ private:
     void pumpLocalCommand();
 
     bool askName(const QString &title, const QString &initial, QString *out);
-    bool askRemoteDest(const QString &title, const QString &defaultName, bool editName,
-                       QString *dirOut, QString *nameOut);
     bool remoteNameExists(const QString &name) const;
     // 视图（经排序代理）索引 → QFileSystemModel 源索引
     QModelIndex mapToSource(const QModelIndex &viewIndex) const;
