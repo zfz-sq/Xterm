@@ -315,4 +315,6 @@ FS 安全边界：
       冒泡/缺后端整套不注册 + probeRegistration 阳性对照）+
       test_sessioncontroller 补 5 用例（list 形状/switch 校验/open 空 host
       拒且不污染参数栏/openSerial 未知端口拒/close 校验），全套 19/19 绿）
-- [ ] M2.g HTTP/SSE 端点（可选）
+- [~] M2.g HTTP/SSE 端点（可选）——跳过（用户指示 2026-11-04：当前无跨机/
+      WSL 场景需求，命名管道够用；日后需要时按 M2.4 原案动工：本地
+      HTTP + SSE 只绑 127.0.0.1，同一套令牌校验）
