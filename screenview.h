@@ -3,6 +3,7 @@
 
 #include <QElapsedTimer>
 #include <QHash>
+#include <QRegion>
 #include <QUrl>
 #include <QVector>
 #include <QWidget>
@@ -156,6 +157,8 @@ private:
     void emitPtySize();
     void afterOutput(int dropped);
     void syncBar();
+    // 帧合并到期收帧：全量帧或累积脏区（局部重绘），见 m_dirty/m_dirtyAll
+    void flushDirtyUpdate();
     void scrollLocal(int deltaRows);
     void zoom(int steps);
     void pumpRx();
@@ -222,6 +225,10 @@ private:
     QTimer *m_sizeTimer = nullptr;
     QTimer *m_pump = nullptr;
     QTimer *m_syncHold = nullptr;
+    // 帧合并的累积脏区（M3.5）：局部输出只并入触达行带；m_dirtyAll 时全量。
+    // resize 后坐标过期，resizeEvent 里整体作废
+    QRegion m_dirty;
+    bool m_dirtyAll = true;
     QTimer *m_bellTimer = nullptr;
     QTimer *m_cursorTimer = nullptr; // 光标闪烁（有焦点且未隐藏时跑；interval 0 = 系统禁闪）
     bool m_cursorBlink = true;       // 闪烁的可见相位；打字/光标移动时立即点亮

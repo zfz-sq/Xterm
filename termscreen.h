@@ -74,6 +74,10 @@ public:
     // 环形丢掉的最老行累计（含清屏/复位丢弃）——绝对行号 = dropped +
     // historySize + rows，单调不回退，wait 锚点靠它不漂移
     qint64 droppedLines() const { return m_histDropped; }
+    // 本次 feed 触到的屏幕行范围快照（含光标行；-1 = 无触达），供
+    // ScreenView 脏矩形用。与补色（paintTouchedLines）同源，下块覆盖
+    void feedTouchedRows(int *minRow, int *maxRow) const
+    { *minRow = m_feedTouchMin; *maxRow = m_feedTouchMax; }
     bool altScreen() const { return m_alt; }
     bool appCursorKeys() const { return m_appCursor; }
     bool bracketedPaste() const { return m_bracketPaste; }
@@ -209,6 +213,8 @@ private:
     bool m_used = false; // 还没写过内容时，改尺寸不要把空行推进滚动历史
     int m_touchMin = -1;       // 本次 feed 触到的屏幕行范围（收尾补色用），-1 表示无
     int m_touchMax = -1;
+    int m_feedTouchMin = -1;   // 同范围快照（feed 后供 ScreenView 脏矩形读）
+    int m_feedTouchMax = -1;
     int m_unscannedHist = 0;   // 滚动历史里还没补过色的首行下标
 
     Pen m_pen;

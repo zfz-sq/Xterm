@@ -132,7 +132,7 @@ ScreenView::ScreenView(QWidget *parent)
     m_syncHold->setSingleShot(true);
     connect(m_syncHold, &QTimer::timeout, this, [this] {
         syncBar();
-        update();
+        flushDirtyUpdate(); // 全量帧或累积脏区（M3.5 局部重绘）
     });
 
     m_bellTimer = new QTimer(this);
@@ -316,7 +316,9 @@ void ScreenView::emitPtySize()
 void ScreenView::afterOutput(int dropped)
 {
     const bool alt = m_screen.altScreen();
-    if (alt != m_wasAlt)
+    const bool altSwitched = alt != m_wasAlt; // 切屏：可见行全换，全量帧
+    const int originBefore = m_origin;        // 视口是否被本块推走
+    if (altSwitched)
         clearSelection();
     m_wasAlt = alt;
 
@@ -346,13 +348,33 @@ void ScreenView::afterOutput(int dropped)
     }
     if (m_screen.takeBell()) {
         m_bell = true;
+        m_dirtyAll = true; // 铃铛画全屏边框，这帧得全量
         m_bellTimer->start(140);
     }
+    const int prevCursorAbs = m_lastCursorAbs; // 刷新前旧位：脏区要并入（擦旧光标）
     syncCursorBlink(); // 输出后光标多半移动了：重置闪烁相位（立即点亮）
+    // 脏矩形（M3.5）：滚屏/切屏/清屏/视口移动把可见行推走，全量帧；纯局部
+    // 输出（键入回显、进度条单行刷新）只累积触达行带，收帧时局部重绘
+    if (dropped != 0 || altSwitched || m_origin != originBefore) {
+        m_dirtyAll = true;
+    } else {
+        int tmin = -1;
+        int tmax = -1;
+        m_screen.feedTouchedRows(&tmin, &tmax);
+        if (tmin >= 0) // 触达行带（含光标行）
+            m_dirty += QRect(0, m_pad + tmin * m_cellH, width(),
+                             (tmax - tmin + 1) * m_cellH);
+        const int originNow = alt ? 0 : m_origin;
+        if (prevCursorAbs >= 0) { // 旧光标行可能不在触达范围（纯移位）：补进脏区
+            const int row = prevCursorAbs - originNow;
+            if (row >= 0 && row < m_screen.rows())
+                m_dirty += QRect(0, m_pad + row * m_cellH, width(), m_cellH);
+        }
+    }
     // 输出是成块到达的（top 一轮刷新就是 3 块），逐块立绘会把半帧画出来。
-    // 统一走短合并窗：8ms 内到达的块合成一次重绘（对键入回显的延迟不可感）；
-    // 同步更新（BSA 2026）期间窗口放宽到 80ms 等帧尾，结束后回落 8ms 立即收帧。
-    const int holdMs = m_screen.syncing() ? 80 : 8;
+    // 统一走合并窗节流到 ~60fps：16ms 内到达的块合成一帧（键入回显延迟不可感）；
+    // 同步更新（BSA 2026）期间窗口放宽到 80ms 等帧尾，结束后回落 16ms 立即收帧。
+    const int holdMs = m_screen.syncing() ? 80 : 16;
     if (!m_syncHold->isActive())
         m_syncHold->start(holdMs);
     else if (m_syncHold->remainingTime() > holdMs)
@@ -368,6 +390,17 @@ void ScreenView::syncBar()
     m_bar->setSingleStep(1);
     m_bar->setValue(qBound(0, m_origin, max));
     m_barLock = false;
+}
+
+void ScreenView::flushDirtyUpdate()
+{
+    // 帧合并到期收帧：全量帧或累积脏区一次画掉（paintEvent 按暴露区裁行）
+    if (m_dirtyAll)
+        update();
+    else if (!m_dirty.isNull())
+        update(m_dirty);
+    m_dirty = QRegion();
+    m_dirtyAll = false;
 }
 
 void ScreenView::scrollLocal(int deltaRows)
@@ -761,11 +794,13 @@ void ScreenView::reportWheelEvent(QWheelEvent *event)
     event->accept();
 }
 
-void ScreenView::paintEvent(QPaintEvent *)
+void ScreenView::paintEvent(QPaintEvent *event)
 {
     QPainter painter(this);
     const QColor bg0 = m_screen.defaultBackground();
-    painter.fillRect(rect(), bg0);
+    // 只擦暴露区（局部重绘时不再全底填充）；行循环同样按暴露区裁剪
+    const QRect exposed = event->rect();
+    painter.fillRect(exposed, bg0);
     painter.setFont(m_font);
 
     const int rows = m_screen.rows();
@@ -810,7 +845,12 @@ void ScreenView::paintEvent(QPaintEvent *)
         }
     };
 
-    for (int row = 0; row < rows; ++row) {
+    // 脏矩形生效（M3.5）：只画暴露区覆盖的行，高频刷屏时行循环不再全屏跑
+    const int cellH = qMax(1, m_cellH);
+    const int rowFirst = qBound(0, (exposed.top() - m_pad) / cellH, rows - 1);
+    const int rowLast = qBound(0, (exposed.bottom() - m_pad + cellH - 1) / cellH,
+                               rows - 1);
+    for (int row = rowFirst; row <= rowLast; ++row) {
         const int abs = alt ? row : origin + row;
         const TermLine *line = m_screen.lineAbsolute(abs);
         if (!m_keywords.isEmpty())
@@ -932,11 +972,22 @@ void ScreenView::resizeEvent(QResizeEvent *)
 {
     updateGrid();
     placeFind();
+    m_dirty = QRegion(); // 尺寸变了，累积脏区的坐标已过期：作废，下帧全量
+    m_dirtyAll = true;
 }
 
 void ScreenView::showEvent(QShowEvent *)
 {
     updateGrid();
+    // 首次/重新可见：合并窗里悬着的帧立即收掉（同步 bar + 全量画），
+    // 不等 16ms——屏刚 reflow 完，拖一帧反而闪
+    if (m_syncHold->isActive()) {
+        m_syncHold->stop();
+        syncBar();
+        m_dirty = QRegion(); // 曝光即全量，旧脏区坐标可能已过期
+        m_dirtyAll = true;
+        flushDirtyUpdate();
+    }
 }
 
 void ScreenView::echoLocal(const QByteArray &bytes)

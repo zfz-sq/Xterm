@@ -205,7 +205,14 @@ FS 安全边界：
       单调累计环形/清屏/RIS 丢弃，recentLineCount/recentTextFrom 改 qint64
       绝对序号（AgentBridge::Hooks 同步，wait 锚点环形丢行后不漂移——
       M3 唯一动 M2 语义的点；锚点早于现存最老行时从最老可用行起）
-- [ ] M3.5 渲染帧合并（可选）
+- [x] M3.5 渲染帧合并（2026-11-04，test_screenview +2（PaintProbe
+      eventFilter 观察 paint 次数/暴露区），14/14 绿；合并窗 8ms → 16ms
+      （~60fps 节流，syncing 期间仍 80ms）；脏矩形：TermScreen.feedTouchedRows
+      快照触达行带，滚屏/切屏/清屏/视口移动/铃铛全量帧，纯局部输出（回显/
+      进度条单行）只 update(脏带) + paintEvent 按暴露区裁行循环；旧光标行
+      并入脏区擦残影；show/resize 立即收帧作废旧坐标。测试节奏坑：feed
+      helper 每块 qWait(20) 会跨窗，帧合并断言需用连续 receiveData 不进
+      事件循环（真实突发场景）
 - [ ] M2.a 命名空间 + tools.list
 - [ ] M2.b FS 工具
 - [ ] M2.c Host 工具

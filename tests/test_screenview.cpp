@@ -11,6 +11,7 @@
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QObject>
+#include <QPaintEvent>
 #include <QPixmap>
 #include <QScrollBar>
 #include <QSignalSpy>
@@ -26,6 +27,37 @@ struct Capture
     QByteArray sent;
 
     void reset() { sent.clear(); }
+};
+
+// 统计 paintEvent 次数与暴露区（M3.5 帧合并/脏矩形的观察口）：拦截
+// QEvent::Paint 放行，不改变绘制行为
+struct PaintProbe
+{
+    int count = 0;
+    QRect lastRect;
+
+    explicit PaintProbe(ScreenView *view) : m_view(view)
+    {
+        m_filter.probe = this;
+        m_view->installEventFilter(&m_filter);
+    }
+    ~PaintProbe() { m_view->removeEventFilter(&m_filter); }
+
+private:
+    struct Filter : QObject
+    {
+        PaintProbe *probe = nullptr;
+        bool eventFilter(QObject *, QEvent *ev) override
+        {
+            if (ev->type() == QEvent::Paint) {
+                ++probe->count;
+                probe->lastRect = static_cast<QPaintEvent *>(ev)->rect();
+            }
+            return false;
+        }
+    };
+    Filter m_filter;
+    ScreenView *m_view = nullptr;
 };
 
 void key(ScreenView &view, int key, const QString &text = QString(),
@@ -115,6 +147,8 @@ private slots:
     void tripleClickSelectsLine();
     void selectToCopyDefaultsOffOptIn();
     void waitAnchorUsesAbsoluteLines();
+    void paintCoalescesBurstIntoFewFrames();
+    void partialRepaintLimitsToTouchedRows();
 
 private:
     void feed(ScreenView &view, const QByteArray &bytes)
@@ -918,6 +952,43 @@ void ScreenViewTest::waitAnchorUsesAbsoluteLines()
     QVERIFY(fresh.contains(QStringLiteral("MARKER_2")));
     QVERIFY(fresh.contains(QStringLiteral("MARKER_3")));
     QVERIFY(!fresh.contains(QStringLiteral("line 199"))); // 锚点前行不进 fresh
+}
+
+// 帧合并（M3.5）：高频小块输出在 16ms 合并窗内合成一帧——200 块
+// 连续到达只该收 1 帧（调度抖动余量给到 4），否则高频刷屏掉帧
+void ScreenViewTest::paintCoalescesBurstIntoFewFrames()
+{
+    ScreenView view;
+    view.resize(100 * 15, 34 * 18);
+    view.show();
+    QTest::qWait(30); // 初始布局帧清干净
+    PaintProbe probe(&view);
+
+    for (int i = 0; i < 200; ++i) // 连续小块（同一轮间隙到达）：不进事件循环，
+        view.receiveData(QByteArray("burst ") + QByteArray::number(i) + "\r\n"); // 全部落进同一个合并窗
+    QTest::qWait(120); // 16ms 窗到 + 排队帧 flush
+
+    QVERIFY(probe.count >= 1);   // 确实画了（合并不是丢帧）
+    QVERIFY(probe.count <= 4);   // 但 200 块绝不该逐块立绘 200 帧
+}
+
+// 脏矩形（M3.5）：单行定点写（无滚屏/切屏/视口移动）只重绘触达行带，
+// 暴露区高度是行高级别而不是全屏
+void ScreenViewTest::partialRepaintLimitsToTouchedRows()
+{
+    ScreenView view;
+    view.resize(100 * 15, 34 * 18);
+    view.show();
+    feed(view, QByteArray("ready\r\n"));
+    QTest::qWait(120); // 初始帧清干净
+    PaintProbe probe(&view);
+
+    feed(view, QByteArray("\x1b[5;3HX")); // 光标定位到第 5 行写一字，不滚屏
+    QTest::qWait(120);
+
+    QVERIFY(probe.count >= 1);
+    QVERIFY(probe.lastRect.height() * 8 < view.height()); // 远小于全屏高
+    QVERIFY(view.screenText().contains(QStringLiteral("X"))); // 内容真画上去了
 }
 
 int main(int argc, char **argv)

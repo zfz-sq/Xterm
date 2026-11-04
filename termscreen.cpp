@@ -466,6 +466,8 @@ void TermScreen::paintTouchedLines()
                 paintIpTokens(m_lines[size_t(r)]);
         }
     }
+    m_feedTouchMin = m_touchMin; // 快照留档：ScreenView 脏矩形在 feed 返回后读
+    m_feedTouchMax = m_touchMax;
     m_touchMin = -1;
     m_touchMax = -1;
 }
