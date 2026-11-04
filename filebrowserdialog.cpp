@@ -617,6 +617,8 @@ void FileBrowserDialog::onLocalContextMenu(const QPoint &pos)
     const QStringList paths = selectedLocalPaths();
     const int n = paths.size();
     QMenu menu(this);
+    menu.addAction(themedIcon(QStringLiteral("open.png")), tr("在文件资源管理器中显示"), this, &FileBrowserDialog::revealLocal)
+        ->setEnabled(n > 0 || !m_localPath.isEmpty());
     menu.addAction(themedIcon(QStringLiteral("upload.png")), tr("上传"), this, &FileBrowserDialog::uploadSelected)
         ->setEnabled(m_connected && n > 0);
     menu.addAction(themedIcon(QStringLiteral("trash.png")), tr("删除"), this, &FileBrowserDialog::deleteLocal)
@@ -848,6 +850,25 @@ void FileBrowserDialog::editRemote()
     if (!m_connected || items.size() != 1 || items.first().isDir)
         return;
     m_queue->fetch(true, remoteJoin(m_remotePath, items.first().name), qint64(items.first().size));
+}
+
+// 「在文件资源管理器中显示」：定位并高亮第一个选中项（explorer /select）；
+// 无选中时打开当前目录。非 Windows / 调用失败时后退为打开所在目录
+void FileBrowserDialog::revealLocal()
+{
+    const QStringList paths = selectedLocalPaths();
+    if (paths.isEmpty()) {
+        if (!m_localPath.isEmpty())
+            QDesktopServices::openUrl(QUrl::fromLocalFile(m_localPath));
+        return;
+    }
+#ifdef Q_OS_WIN
+    const QString arg = QStringLiteral("/select,") + QDir::toNativeSeparators(paths.first());
+    if (ShellExecuteW(nullptr, L"open", L"explorer.exe",
+                      reinterpret_cast<LPCWSTR>(arg.utf16()), nullptr, SW_SHOWNORMAL) > HINSTANCE(32))
+        return;
+#endif
+    QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(paths.first()).absolutePath()));
 }
 
 void FileBrowserDialog::fetchRemoteFile(const QString &remotePath)
