@@ -110,7 +110,7 @@ public:
     qint64 agentRecentLineCount() const; // wait 的绝对行锚点（见 AgentBridge::Hooks）
     QString agentRecentTextFrom(qint64 fromLine, int maxLines) const;
     QString agentSendLine(const QString &text);
-    QString agentSendBytes(const QByteArray &bytes); // send_control 用: 裸字节直达
+    QString agentSendBytes(const QByteArray &bytes); // sendControl 用: 裸字节直达
     char agentLineEnding() const;                    // 打字机行尾（串口 \n / SSH \r）
 
     // —— 关闭编排（closeEvent 调用）：同步配置、落盘、拆链路 ——

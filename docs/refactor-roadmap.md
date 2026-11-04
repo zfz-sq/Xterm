@@ -213,7 +213,15 @@ FS 安全边界：
       并入脏区擦残影；show/resize 立即收帧作废旧坐标。测试节奏坑：feed
       helper 每块 qWait(20) 会跨窗，帧合并断言需用连续 receiveData 不进
       事件循环（真实突发场景）
-- [ ] M2.a 命名空间 + tools.list
+- [x] M2.a 命名空间 + tools.list
+      （bridge 改注册表路由：ToolHandler 表 + 元数据表，工具本体从 handleLine
+      的 if-链迁入 registerBuiltinTools；五件套改名 xterm.session.status /
+      xterm.screen.read / xterm.screen.wait / xterm.transport.sendLine /
+      xterm.transport.sendControl，旧短名直接废弃不保留别名，未知工具报错
+      引导 tools.list；Hooks.tools/toolMeta 预留 M2.b/M2.c 外部注入点，
+      同名覆盖内置。probe 探测新旧名两试防升级窗口双开误判。坑：
+      toolCatalog 返回 QJsonArray（h/cpp 两处都要改）；test 用 PowerShell
+      Set-Content 会把文件写成 GBK 损坏中文，改用逐段替换）
 - [ ] M2.b FS 工具
 - [ ] M2.c Host 工具
 - [ ] M2.d Screen 扩展工具

@@ -14,11 +14,15 @@ from test_mcp import agent_file_candidates, pipe_call, pipe_path
 
 
 def try_token(pipe, token):
-    try:
-        msg = pipe_call(pipe, token, "status")
-        return msg.get("ok") is True
-    except (OSError, RuntimeError):
-        return False
+    # 新名优先，旧短名兜底（修复工具可能面对新旧两版实例）
+    for method in ("xterm.session.status", "status"):
+        try:
+            msg = pipe_call(pipe, token, method)
+            if msg.get("ok") is True:
+                return True
+        except (OSError, RuntimeError):
+            return False
+    return False
 
 
 def main():

@@ -6,7 +6,7 @@
   python send.py "free -m"          # 发送命令，等到回显标记后打印屏幕
   python send.py "top -bn1 | head"  # 任意 shell 命令
 
-原理: send_line 附带 wait=唯一标记，命令后追加 echo 标记，
+原理: sendLine 附带 wait=唯一标记，命令后追加 echo 标记，
 输出到屏即返回。需要 Xterm 已连接设备（串口或 SSH）。
 """
 
@@ -24,7 +24,7 @@ def send_and_read(line, timeout_ms=10000):
     # 直接 echo 标记即可，无需引号拆分技巧。
     marker = "__XT_DONE_%d__" % int(time.time() * 1000)
     msg = pipe_call(
-        pipe_path(cfg["pipe"]), cfg["token"], "send_line",
+        pipe_path(cfg["pipe"]), cfg["token"], "xterm.transport.sendLine",
         {"text": "%s; echo %s" % (line, marker),
          "wait": marker, "timeout_ms": timeout_ms})
     if not msg.get("ok"):

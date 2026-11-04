@@ -14,17 +14,25 @@ INSTRUCTIONS = (
     "你通过 MCP 工具操作用户电脑上已经打开的 Xterm，从而使用它当前连着的设备。"
     "不要自己打开串口，不要另起 ssh，不要去点这个软件的窗口。\n"
     "\n"
-    "先调用 status。若未连接，告诉用户在 Xterm 里点「连接」，不要猜测端口、波特率或主机。\n"
+    "工具带 xterm.* 命名空间；tools.list 可随时拿到全部工具与参数说明。\n"
     "\n"
-    "用 send_line 发送一行。不要自行追加 \\n 或 \\r，软件会按当前链路补上："
-    "串口（含 STM32 USB CDC）是 \\n，SSH 是 \\r。"
-    "send_line 是打字机式逐字发送，用户在界面上能看到输入过程。"
-    "打字期间用户终端的普通输入被软件锁定，用户按 Ctrl+C 会主动打断 AI 输入，"
-    "此时调用会收到 interrupted by user 错误——这不是设备或网络故障，"
-    "也不代表命令失败，是用户要亲自操作设备，应停止当前动作等待用户指示。\n"
+    "先调用 xterm.session.status。若未连接，告诉用户在 Xterm 里点「连接」，"
+    "不要猜测端口、波特率或主机。\n"
     "\n"
-    "发送后用 wait，或给 send_line 带上 wait，等到预期输出或超时。"
-    "不要用固定睡眠判断成功。需要看屏幕已有内容时用 read。\n"
+    "用 xterm.transport.sendLine 发送一行。不要自行追加 \\n 或 \\r，软件会按"
+    "当前链路补上：串口（含 STM32 USB CDC）是 \\n，SSH 是 \\r。\n"
+    "\n"
+    "发送后用 xterm.screen.wait，或给 xterm.transport.sendLine 带上 wait，"
+    "等到预期输出或超时。不要用固定睡眠判断成功。"
+    "需要看屏幕已有内容时用 xterm.screen.read。"
+    "wait 自带回显免疫：等待词出现在命令文本里时，会等它再次出现"
+    "（真实输出）才命中，无需用引号拆分等技巧绕开回显。\n"
+    "\n"
+    "xterm.transport.sendLine 是打字机式逐字发送，用户在界面上能看到输入过程。"
+    "打字期间用户终端的普通输入被锁定，用户按 Ctrl+C 会主动打断 AI 输入："
+    "剩余字符不会发出，你会收到 interrupted by user 错误——"
+    "这不是设备或网络故障，也不代表命令失败，是用户要亲自操作设备，"
+    "应停止当前动作，等待用户指示后再继续。\n"
     "\n"
     "不要用这些工具操作 top、vim 等全屏程序。\n"
     "\n"
@@ -151,12 +159,12 @@ def tool_text(result):
 
 TOOLS = [
     {
-        "name": "status",
+        "name": "xterm.session.status",
         "description": "查看 Xterm 当前是串口还是 SSH、连的是谁、是否已连接。操作设备前先调用。",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "send_line",
+        "name": "xterm.transport.sendLine",
         "description": (
             "向 Xterm 当前连接发送一行（打字机式逐字发送，用户能看到输入过程）。"
             "不要自行追加换行：串口（含 STM32 USB CDC）由软件补 \\n，SSH 补 \\r。"
@@ -177,7 +185,7 @@ TOOLS = [
         },
     },
     {
-        "name": "send_control",
+        "name": "xterm.transport.sendControl",
         "description": (
             "发送控制字符到 Xterm 当前连接。"
             "长输出命令失控想中断时用 ctrl+c；结束输入用 ctrl+d；esc 退出。"
@@ -195,7 +203,7 @@ TOOLS = [
         },
     },
     {
-        "name": "read",
+        "name": "xterm.screen.read",
         "description": "读取 Xterm 当前屏幕以及滚动历史的末尾。",
         "inputSchema": {
             "type": "object",
@@ -205,7 +213,7 @@ TOOLS = [
         },
     },
     {
-        "name": "wait",
+        "name": "xterm.screen.wait",
         "description": "等到屏幕里新出现 contains 这段文字，或超时。不要用睡眠代替。",
         "inputSchema": {
             "type": "object",
@@ -221,24 +229,24 @@ TOOLS = [
 
 def dispatch_tool(name, arguments):
     arguments = arguments or {}
-    if name == "status":
-        return call_xterm("status", {}, 3000)
-    if name == "read":
-        return call_xterm("read", {"max_lines": arguments.get("max_lines", 120)}, 3000)
-    if name == "send_line":
+    if name == "xterm.session.status":
+        return call_xterm("xterm.session.status", {}, 3000)
+    if name == "xterm.screen.read":
+        return call_xterm("xterm.screen.read", {"max_lines": arguments.get("max_lines", 120)}, 3000)
+    if name == "xterm.transport.sendLine":
         params = {"text": arguments.get("text", "")}
         if arguments.get("wait"):
             params["wait"] = arguments["wait"]
         if arguments.get("timeout_ms"):
             params["timeout_ms"] = arguments["timeout_ms"]
         timeout = int(arguments.get("timeout_ms") or 3000)
-        return call_xterm("send_line", params, timeout)
-    if name == "send_control":
-        return call_xterm("send_control", {"key": arguments.get("key", "")}, 3000)
-    if name == "wait":
+        return call_xterm("xterm.transport.sendLine", params, timeout)
+    if name == "xterm.transport.sendControl":
+        return call_xterm("xterm.transport.sendControl", {"key": arguments.get("key", "")}, 3000)
+    if name == "xterm.screen.wait":
         timeout = int(arguments.get("timeout_ms") or 3000)
         return call_xterm(
-            "wait",
+            "xterm.screen.wait",
             {"contains": arguments.get("contains", ""), "timeout_ms": timeout},
             timeout,
         )

@@ -9,7 +9,7 @@
 用法:
   python test_mcp.py                     # Xterm 已在运行
   python test_mcp.py --exe <Xterm.exe>   # 自动拉起 Xterm，测完关闭
-  python test_mcp.py --send "help"       # 附加真实 send_line 测试（会发到设备！）
+  python test_mcp.py --send "help"       # 附加真实 sendLine 测试（会发到设备！）
 
 退出码: 0 = 全部通过, 1 = 有失败。
 """
@@ -127,61 +127,69 @@ def test_pipe(cfg):
     token = cfg["token"]
 
     try:
-        msg = pipe_call(pipe, token, "status", token_override="wrong-token")
+        msg = pipe_call(pipe, token, "xterm.session.status", token_override="wrong-token")
         report("错误令牌被拒绝", msg.get("ok") is False
                and "令牌" in str(msg.get("error", "")), str(msg.get("error")))
     except (OSError, RuntimeError) as exc:
         report("错误令牌被拒绝", False, str(exc))
 
     try:
-        msg = pipe_call(pipe, token, "status")
-        report("status", msg.get("ok") is True, json.dumps(
+        msg = pipe_call(pipe, token, "xterm.session.status")
+        report("xterm.session.status", msg.get("ok") is True, json.dumps(
             msg.get("result", {}), ensure_ascii=False)[:120])
     except (OSError, RuntimeError) as exc:
-        report("status", False, str(exc))
+        report("xterm.session.status", False, str(exc))
 
     try:
-        msg = pipe_call(pipe, token, "read", {"max_lines": 3})
-        report("read(max_lines=3)", msg.get("ok") is True)
+        msg = pipe_call(pipe, token, "tools.list")
+        names = [t.get("name", "") for t in (msg.get("result") or {}).get("tools", [])]
+        report("tools.list 自发现", msg.get("ok") is True
+               and "xterm.transport.sendLine" in names, "，".join(names))
     except (OSError, RuntimeError) as exc:
-        report("read(max_lines=3)", False, str(exc))
+        report("tools.list 自发现", False, str(exc))
+
+    try:
+        msg = pipe_call(pipe, token, "xterm.screen.read", {"max_lines": 3})
+        report("xterm.screen.read(max_lines=3)", msg.get("ok") is True)
+    except (OSError, RuntimeError) as exc:
+        report("xterm.screen.read(max_lines=3)", False, str(exc))
 
     try:
         msg = pipe_call(pipe, token, "no_such_method")
         report("未知方法报错", msg.get("ok") is False
-               and "未知方法" in str(msg.get("error", "")))
+               and "未知工具" in str(msg.get("error", "")))
     except (OSError, RuntimeError) as exc:
         report("未知方法报错", False, str(exc))
 
     # wait 回显免疫: needle 是命令子串时应等真实输出再命中（需要已连接设备）
     try:
-        st = pipe_call(pipe, token, "status")
+        st = pipe_call(pipe, token, "xterm.session.status")
         if (st.get("result") or {}).get("connected"):
             tag = "ECHOIMMUNE%d" % os.getpid()
-            msg = pipe_call(pipe, token, "send_line",
+            msg = pipe_call(pipe, token, "xterm.transport.sendLine",
                             {"text": "echo " + tag, "wait": tag,
                              "timeout_ms": 8000})
             result = msg.get("result") or {}
             text = result.get("text", "")
             hits = text.count(tag)
-            report("send_line+wait 回显免疫", msg.get("ok") and result.get("matched"),
+            report("sendLine+wait 回显免疫", msg.get("ok") and result.get("matched"),
                    "tag 出现 %d 次（2=回显+输出，免疫生效）" % hits)
         else:
-            skip("send_line+wait 回显免疫", "设备未连接")
+            skip("sendLine+wait 回显免疫", "设备未连接")
     except (OSError, RuntimeError) as exc:
-        report("send_line+wait 回显免疫", False, str(exc))
+        report("sendLine+wait 回显免疫", False, str(exc))
 
-    # send_control: 控制字符直达（ctrl+c 无害——只是中断当前行出新提示符）
+    # sendControl: 控制字符直达（ctrl+c 无害——只是中断当前行出新提示符）
     try:
-        msg = pipe_call(pipe, token, "send_control", {"key": "ctrl+c"})
-        report("send_control ctrl+c", msg.get("ok") is True)
+        msg = pipe_call(pipe, token, "xterm.transport.sendControl", {"key": "ctrl+c"})
+        report("sendControl ctrl+c", msg.get("ok") is True)
     except (OSError, RuntimeError) as exc:
-        report("send_control ctrl+c", False, str(exc))
+        report("sendControl ctrl+c", False, str(exc))
     try:
-        msg = pipe_call(pipe, token, "send_control", {"key": "bogus"})
-        report("send_control 非法键报错", msg.get("ok") is False)
+        msg = pipe_call(pipe, token, "xterm.transport.sendControl", {"key": "bogus"})
+        report("sendControl 非法键报错", msg.get("ok") is False)
     except (OSError, RuntimeError) as exc:
-        report("send_control 非法键报错", False, str(exc))
+        report("sendControl 非法键报错", False, str(exc))
 
 
 def test_mcp():
@@ -198,13 +206,16 @@ def test_mcp():
                                "method": "tools/list"})
         tools = [t.get("name") for t in
                  ((resp.get("result") or {}).get("tools") or [])]
-        report("tools/list", set(tools) >= {"status", "read",
-                                            "send_line", "wait"}, str(tools))
+        report("tools/list", set(tools) >= {"xterm.session.status",
+                                            "xterm.screen.read",
+                                            "xterm.transport.sendLine",
+                                            "xterm.screen.wait"}, str(tools))
 
         resp = client.request({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-                               "params": {"name": "status", "arguments": {}}})
+                               "params": {"name": "xterm.session.status",
+                                          "arguments": {}}})
         result = resp.get("result") or {}
-        report("tools/call status", not result.get("isError"),
+        report("tools/call xterm.session.status", not result.get("isError"),
                (result.get("content") or [{}])[0].get("text", "")[:120])
     finally:
         client.close()
@@ -213,7 +224,7 @@ def test_mcp():
 def main():
     ap = argparse.ArgumentParser(description="Xterm MCP 链路自测")
     ap.add_argument("--exe", help="Xterm.exe 路径；提供则自动拉起，测完关闭")
-    ap.add_argument("--send", help="额外真实测试 send_line（文本会发到设备！）")
+    ap.add_argument("--send", help="额外真实测试 sendLine（文本会发到设备！）")
     args = ap.parse_args()
 
     launched = None
@@ -237,18 +248,18 @@ def main():
         test_mcp()
 
         if args.send:
-            print("—— send_line 实发（--send）——")
+            print("—— sendLine 实发（--send）——")
             try:
                 msg = pipe_call(pipe_path(cfg["pipe"]), cfg["token"],
-                                "send_line", {"text": args.send})
+                                "xterm.transport.sendLine", {"text": args.send})
                 if msg.get("ok"):
-                    report("send_line", True)
+                    report("sendLine", True)
                 elif "未连接" in str(msg.get("error", "")):
-                    skip("send_line", "设备未连接: " + str(msg.get("error")))
+                    skip("sendLine", "设备未连接: " + str(msg.get("error")))
                 else:
-                    report("send_line", False, str(msg.get("error")))
+                    report("sendLine", False, str(msg.get("error")))
             except (OSError, RuntimeError) as exc:
-                report("send_line", False, str(exc))
+                report("sendLine", False, str(exc))
 
         print("\n结果: %d 通过, %d 失败, %d 跳过"
               % (_n["pass"], _n["fail"], _n["skip"]))

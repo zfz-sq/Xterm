@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLocalSocket>
@@ -19,6 +20,8 @@ class AgentBridgeTest : public QObject
 
 private slots:
     void initTestCase();
+    void toolsListDiscoversNamespacedTools();
+    void legacyShortNamesAreRejected();
     void typingCompletes();
     void typingInterrupted();
     void typingWaits();
@@ -87,6 +90,53 @@ void AgentBridgeTest::sendRequest(QLocalSocket *sock, int id, const QString &met
     sock->write("\n");
 }
 
+// tools.list（M2.a）：客户端可自发现工具清单——五个内置工具都带 xterm.*
+// 命名空间，且 sendLine 带参数描述
+void AgentBridgeTest::toolsListDiscoversNamespacedTools()
+{
+    QLocalSocket sock;
+    sock.connectToServer(m_pipe);
+    QVERIFY(sock.waitForConnected(2000));
+
+    sendRequest(&sock, 10, QStringLiteral("tools.list"), {});
+    const QJsonObject resp = waitReply(&sock);
+    QCOMPARE(resp.value(QStringLiteral("id")).toInt(), 10);
+    QVERIFY(resp.value(QStringLiteral("ok")).toBool());
+    const QJsonArray tools = resp.value(QStringLiteral("result")).toObject()
+                                 .value(QStringLiteral("tools")).toArray();
+    QStringList names;
+    bool sendLineHasParams = false;
+    for (const QJsonValue &v : tools) {
+        const QJsonObject t = v.toObject();
+        names << t.value(QStringLiteral("name")).toString();
+        if (t.value(QStringLiteral("name")).toString()
+                == QLatin1String("xterm.transport.sendLine")) {
+            sendLineHasParams = t.value(QStringLiteral("params")).toObject()
+                                    .contains(QStringLiteral("text"));
+        }
+    }
+    for (const char *name : { "xterm.session.status", "xterm.screen.read",
+                              "xterm.screen.wait", "xterm.transport.sendLine",
+                              "xterm.transport.sendControl" })
+        QVERIFY2(names.contains(QString::fromLatin1(name)), name);
+    QVERIFY(sendLineHasParams);
+    sock.disconnectFromServer();
+}
+
+// 旧短名直接废弃（M2.1 总原则 5：不保留别名），报错里引导 tools.list
+void AgentBridgeTest::legacyShortNamesAreRejected()
+{
+    QLocalSocket sock;
+    sock.connectToServer(m_pipe);
+    QVERIFY(sock.waitForConnected(2000));
+
+    sendRequest(&sock, 11, QStringLiteral("send_line"), {}); // 旧短名，应被拒
+    const QJsonObject resp = waitReply(&sock);
+    QVERIFY(!resp.value(QStringLiteral("ok")).toBool());
+    QVERIFY(resp.value(QStringLiteral("error")).toString()
+                .contains(QStringLiteral("tools.list")));
+    sock.disconnectFromServer();
+}
 
 void AgentBridgeTest::typingCompletes()
 {
@@ -99,7 +149,7 @@ void AgentBridgeTest::typingCompletes()
     QJsonObject params;
     params.insert(QStringLiteral("text"), QStringLiteral("dmesg"));
     params.insert(QStringLiteral("interval_ms"), 5);
-    sendRequest(&sock, 1, QStringLiteral("send_line"), params);
+    sendRequest(&sock, 1, QStringLiteral("xterm.transport.sendLine"), params);
 
     const QJsonObject resp = waitReply(&sock);
     QCOMPARE(resp.value(QStringLiteral("id")).toInt(), 1);
@@ -124,7 +174,7 @@ void AgentBridgeTest::typingInterrupted()
     QJsonObject params;
     params.insert(QStringLiteral("text"), longCmd);
     params.insert(QStringLiteral("interval_ms"), 30);
-    sendRequest(&sock, 2, QStringLiteral("send_line"), params);
+    sendRequest(&sock, 2, QStringLiteral("xterm.transport.sendLine"), params);
 
     QTest::qWait(70); // 只打出去一小截
     QVERIFY(m_sink.size() < longCmd.size());
@@ -159,7 +209,7 @@ void AgentBridgeTest::typingWaits()
     params.insert(QStringLiteral("wait"), QStringLiteral("CoreBoard"));
     params.insert(QStringLiteral("interval_ms"), 5);
     params.insert(QStringLiteral("timeout_ms"), 3000);
-    sendRequest(&sock, 3, QStringLiteral("send_line"), params);
+    sendRequest(&sock, 3, QStringLiteral("xterm.transport.sendLine"), params);
 
     QTest::qWait(80); // 打字已结束、wait 已挂上（此时新增里还没有 needle）
     m_lineCount = 115; // 设备刷了 15 行新内容，其中出现 needle
@@ -187,7 +237,7 @@ void AgentBridgeTest::waitTimesOutWhenNeedleNotNew()
     params.insert(QStringLiteral("wait"), QStringLiteral("CoreBoard"));
     params.insert(QStringLiteral("interval_ms"), 5);
     params.insert(QStringLiteral("timeout_ms"), 200);
-    sendRequest(&sock, 5, QStringLiteral("send_line"), params);
+    sendRequest(&sock, 5, QStringLiteral("xterm.transport.sendLine"), params);
 
     const QJsonObject resp = waitReply(&sock);
     QVERIFY(resp.value(QStringLiteral("ok")).toBool());
@@ -206,7 +256,7 @@ void AgentBridgeTest::clearAIsInstant()
     m_directLines.clear();
     QJsonObject params;
     params.insert(QStringLiteral("text"), QStringLiteral("clear -a"));
-    sendRequest(&sock, 4, QStringLiteral("send_line"), params);
+    sendRequest(&sock, 4, QStringLiteral("xterm.transport.sendLine"), params);
 
     const QJsonObject resp = waitReply(&sock);
     QCOMPARE(resp.value(QStringLiteral("id")).toInt(), 4);

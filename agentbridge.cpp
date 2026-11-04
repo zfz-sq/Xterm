@@ -7,6 +7,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QLocalServer>
 #include <QLocalSocket>
@@ -46,17 +47,21 @@ QString AgentBridge::instructions()
         "你通过 MCP 工具操作用户电脑上已经打开的 Xterm，从而使用它当前连着的设备。"
         "不要自己打开串口，不要另起 ssh，不要去点这个软件的窗口。\n"
         "\n"
-        "先调用 status。若未连接，告诉用户在 Xterm 里点「连接」，不要猜测端口、波特率或主机。\n"
+        "工具带 xterm.* 命名空间；tools.list 可随时拿到全部工具与参数说明。\n"
         "\n"
-        "用 send_line 发送一行。不要自行追加 \\n 或 \\r，软件会按当前链路补上："
-        "串口（含 STM32 USB CDC）是 \\n，SSH 是 \\r。\n"
+        "先调用 xterm.session.status。若未连接，告诉用户在 Xterm 里点「连接」，"
+        "不要猜测端口、波特率或主机。\n"
         "\n"
-        "发送后用 wait，或给 send_line 带上 wait，等到预期输出或超时。"
-        "不要用固定睡眠判断成功。需要看屏幕已有内容时用 read。"
-        "wait 自带回显免疫：等待词出现在命令文本里时，会等它再次出现（真实输出）才命中，"
-        "无需用引号拆分等技巧绕开回显。\n"
+        "用 xterm.transport.sendLine 发送一行。不要自行追加 \\n 或 \\r，软件会按"
+        "当前链路补上：串口（含 STM32 USB CDC）是 \\n，SSH 是 \\r。\n"
         "\n"
-        "send_line 是打字机式逐字发送，用户在界面上能看到输入过程。"
+        "发送后用 xterm.screen.wait，或给 xterm.transport.sendLine 带上 wait，"
+        "等到预期输出或超时。不要用固定睡眠判断成功。"
+        "需要看屏幕已有内容时用 xterm.screen.read。"
+        "wait 自带回显免疫：等待词出现在命令文本里时，会等它再次出现"
+        "（真实输出）才命中，无需用引号拆分等技巧绕开回显。\n"
+        "\n"
+        "xterm.transport.sendLine 是打字机式逐字发送，用户在界面上能看到输入过程。"
         "打字期间用户终端的普通输入被锁定，用户按 Ctrl+C 会主动打断 AI 输入："
         "剩余字符不会发出，你会收到 interrupted by user 错误——"
         "这不是设备或网络故障，也不代表命令失败，是用户要亲自操作设备，"
@@ -94,6 +99,13 @@ void AgentBridge::start(Hooks hooks, const QString &agentFile)
     if (m_server)
         return;
 
+    // M2.a：基于能力字段注册内置工具，再合入调用方的额外工具（同名覆盖）
+    registerBuiltinTools();
+    for (auto it = m_hooks.tools.constBegin(); it != m_hooks.tools.constEnd(); ++it) {
+        m_tools.insert(it.key(), it.value());
+        m_toolMeta.insert(it.key(), m_hooks.toolMeta.value(it.key()));
+    }
+
     m_agentFile = agentFile.isEmpty() ? agentFilePath() : agentFile;
 
     // 已有活实例在服务管道时（用户开了第二个 Xterm），本实例不抢管道、
@@ -128,22 +140,28 @@ bool AgentBridge::probeExistingAgent() const
     if (pipe.isEmpty() || token.isEmpty())
         return false;
 
-    // 用文件里的令牌连管道发一个 status：能连通且令牌通过 = 有活实例在前台服务。
+    // 用文件里的令牌连管道发一个工具调用：能连通且令牌通过 = 有活实例在
+    // 前台服务。先试新命名空间名，旧实例（M2.a 之前）不认识会拒绝，再回退
+    // 旧短名——升级窗口内新旧两版双开时不能误判旧实例已死而抢管道。
     QLocalSocket sock;
     sock.connectToServer(pipe);
     if (!sock.waitForConnected(300))
         return false; // 无人监听: 文件是崩溃残留，本实例安全接管（写入时覆盖）
-    QJsonObject req;
-    req.insert(QStringLiteral("id"), 1);
-    req.insert(QStringLiteral("token"), token);
-    req.insert(QStringLiteral("method"), QStringLiteral("status"));
-    req.insert(QStringLiteral("params"), QJsonObject());
-    sock.write(QJsonDocument(req).toJson(QJsonDocument::Compact));
-    sock.write("\n");
-    if (!sock.waitForBytesWritten(300) || !sock.waitForReadyRead(300))
-        return false; // 有连接但对端无响应（半死状态）: 视为无实例
-    const QJsonObject resp = QJsonDocument::fromJson(sock.readLine()).object();
-    return resp.value(QStringLiteral("ok")).toBool(); // 令牌不匹配 = 前实例已死
+    auto probeWith = [&sock, &token](const QString &method) {
+        QJsonObject req;
+        req.insert(QStringLiteral("id"), 1);
+        req.insert(QStringLiteral("token"), token);
+        req.insert(QStringLiteral("method"), method);
+        req.insert(QStringLiteral("params"), QJsonObject());
+        sock.write(QJsonDocument(req).toJson(QJsonDocument::Compact));
+        sock.write("\n");
+        if (!sock.waitForBytesWritten(300) || !sock.waitForReadyRead(300))
+            return false; // 有连接但对端无响应（半死状态）: 视为无实例
+        const QJsonObject resp = QJsonDocument::fromJson(sock.readLine()).object();
+        return resp.value(QStringLiteral("ok")).toBool(); // 令牌不匹配/未知工具都算不通过
+    };
+    return probeWith(QStringLiteral("xterm.session.status"))
+           || probeWith(QStringLiteral("status"));
 }
 
 void AgentBridge::writeAgentFile()
@@ -251,91 +269,201 @@ void AgentBridge::handleLine(QLocalSocket *sock, const QByteArray &line)
     const QJsonObject params = req.value(QStringLiteral("params")).toObject();
     emit agentActive(); // 令牌校验通过: 合法的 AI 客户端正在访问
 
-    if (method == QLatin1String("status")) {
-        QJsonObject result = m_hooks.status ? m_hooks.status() : QJsonObject();
-        reply(sock, id, true, result, {});
-        return;
-    }
-    if (method == QLatin1String("read")) {
-        const int lines = clampLines(params.value(QStringLiteral("max_lines")).toInt());
+    // 协议级：工具自发现（不带 xterm. 前缀）
+    if (method == QLatin1String("tools.list")) {
         QJsonObject result;
-        result.insert(QStringLiteral("text"), m_hooks.recentText ? m_hooks.recentText(lines) : QString());
+        result.insert(QStringLiteral("tools"), toolCatalog());
         reply(sock, id, true, result, {});
         return;
     }
-    if (method == QLatin1String("send_control")) {
-        // 控制字符直达当前链路（如 ctrl+c 中断长输出命令），不补行尾、不记行历史
-        const QString key = params.value(QStringLiteral("key")).toString().toLower();
-        char byte = 0;
-        if (key == QLatin1String("esc"))
-            byte = 0x1b;
-        else if (key == QLatin1String("tab"))
-            byte = 0x09;
-        else if (key.startsWith(QLatin1String("ctrl+")) && key.size() == 6) {
-            const QChar c = key.at(5);
-            if (c >= QLatin1Char('a') && c <= QLatin1Char('z'))
-                byte = char(c.toLatin1() - 'a' + 1);
-        }
-        if (byte == 0) {
-            reply(sock, id, false, {},
-                  QStringLiteral("未知控制键（支持 ctrl+a..z / esc / tab）"));
-            return;
-        }
-        const QString err = m_hooks.sendBytes
-                                ? m_hooks.sendBytes(QByteArray(1, byte))
-                                : QStringLiteral("未连接");
-        if (!err.isEmpty()) {
-            reply(sock, id, false, {}, err);
-            return;
-        }
-        QJsonObject result;
-        result.insert(QStringLiteral("sent"), key);
-        reply(sock, id, true, result, {});
+    // 工具路由：bridge 只做分发与兜底，工具本体都在注册表里（M2.a）
+    const auto it = m_tools.constFind(method);
+    if (it == m_tools.constEnd()) {
+        reply(sock, id, false, {},
+              QStringLiteral("未知工具: %1（tools.list 可查全部工具）").arg(method));
         return;
     }
-    if (method == QLatin1String("send_line")) {
-        const QString text = params.value(QStringLiteral("text")).toString();
-        // 本地命令（clear -a）保持整行直达，不进打字机
-        if (text.trimmed() == QLatin1String("clear -a")) {
-            const QString err = m_hooks.sendLine ? m_hooks.sendLine(text) : QStringLiteral("未连接");
-            if (!err.isEmpty()) {
-                reply(sock, id, false, {}, err);
-                return;
-            }
-            QJsonObject result;
-            result.insert(QStringLiteral("text"),
-                          m_hooks.recentText ? m_hooks.recentText(clampLines(0)) : QString());
-            reply(sock, id, true, result, {});
-            return;
-        }
-        // 打字机逐字发送：用户看得见输入过程，且随时可被自己的操作打断
-        const QString needle = params.value(QStringLiteral("wait")).toString();
-        // 上限 1 秒/字符：常规命令 20ms 默认，慢速演示/留足打断窗口时用大间隔
-        const int interval = qBound(5, params.value(QStringLiteral("interval_ms")).toInt(20), 1000);
-        startTyping(sock, id, text, needle,
-                    clampTimeout(params.value(QStringLiteral("timeout_ms")).toInt()), interval);
-        return;
+    const ToolResult r = it.value()(ToolCall{params, sock, id});
+    if (r.deferred)
+        return; // 挂起类工具（sendLine 打字机 / wait 轮询）接管了应答
+    reply(sock, id, r.ok, r.data, r.error);
+}
+
+// 内置五件：基于 Hooks 能力字段组装。方法名带 xterm.* 命名空间（M2.1），
+// 旧短名（status/read/wait/send_line/send_control）直接废弃，不保留别名。
+void AgentBridge::registerBuiltinTools()
+{
+    m_tools.clear();
+    m_toolMeta.clear();
+
+    auto meta = [this](const char *name, const QString &desc, QJsonObject params) {
+        const QString full = QString::fromLatin1(name);
+        QJsonObject m;
+        m.insert(QStringLiteral("name"), full);
+        m.insert(QStringLiteral("description"), desc);
+        m.insert(QStringLiteral("params"), params);
+        m_toolMeta.insert(full, m);
+    };
+
+    m_tools.insert(QStringLiteral("xterm.session.status"),
+                   [this](const ToolCall &) -> ToolResult {
+                       return ToolResult{true, false,
+                                         m_hooks.status ? m_hooks.status() : QJsonObject(),
+                                         QString()};
+                   });
+    meta("xterm.session.status", QStringLiteral("当前链路状态（连接/类型/端口），先调它确认已连接"),
+         QJsonObject());
+
+    m_tools.insert(QStringLiteral("xterm.screen.read"),
+                   [this](const ToolCall &call) -> ToolResult {
+                       const int lines = clampLines(call.params.value(QStringLiteral("max_lines")).toInt());
+                       QJsonObject data;
+                       data.insert(QStringLiteral("text"),
+                                   m_hooks.recentText ? m_hooks.recentText(lines) : QString());
+                       return ToolResult{true, false, data, QString()};
+                   });
+    {
+        QJsonObject params;
+        QJsonObject maxLines;
+        maxLines.insert(QStringLiteral("type"), QStringLiteral("integer"));
+        maxLines.insert(QStringLiteral("description"),
+                        QStringLiteral("返回尾部行数（含当前屏），默认 120，上限 400"));
+        params.insert(QStringLiteral("max_lines"), maxLines);
+        meta("xterm.screen.read", QStringLiteral("读屏幕尾部文本（滚动历史 + 当前屏）"), params);
     }
-    if (method == QLatin1String("wait")) {
-        const QString needle = params.value(QStringLiteral("contains")).toString();
-        if (needle.isEmpty()) {
-            reply(sock, id, false, {}, QStringLiteral("wait 需要 contains"));
-            return;
-        }
-        Waiter w;
-        w.sock = sock;
-        w.id = id;
-        w.needle = needle;
-        // 同 send_line：以行锚点判「新增」，高频刷屏下依旧可靠
-        w.fromLine = m_hooks.recentLineCount ? m_hooks.recentLineCount() : -1;
-        w.timeoutMs = clampTimeout(params.value(QStringLiteral("timeout_ms")).toInt());
-        w.deadlineMs = QDateTime::currentMSecsSinceEpoch() + w.timeoutMs;
-        m_waiters.append(w);
-        if (!m_poll->isActive())
-            m_poll->start();
-        return;
+
+    m_tools.insert(QStringLiteral("xterm.transport.sendControl"),
+                   [this](const ToolCall &call) -> ToolResult {
+                       // 控制字符直达当前链路（如 ctrl+c 中断长输出命令），
+                       // 不补行尾、不记行历史
+                       const QString key = call.params.value(QStringLiteral("key")).toString().toLower();
+                       char byte = 0;
+                       if (key == QLatin1String("esc"))
+                           byte = 0x1b;
+                       else if (key == QLatin1String("tab"))
+                           byte = 0x09;
+                       else if (key.startsWith(QLatin1String("ctrl+")) && key.size() == 6) {
+                           const QChar c = key.at(5);
+                           if (c >= QLatin1Char('a') && c <= QLatin1Char('z'))
+                               byte = char(c.toLatin1() - 'a' + 1);
+                       }
+                       if (byte == 0)
+                           return ToolResult{false, false, {},
+                                             QStringLiteral("未知控制键（支持 ctrl+a..z / esc / tab）")};
+                       const QString err = m_hooks.sendBytes
+                                               ? m_hooks.sendBytes(QByteArray(1, byte))
+                                               : QStringLiteral("未连接");
+                       if (!err.isEmpty())
+                           return ToolResult{false, false, {}, err};
+                       QJsonObject data;
+                       data.insert(QStringLiteral("sent"), key);
+                       return ToolResult{true, false, data, QString()};
+                   });
+    {
+        QJsonObject params;
+        QJsonObject key;
+        key.insert(QStringLiteral("type"), QStringLiteral("string"));
+        key.insert(QStringLiteral("description"),
+                   QStringLiteral("ctrl+a..z / esc / tab，如 ctrl+c 中断长输出"));
+        params.insert(QStringLiteral("key"), key);
+        meta("xterm.transport.sendControl", QStringLiteral("发送单个控制字符/键"), params);
     }
-    reply(sock, id, false, {}, QStringLiteral("未知方法"));
+
+    m_tools.insert(QStringLiteral("xterm.transport.sendLine"),
+                   [this](const ToolCall &call) -> ToolResult {
+                       const QString text = call.params.value(QStringLiteral("text")).toString();
+                       // 本地命令（clear -a）保持整行直达，不进打字机
+                       if (text.trimmed() == QLatin1String("clear -a")) {
+                           const QString err = m_hooks.sendLine ? m_hooks.sendLine(text)
+                                                                : QStringLiteral("未连接");
+                           if (!err.isEmpty())
+                               return ToolResult{false, false, {}, err};
+                           QJsonObject data;
+                           data.insert(QStringLiteral("text"),
+                                       m_hooks.recentText ? m_hooks.recentText(clampLines(0)) : QString());
+                           return ToolResult{true, false, data, QString()};
+                       }
+                       // 打字机逐字发送：用户看得见输入过程，且随时可被自己的操作打断。
+                       // 上限 1 秒/字符：常规命令 20ms 默认，慢速演示/留足打断窗口时用大间隔
+                       const QString needle = call.params.value(QStringLiteral("wait")).toString();
+                       const int interval = qBound(
+                           5, call.params.value(QStringLiteral("interval_ms")).toInt(20), 1000);
+                       startTyping(call.sock, call.id, text, needle,
+                                   clampTimeout(call.params.value(QStringLiteral("timeout_ms")).toInt()),
+                                   interval);
+                       return ToolResult{true, true, {}, QString()}; // 打字机接管应答
+                   });
+    {
+        QJsonObject params;
+        QJsonObject text;
+        text.insert(QStringLiteral("type"), QStringLiteral("string"));
+        text.insert(QStringLiteral("description"), QStringLiteral("要发送的一行（不含行尾，软件按链路补）"));
+        params.insert(QStringLiteral("text"), text);
+        QJsonObject wait;
+        wait.insert(QStringLiteral("type"), QStringLiteral("string"));
+        wait.insert(QStringLiteral("description"), QStringLiteral("发完后等待屏幕新增中出现该文本"));
+        params.insert(QStringLiteral("wait"), wait);
+        QJsonObject timeout;
+        timeout.insert(QStringLiteral("type"), QStringLiteral("integer"));
+        timeout.insert(QStringLiteral("description"), QStringLiteral("wait 超时毫秒数，默认 3000"));
+        params.insert(QStringLiteral("timeout_ms"), timeout);
+        QJsonObject interval;
+        interval.insert(QStringLiteral("type"), QStringLiteral("integer"));
+        interval.insert(QStringLiteral("description"), QStringLiteral("打字间隔毫秒，默认 20，上限 1000"));
+        params.insert(QStringLiteral("interval_ms"), interval);
+        meta("xterm.transport.sendLine",
+             QStringLiteral("打字机式逐字发送一行（用户可见、可 Ctrl+C 打断），可附带 wait"), params);
+    }
+
+    m_tools.insert(QStringLiteral("xterm.screen.wait"),
+                   [this](const ToolCall &call) -> ToolResult {
+                       const QString needle = call.params.value(QStringLiteral("contains")).toString();
+                       if (needle.isEmpty())
+                           return ToolResult{false, false, {},
+                                             QStringLiteral("wait 需要 contains")};
+                       // 同 sendLine：以绝对行锚点判「新增」，高频刷屏下依旧可靠
+                       addWaiter(call.sock, call.id, needle, 1,
+                                 clampTimeout(call.params.value(QStringLiteral("timeout_ms")).toInt()));
+                       return ToolResult{true, true, {}, QString()}; // 轮询器接管应答
+                   });
+    {
+        QJsonObject params;
+        QJsonObject contains;
+        contains.insert(QStringLiteral("type"), QStringLiteral("string"));
+        contains.insert(QStringLiteral("description"),
+                        QStringLiteral("等待屏幕新增文本中出现该子串（回显免疫）"));
+        params.insert(QStringLiteral("contains"), contains);
+        QJsonObject timeout;
+        timeout.insert(QStringLiteral("type"), QStringLiteral("integer"));
+        timeout.insert(QStringLiteral("description"), QStringLiteral("超时毫秒数，默认 3000，上限 30000"));
+        params.insert(QStringLiteral("timeout_ms"), timeout);
+        meta("xterm.screen.wait", QStringLiteral("等待屏幕新增文本出现指定子串，超时返回 timed_out"), params);
+    }
+}
+
+QJsonArray AgentBridge::toolCatalog() const
+{
+    QJsonArray tools;
+    for (auto it = m_toolMeta.constBegin(); it != m_toolMeta.constEnd(); ++it)
+        tools.append(it.value());
+    return tools;
+}
+
+void AgentBridge::addWaiter(QLocalSocket *sock, const QJsonValue &id, const QString &needle,
+                            int minNew, int timeoutMs)
+{
+    Waiter w;
+    w.sock = sock;
+    w.id = id;
+    w.needle = needle;
+    // 挂起时刻的绝对行锚点：命中只看这之后新增的行（M3.4 语义）
+    w.fromLine = m_hooks.recentLineCount ? m_hooks.recentLineCount() : -1;
+    w.minNew = minNew;
+    w.timeoutMs = timeoutMs;
+    w.deadlineMs = QDateTime::currentMSecsSinceEpoch() + w.timeoutMs;
+    m_waiters.append(w);
+    if (!m_poll->isActive())
+        m_poll->start();
 }
 
 void AgentBridge::pollWaiters()
@@ -437,19 +565,9 @@ void AgentBridge::typingTick()
         reply(sock, id, true, result, {});
         return;
     }
-    Waiter w;
-    w.sock = sock;
-    w.id = id;
-    w.needle = needle;
     // 行锚点：命中只看挂起之后新增的行——滑动窗口里的出现次数差
     // 在高频刷屏设备上不会增长（旧的滚出、新的滚入，相互抵消）。
-    w.fromLine = m_hooks.recentLineCount ? m_hooks.recentLineCount() : -1;
-    w.minNew = minNew;
-    w.timeoutMs = timeoutMs;
-    w.deadlineMs = QDateTime::currentMSecsSinceEpoch() + w.timeoutMs;
-    m_waiters.append(w);
-    if (!m_poll->isActive())
-        m_poll->start();
+    addWaiter(sock, id, needle, minNew, timeoutMs);
 }
 
 void AgentBridge::finishTyping(bool interrupted)

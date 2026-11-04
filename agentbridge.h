@@ -2,6 +2,7 @@
 #define AGENTBRIDGE_H
 
 #include <QHash>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QList>
@@ -24,6 +25,25 @@ class AgentBridge : public QObject
     Q_OBJECT
 
 public:
+    // —— M2.a 工具路由：bridge 只做令牌鉴权 + 分发，工具本体是注册表条目 ——
+    // 一次工具调用的上下文（sock/id 供挂起类工具接管应答）
+    struct ToolCall
+    {
+        QJsonObject params;
+        QLocalSocket *sock = nullptr;
+        QJsonValue id;
+    };
+    // deferred = 处理器已接管应答（sendLine 的打字机、wait 的轮询之后回），
+    // bridge 不再回复；否则 bridge 按 ok/data/error 应答
+    struct ToolResult
+    {
+        bool ok = true;
+        bool deferred = false;
+        QJsonObject data;
+        QString error;
+    };
+    using ToolHandler = std::function<ToolResult(const ToolCall &)>;
+
     struct Hooks
     {
         std::function<QJsonObject()> status;
@@ -42,6 +62,15 @@ public:
         std::function<char()> lineEnding;
         // 打字机完整发完一行后回调（记输入历史）。被打断时不调用。
         std::function<void(const QString &line)> lineSent;
+
+        // M2.a 命名空间工具注册表（key = 完整名，如 "xterm.fs.stat"）：
+        // 内置五件（xterm.session.status / xterm.screen.read / xterm.screen.wait /
+        // xterm.transport.sendLine / xterm.transport.sendControl）由 bridge 基于
+        // 上面能力字段自动注册；调用方同名条目覆盖内置，新名即新工具
+        // （M2.b FS / M2.c Host 从这里注入）
+        QHash<QString, ToolHandler> tools;
+        // extraTools 的 tools.list 元数据：完整名 → {description, params}
+        QHash<QString, QJsonObject> toolMeta;
     };
 
     // pipeName/agentFile 可注入：单测用独立管道与临时文件，不碰真实配置。
@@ -56,7 +85,7 @@ public:
     bool isServing() const { return m_server != nullptr; }
 
     // 用户在终端里有了动作（键盘/粘贴/命令栏）：立即中止 AI 的打字机，
-    // 剩余字符丢弃，对应的 send_line 请求以 interrupted 错误应答。
+    // 剩余字符丢弃，对应的 xterm.transport.sendLine 请求以 interrupted 错误应答。
     // 返回是否真的中止了一次打字。
     bool interruptTyping();
 
@@ -101,6 +130,10 @@ private:
     void onSocketReady(QLocalSocket *sock);
     void onSocketClosed(QLocalSocket *sock);
     void handleLine(QLocalSocket *sock, const QByteArray &line);
+    void registerBuiltinTools();               // 基于 m_hooks 能力字段注册内置工具
+    QJsonArray toolCatalog() const;            // tools.list 的清单（含参数描述）
+    void addWaiter(QLocalSocket *sock, const QJsonValue &id, const QString &needle,
+                   int minNew, int timeoutMs);  // wait 挂起（sendLine 带也用）
     void reply(QLocalSocket *sock, const QJsonValue &id, bool ok, const QJsonObject &result,
                const QString &error);
     void pollWaiters();
@@ -113,6 +146,8 @@ private:
     bool probeExistingAgent() const; // 探测是否已有活实例在服务管道
 
     Hooks m_hooks;
+    QHash<QString, ToolHandler> m_tools;      // 完整工具名 → 处理器（路由表）
+    QHash<QString, QJsonObject> m_toolMeta;   // 同名 → tools.list 元数据
     QLocalServer *m_server = nullptr;
     QTimer *m_poll = nullptr;
     QTimer *m_typeTimer = nullptr;
