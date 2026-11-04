@@ -3,6 +3,7 @@
 
 #include <QJsonObject>
 #include <QObject>
+#include <QUrl>
 
 #include "commandstore.h" // Profile / CommandItem
 #include "ssh/sshtypes.h"
@@ -75,6 +76,9 @@ public:
     void browsePrivateKey();
     void openFileBrowser();          // 工具栏「文件」按钮 / F10
     void onSftpRequested();          // F10：未连接时终端内给提示
+    // 终端 OSC 8 链接（Ctrl+点击）分发：http(s) 等交系统；file:// 本地存在则
+    // 打开，否则 SSH 在线时当远端路径走 SFTP 取回（下载后自动用关联程序打开）
+    void openLink(const QUrl &url);
 
     // —— 参数与配置 ——
     QString selectedPortName() const;

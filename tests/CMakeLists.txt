@@ -33,6 +33,15 @@ add_executable(test_screenview
     "${CMAKE_SOURCE_DIR}/termscreen.h"
     "${CMAKE_SOURCE_DIR}/completionengine.cpp"
     "${CMAKE_SOURCE_DIR}/completionengine.h"
+    # OSC 52 询问弹窗用 FramelessDialog（与主程序同款无边框风格，
+    # 连带 titlebar/icons/qrc —— 与 test_mcpmainhook 同一套依赖组合）
+    "${CMAKE_SOURCE_DIR}/framelessdialog.cpp"
+    "${CMAKE_SOURCE_DIR}/framelessdialog.h"
+    "${CMAKE_SOURCE_DIR}/titlebar.cpp"
+    "${CMAKE_SOURCE_DIR}/titlebar.h"
+    "${CMAKE_SOURCE_DIR}/icons.cpp"
+    "${CMAKE_SOURCE_DIR}/icons.h"
+    "${CMAKE_SOURCE_DIR}/resources/resources.qrc"
 )
 
 target_include_directories(test_screenview

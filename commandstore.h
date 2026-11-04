@@ -89,6 +89,16 @@ public:
     bool commandBarCollapsed() const { return m_commandBarCollapsed; }
     void setCommandBarCollapsed(bool collapsed) { m_commandBarCollapsed = collapsed; }
 
+    // OSC 52（远端写剪贴板）策略：ask（默认，每次弹窗确认）/ allow（直接写）/
+    // deny（拒绝并提示）。全局设置，两页一致；弹窗勾「以后自动允许」落库
+    QString osc52Policy() const { return m_osc52Policy; }
+    void setOsc52Policy(const QString &policy)
+    {
+        m_osc52Policy = (policy == QStringLiteral("allow") || policy == QStringLiteral("deny"))
+                            ? policy
+                            : QStringLiteral("ask");
+    }
+
     // 终端关键词高亮规则（全局，串口 / SSH 两页共用）
     QList<KeywordRule> keywords() const { return m_keywords; }
     void setKeywords(const QList<KeywordRule> &rules) { m_keywords = rules; }
@@ -115,6 +125,7 @@ private:
     int m_fontSize = 0;
     QString m_terminalFont;
     bool m_commandBarCollapsed = false;
+    QString m_osc52Policy = QStringLiteral("ask");
     QList<KeywordRule> m_keywords;
 };
 

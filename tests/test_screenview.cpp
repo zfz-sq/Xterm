@@ -5,6 +5,7 @@
 // 全程离屏 + 模拟字节流，不需要真实设备。
 #include <QApplication>
 #include <QClipboard>
+#include <QGuiApplication>
 #include <QImage>
 #include <QKeyEvent>
 #include <QLineEdit>
@@ -12,6 +13,8 @@
 #include <QObject>
 #include <QPixmap>
 #include <QScrollBar>
+#include <QSignalSpy>
+#include <QUrl>
 #include <QtTest>
 
 #include "screenview.h"
@@ -106,6 +109,8 @@ private slots:
     void wheelReportsWhileMouseTracking();
     void ctrlFOpensFindAndFullScreenPassesThrough();
     void keywordHighlightPaintsRuleColor();
+    void ctrlClickEmitsLinkActivated();
+    void osc52PolicyWritesOrDenies();
 
 private:
     void feed(ScreenView &view, const QByteArray &bytes)
@@ -725,6 +730,55 @@ void ScreenViewTest::keywordHighlightPaintsRuleColor()
     rule_lower.enabled = false;
     view.setKeywords({ rule_lower });
     QVERIFY(greenPixels(view.grab().toImage()) == 0); // 停用即失效
+}
+
+// OSC 8 链接：Ctrl+点击命中链接格发 linkActivated（URL 原样）；
+// 空白格 Ctrl+点击、无 Ctrl 的链接格点击都不触发（保持本地选区/双击语义）
+void ScreenViewTest::ctrlClickEmitsLinkActivated()
+{
+    ScreenView view;
+    view.resize(100 * 15, 34 * 18);
+    feed(view, QByteArrayLiteral("\x1b]8;;https://example.com/a\x07open\x1b]8;;\x07 tail"));
+    QSignalSpy links(&view, &ScreenView::linkActivated);
+
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(10, 12), QPointF(10, 12),
+                      Qt::LeftButton, Qt::LeftButton, Qt::ControlModifier);
+    QApplication::sendEvent(&view, &press);
+    QCOMPARE(links.count(), 1);
+    QCOMPARE(links.at(0).at(0).toUrl(), QUrl(QStringLiteral("https://example.com/a")));
+
+    // 同一行但无链接的空白格：不触发
+    links.clear();
+    QMouseEvent blank(QEvent::MouseButtonPress, QPointF(300, 12), QPointF(300, 12),
+                      Qt::LeftButton, Qt::LeftButton, Qt::ControlModifier);
+    QApplication::sendEvent(&view, &blank);
+    QCOMPARE(links.count(), 0);
+
+    // 无 Ctrl 的链接格点击：不触发（选区/双击选词不受影响）
+    links.clear();
+    QMouseEvent plain(QEvent::MouseButtonPress, QPointF(10, 12), QPointF(10, 12),
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&view, &plain);
+    QCOMPARE(links.count(), 0);
+}
+
+// OSC 52 策略：Allow 直接写系统剪贴板；Deny 拒绝并留屏上提示
+// （Ask 弹窗是模态交互，留待真机验收）
+void ScreenViewTest::osc52PolicyWritesOrDenies()
+{
+    ScreenView view;
+    view.resize(100 * 15, 34 * 18);
+    QClipboard *clip = QGuiApplication::clipboard();
+
+    view.setOsc52Policy(ScreenView::Osc52Policy::Allow);
+    feed(view, QByteArrayLiteral("\x1b]52;c;aGVsbG8=\x07"));
+    QCOMPARE(clip->text(), QStringLiteral("hello"));
+
+    view.setOsc52Policy(ScreenView::Osc52Policy::Deny);
+    clip->setText(QStringLiteral("keep"));
+    feed(view, QByteArrayLiteral("\x1b]52;c;dGVzdA==\x07"));
+    QCOMPARE(clip->text(), QStringLiteral("keep")); // 未被远端覆盖
+    QVERIFY(view.screenText().contains(QStringLiteral("剪贴板"))); // 拒绝提示入屏
 }
 
 int main(int argc, char **argv)

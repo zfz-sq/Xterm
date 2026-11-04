@@ -47,6 +47,10 @@ public:
     explicit FileBrowserDialog(SshSession *session, QWidget *parent = nullptr);
     ~FileBrowserDialog() override;
 
+    // 终端 OSC 8 链接（file:// 本地不存在）触发的单文件取回：走与「编辑」
+    // 相同的 fetch 通道（edit=false），下载完成后自动用系统关联程序打开
+    void fetchRemoteFile(const QString &remotePath);
+
 private slots:
     void onListed(const QString &path, const QVector<SftpEntry> &entries);
     void onListedFailed(const QString &path, const QString &error);

@@ -2,6 +2,7 @@
 #define SCREENVIEW_H
 
 #include <QElapsedTimer>
+#include <QUrl>
 #include <QWidget>
 
 #include "commandstore.h"
@@ -73,6 +74,12 @@ public:
     // 绘制内边距（默认 6px）。最大化时主窗口会置 0，让终端网格贴满控件边缘
     void setPad(int pad);
 
+    // OSC 52（远端写剪贴板）策略：Ask 每次弹窗确认（默认，可勾选「以后自动
+    // 允许」→ osc52AlwaysAllowRequested 落配置）；Allow 直接写；Deny 拒绝并
+    // 在屏上提示。全局设置，由主窗口从 CommandStore 同步到两页。
+    enum class Osc52Policy { Ask, Allow, Deny };
+    void setOsc52Policy(Osc52Policy policy) { m_osc52Policy = policy; }
+
 signals:
     void sendData(const QByteArray &data);
     void terminalSizeChanged(int cols, int rows);
@@ -85,6 +92,11 @@ signals:
     void fontFamilyChanged(const QString &family);
     // 选中词右键「高亮此词」：把选中文本交给主窗口建关键词高亮规则
     void highlightRequested(const QString &word);
+    // Ctrl+点击 OSC 8 超链接（打开方式归外层：http(s) 交系统，file://
+    // 本地存在则打开、否则交会话层走 SFTP 取回）
+    void linkActivated(const QUrl &url);
+    // 询问弹窗里勾了「以后自动允许」：外层落 osc52Policy 配置并同步两页
+    void osc52AlwaysAllowRequested();
 
 protected:
     bool event(QEvent *event) override;
@@ -163,6 +175,9 @@ private:
     bool localLineMode() const;
     // 远端画屏检测：进入（丢弃未发出的编辑草稿）/退出（回到行编辑）
     void applyRemoteCtl();
+    // OSC 52：按策略写入系统剪贴板 / 拒绝提示 / 弹窗确认
+    void handleOsc52(const QByteArray &text);
+    void askOsc52(const QByteArray &text);
     void enterRemoteRaw();
     void exitRemoteRaw();
     bool handleLocalLineKey(QKeyEvent *event);
@@ -229,6 +244,7 @@ private:
     int m_mouseBtn = -1;      // 上报中按住的按钮（motion 编码用，-1 = 无）
     int m_lastMotionRow = -1; // motion 去重：上次上报的格，-1 = 无
     int m_lastMotionCol = -1;
+    Osc52Policy m_osc52Policy = Osc52Policy::Ask; // OSC 52 写剪贴板策略
     QList<KeywordRule> m_keywords; // 关键词高亮规则（全局设置同步而来）
 
     // ---- 客户端 Tab 补全（主屏 + 串口/SSH shell 行编辑场景）----

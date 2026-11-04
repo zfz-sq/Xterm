@@ -1362,6 +1362,7 @@ void TermScreen::writeAt(int row, int col, char32_t cp, int width)
     cell.fg = m_pen.fg;
     cell.bg = m_pen.bg;
     cell.attr = m_pen.attr;
+    cell.uri = m_pen.uri; // OSC 8：本段文字带链接（NoUri = 无）
     cell.flags = (width == 2) ? FlagWide : 0;
     if (width == 2 && col + 1 < m_cols) {
         TermCell &next = cells[size_t(col + 1)];
@@ -1470,6 +1471,9 @@ void TermScreen::reset()
     m_bell = false;
     m_lastCp = 0;
     m_osc.clear();
+    // RIS：屏幕重建后所有 cell 的 uri 下标一并失效，链接池随之清空
+    m_uriPool.clear();
+    m_uriIndex.clear();
     m_scrollTop = 0;
     m_scrollBottom = m_rows - 1;
     m_state = Normal;
@@ -1480,6 +1484,27 @@ void TermScreen::replyBytes(const QByteArray &data)
 {
     if (m_reply && !data.isEmpty())
         m_reply(data);
+}
+
+void TermScreen::setClipboardHandler(std::function<void(const QByteArray &)> handler)
+{
+    m_onClipboard = std::move(handler);
+}
+
+QString TermScreen::uriAt(quint32 index) const
+{
+    return (int(index) < m_uriPool.size()) ? m_uriPool.at(int(index)) : QString();
+}
+
+quint32 TermScreen::internUri(const QString &uri)
+{
+    auto it = m_uriIndex.constFind(uri);
+    if (it != m_uriIndex.constEnd())
+        return it.value();
+    const quint32 index = quint32(m_uriPool.size());
+    m_uriPool.append(uri);
+    m_uriIndex.insert(uri, index);
+    return index;
 }
 
 void TermScreen::finishOsc()
@@ -1494,6 +1519,29 @@ void TermScreen::finishOsc()
                 m_title = title;
                 if (m_onTitle)
                     m_onTitle(title);
+            }
+        } else if (ok && cmd == 8) {
+            // OSC 8 ; params ; URI：params（id= 等）忽略，URI 含到终止符前的
+            // 全部内容（里面可以再有 ';'）。空 URI = 关闭链接。
+            const int semi2 = m_osc.indexOf(';', semi + 1);
+            const QString uri = QString::fromUtf8(
+                semi2 >= 0 ? m_osc.mid(semi2 + 1) : QByteArray());
+            m_pen.uri = uri.isEmpty() ? TermCell::NoUri : internUri(uri);
+        } else if (ok && cmd == 52) {
+            // OSC 52 ; selection ; base64：selection（c/p）不区分；'?' 查询
+            // 不支持（回写当前剪贴板不安全）。非法 base64 / 超大数据直接忽略。
+            const int semi2 = m_osc.indexOf(';', semi + 1);
+            if (semi2 < 0 || m_onClipboard == nullptr) {
+                m_osc.clear();
+                return;
+            }
+            const QByteArray payload = m_osc.mid(semi2 + 1);
+            if (payload != "?" && payload.size() <= 256 * 1024) {
+                const auto decoded = QByteArray::fromBase64Encoding(
+                    payload, QByteArray::AbortOnBase64DecodingErrors);
+                if (decoded.decodingStatus == QByteArray::Base64DecodingStatus::Ok
+                    && !decoded.decoded.isEmpty())
+                    m_onClipboard(decoded.decoded);
             }
         }
     }

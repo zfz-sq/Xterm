@@ -200,6 +200,7 @@ bool CommandStore::load()
     m_fontSize = qBound(0, root.value(QStringLiteral("fontSize")).toInt(0), 72);
     m_terminalFont = root.value(QStringLiteral("terminalFont")).toString();
     m_commandBarCollapsed = root.value(QStringLiteral("commandBarCollapsed")).toBool(false);
+    setOsc52Policy(root.value(QStringLiteral("osc52Policy")).toString(QStringLiteral("ask")));
 
     m_keywords.clear();
     // 老配置没有 keywords 键 = 从没用过高亮：给一套日志惯例默认规则
@@ -272,6 +273,7 @@ bool CommandStore::save() const
         { QStringLiteral("fontSize"), m_fontSize },
         { QStringLiteral("terminalFont"), m_terminalFont },
         { QStringLiteral("commandBarCollapsed"), m_commandBarCollapsed },
+        { QStringLiteral("osc52Policy"), m_osc52Policy },
         { QStringLiteral("keywords"), kws },
         { QStringLiteral("profiles"), arr },
     };

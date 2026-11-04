@@ -186,7 +186,12 @@ FS 安全边界：
       14/14 绿；1000/1002/1003 档位互斥 + 1006 SGR 编码，无 1006 回落 X10 老编码；
       Shift 强制本地选区/滚历史；滚轮优先 64/65 不再备用屏方向键；1003 的无按钮
       移动靠 WA_Hover + event() 还原——Qt 桌面把 no-button MouseMove 合成 HoverMove）
-- [ ] M3.2 OSC 8 / OSC 52
+- [x] M3.2 OSC 8 / OSC 52（2026-11-04，test_termscreen +2 / test_screenview +2，
+      14/14 绿；OSC 8：cell 池化 uri（同一 URL 去重）+ 下划线渲染，Ctrl+点击
+      发 linkActivated，分发归 SessionController（http(s) 交系统，file://
+      先本地、否则 SSH 在线走 FileBrowser::fetchRemoteFile 取回后自动打开）；
+      OSC 52：Abort 严格 base64 + 256KB 上限，Ask 默认弹 FramelessDialog
+      （可勾「以后自动允许」落 osc52Policy 配置），Allow/Deny 两档有测试锁）
 - [ ] M3.3 正则查找 + 选区增强
 - [ ] M3.4 环形缓冲 + 行号语义
 - [ ] M3.5 渲染帧合并（可选）

@@ -45,6 +45,8 @@ private slots:
     void feedStatsSeparatePromptFromViEcho();
     void boldMapsIndexedToBright();
     void mouseModesParseAndReset();
+    void osc8AnnotatesCells();
+    void osc52DecodesBase64();
 };
 
 void TermScreenTest::growBackfillsFromHistory()
@@ -239,6 +241,53 @@ void TermScreenTest::mouseModesParseAndReset()
     screen.feed("\x1b" "c"); // RIS 全复位：鼠标模式一并清零
     QCOMPARE(screen.mouseTrackingMode(), 0);
     QVERIFY(!screen.mouseSgrEncoding());
+}
+
+// OSC 8 超链接解析：链接段 cell 带池化 uri（同一 URL 去重），空 URI 关闭；
+// BEL 与 ST 两种终止符等价；链接段外的字符不带链接
+void TermScreenTest::osc8AnnotatesCells()
+{
+    TermScreen screen;
+    screen.resize(80, 5);
+    screen.feed("\x1b]8;;https://example.com\x1b\\go\x1b]8;;\x1b\\ tail");
+
+    const TermLine *line = screen.lineAbsolute(0);
+    QVERIFY(line != nullptr && line->cells.size() >= 9);
+    const quint32 uri = line->cells.at(0).uri; // 'g'
+    QVERIFY(uri != TermCell::NoUri);
+    QCOMPARE(screen.uriAt(uri), QStringLiteral("https://example.com"));
+    QCOMPARE(line->cells.at(1).uri, uri);              // 'o' 同一链接
+    QVERIFY(line->cells.at(2).uri == TermCell::NoUri); // 关闭后的空格
+    QVERIFY(line->cells.at(6).uri == TermCell::NoUri); // " tail" 的 'l'
+
+    // 同一 URL 再开：池去重，两次下标一致
+    screen.feed("\x1b]8;;https://example.com\x07xx\x1b]8;;\x07");
+    const TermLine *again = screen.lineAbsolute(0);
+    QCOMPARE(again->cells.at(7).uri, uri); // "go tail" 后继续写的第一个 'x'
+}
+
+// OSC 52 剪贴板：base64 解码后回调；'?' 查询、非法 base64、缺 selection
+// 分号都不触发
+void TermScreenTest::osc52DecodesBase64()
+{
+    TermScreen screen;
+    QByteArray got;
+    screen.setClipboardHandler([&got](const QByteArray &data) { got = data; });
+
+    screen.feed("\x1b]52;c;aGVsbG8=\x07"); // "hello"，BEL 终止
+    QCOMPARE(got, QByteArrayLiteral("hello"));
+    got.clear();
+
+    screen.feed("\x1b]52;p;dGVzdA==\x1b\\"); // "test"，ST 终止 + primary
+    QCOMPARE(got, QByteArrayLiteral("test"));
+    got.clear();
+
+    screen.feed("\x1b]52;c;?\x07"); // 查询不支持
+    QVERIFY(got.isEmpty());
+    screen.feed("\x1b]52;c;!!\x07"); // 非法 base64
+    QVERIFY(got.isEmpty());
+    screen.feed("\x1b]52;c\x07"); // 没有第二个分号
+    QVERIFY(got.isEmpty());
 }
 
 QTEST_MAIN(TermScreenTest)

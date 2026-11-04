@@ -2,27 +2,33 @@
 
 #include <QClipboard>
 #include <QApplication>
+#include <QCheckBox>
+#include <QDialogButtonBox>
 #include <QFocusEvent>
 #include <QFontDatabase>
 #include <QFontMetrics>
 #include <QGuiApplication>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPaintEvent>
+#include <QPushButton>
 #include <QResizeEvent>
 #include <QScrollBar>
 #include <QShowEvent>
 #include <QTimer>
+#include <QVBoxLayout>
 #include <QVector>
 #include <QWheelEvent>
 
 #include <utility>
 
 #include "completionengine.h"
+#include "framelessdialog.h"
 
 namespace {
 
@@ -74,6 +80,8 @@ ScreenView::ScreenView(QWidget *parent)
 
     m_screen.setReplyHandler([this](const QByteArray &bytes) { emit sendData(bytes); });
     m_screen.setTitleHandler([this](const QString &title) { emit shellTitleChanged(title); });
+    // OSC 52：解码后的文本按策略写入剪贴板（Ask 弹窗 / Allow 直写 / Deny 提示）
+    m_screen.setClipboardHandler([this](const QByteArray &text) { handleOsc52(text); });
     m_screen.setDark(true);
     m_clicks.start();
 
@@ -777,6 +785,8 @@ void ScreenView::paintEvent(QPaintEvent *)
                         break;
                     if (next.attr & (TermScreen::AttrBold | TermScreen::AttrUnderline))
                         break;
+                    if (next.uri != first.uri)
+                        break; // OSC 8 链接边界：同链接可合并，无链接/异链接截断
                     QColor nfg;
                     QColor nbg;
                     colorsOf(next, abs, end, nfg, nbg);
@@ -809,7 +819,9 @@ void ScreenView::paintEvent(QPaintEvent *)
             }
             if (!blank) {
                 QFont font = (first.attr & TermScreen::AttrBold) ? m_boldFont : m_font;
-                font.setUnderline(first.attr & TermScreen::AttrUnderline);
+                // OSC 8 链接固定带下划线（与 SGR 下划线叠加无差异）
+                font.setUnderline((first.attr & TermScreen::AttrUnderline)
+                                  || first.uri != TermCell::NoUri);
                 painter.setFont(font);
                 painter.setPen(fg);
                 painter.drawText(x, y + m_ascent, text);
@@ -1647,12 +1659,75 @@ void ScreenView::advanceCompletionCycle()
     m_cycleState = nextState;
 }
 
+/*
+ * OSC 52（远端程序写本机剪贴板，如 tmux 的 copy-mode、ssh 端的 osc52 工具）：
+ * 默认弹窗确认（远端能静默写剪贴板是安全隐患），Allow 直接写，Deny 拒绝
+ * 并在屏上留一行提示。策略存在 CommandStore（osc52Policy），由主窗口同步。
+ */
+void ScreenView::handleOsc52(const QByteArray &text)
+{
+    if (m_osc52Policy == Osc52Policy::Deny) {
+        appendSystemMessage(tr("── 远端请求写剪贴板已被策略拒绝（osc52Policy=deny）──"));
+        return;
+    }
+    if (m_osc52Policy == Osc52Policy::Allow) {
+        QGuiApplication::clipboard()->setText(QString::fromUtf8(text));
+        return;
+    }
+    askOsc52(text);
+}
+
+void ScreenView::askOsc52(const QByteArray &text)
+{
+    FramelessDialog dialog(this);
+    dialog.setDialogTitle(tr("远端请求写入剪贴板"));
+    auto *layout = new QVBoxLayout;
+    auto *label = new QLabel;
+    const QString preview = QString::fromUtf8(text.left(300));
+    label->setText(tr("远端程序想把以下内容写入系统剪贴板（%1 字节）：\n\n%2%3")
+                       .arg(text.size())
+                       .arg(preview)
+                       .arg(text.size() > 300 ? QStringLiteral("…") : QString()));
+    label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    label->setWordWrap(true);
+    layout->addWidget(label);
+    auto *always = new QCheckBox(tr("以后自动允许（写入配置，两页生效）"));
+    layout->addWidget(always);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    buttons->button(QDialogButtonBox::Ok)->setText(tr("允许"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(tr("拒绝"));
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    dialog.setMinimumWidth(440);
+    dialog.setContentLayout(layout);
+
+    if (dialog.exec() == QDialog::Accepted) {
+        QGuiApplication::clipboard()->setText(QString::fromUtf8(text));
+        if (always->isChecked())
+            emit osc52AlwaysAllowRequested();
+    }
+}
+
 void ScreenView::mousePressEvent(QMouseEvent *event)
 {
     setFocus();
     if (reportMouseEvent(event, true, false, false)) {
         event->accept();
         return; // 鼠标上报：事件交给远端程序
+    }
+    // Ctrl+点击打开 OSC 8 超链接（鼠标上报开启时点击已归远端，到不了这里）
+    if (event->button() == Qt::LeftButton
+        && (event->modifiers() & Qt::ControlModifier)) {
+        const Pos pos = cellAt(event->position().toPoint());
+        if (pos.valid) {
+            const TermCell cell = cellOrBlank(m_screen.lineAbsolute(pos.abs), pos.col);
+            if (cell.uri != TermCell::NoUri) {
+                emit linkActivated(QUrl(m_screen.uriAt(cell.uri)));
+                event->accept();
+                return;
+            }
+        }
     }
     if (event->button() == Qt::LeftButton && m_lastDoubleMs > 0
         && m_clicks.elapsed() - m_lastDoubleMs < 500) {

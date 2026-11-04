@@ -868,6 +868,15 @@ void FileBrowserDialog::editRemote()
     m_queue->fetch(true, remoteJoin(m_remotePath, items.first().name), qint64(items.first().size));
 }
 
+void FileBrowserDialog::fetchRemoteFile(const QString &remotePath)
+{
+    // 与「编辑」同一通道（edit=false：下载后自动打开，不监视回传）。
+    // size 未知传 -1，进度条按字节流累计展示。
+    if (!m_connected)
+        return;
+    m_queue->fetch(false, remotePath, -1);
+}
+
 void FileBrowserDialog::openLocal()
 {
     const QModelIndexList rows = m_localView->selectionModel()->selectedRows(0);

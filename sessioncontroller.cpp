@@ -2,8 +2,10 @@
 
 #include <QAbstractItemView>
 #include <QComboBox>
+#include <QDesktopServices>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QFile>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QLabel>
@@ -334,6 +336,30 @@ void SessionController::onSftpRequested()
         openFileBrowser();
     else
         appendActiveNote(tr("── SSH 未连接，无法打开 SFTP 文件管理 ──"));
+}
+
+void SessionController::openLink(const QUrl &url)
+{
+    if (!url.isValid())
+        return;
+    if (url.scheme() != QStringLiteral("file")) {
+        // http(s)/mailto 等：交系统默认程序（浏览器/邮件）
+        QDesktopServices::openUrl(url);
+        return;
+    }
+    const QString path = url.toLocalFile();
+    if (QFile::exists(path)) {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+        return;
+    }
+    // 本地不存在：SSH 在线则当远端路径取回（fetch 完成后自动用关联程序打开）
+    if (m_ssh->state() == Transport::Connected) {
+        openFileBrowser();
+        m_fileBrowser->fetchRemoteFile(path);
+    } else {
+        appendActiveNote(tr("── 链接指向的文件本地不存在，SSH 未连接无法取回：%1 ──")
+                             .arg(path));
+    }
 }
 
 // ---------------------------------------------------------------- 模式

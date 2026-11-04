@@ -58,6 +58,15 @@ MainWindow::MainWindow(QWidget *parent)
     m_uiBuilder->commandBar()->setCollapsed(m_store->commandBarCollapsed());
     m_uiBuilder->restoreTerminalFontSettings();
     m_uiBuilder->applyKeywords(m_store->keywords());
+    // OSC 52 策略（全局，两页一致）：ask / allow / deny
+    const QString osc52 = m_store->osc52Policy();
+    const auto osc52Policy = (osc52 == QStringLiteral("allow"))
+                                 ? ScreenView::Osc52Policy::Allow
+                                 : ((osc52 == QStringLiteral("deny"))
+                                        ? ScreenView::Osc52Policy::Deny
+                                        : ScreenView::Osc52Policy::Ask);
+    m_uiBuilder->serialView()->setOsc52Policy(osc52Policy);
+    m_uiBuilder->sshView()->setOsc52Policy(osc52Policy);
     ui->advancedBar->hide(); // 高级参数默认收起
     m_session->refreshPorts();
     m_session->reloadProfiles(m_store->lastProfile());
@@ -109,6 +118,17 @@ void MainWindow::connectSignals()
     // SSH 终端尺寸变化 → pty 大小同步
     connect(m_uiBuilder->sshView(), &ScreenView::terminalSizeChanged, this,
             [this](int cols, int rows) { m_session->ssh()->setPtySize(cols, rows); });
+
+    // OSC 8 超链接与 OSC 52 授权（M3.2）：链接分发归会话层（http(s) 交系统、
+    // file:// 先本地后 SFTP）；「以后自动允许」落配置并同步本页策略
+    for (ScreenView *view : { m_uiBuilder->serialView(), m_uiBuilder->sshView() }) {
+        connect(view, &ScreenView::linkActivated, m_session, &SessionController::openLink);
+        connect(view, &ScreenView::osc52AlwaysAllowRequested, this, [this, view] {
+            m_store->setOsc52Policy(QStringLiteral("allow"));
+            m_store->save();
+            view->setOsc52Policy(ScreenView::Osc52Policy::Allow);
+        });
+    }
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)

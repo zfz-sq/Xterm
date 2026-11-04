@@ -3,7 +3,9 @@
 
 #include <QByteArray>
 #include <QColor>
+#include <QHash>
 #include <QString>
+#include <QVector>
 
 #include <deque>
 #include <functional>
@@ -21,11 +23,14 @@ struct TermColor
 
 struct TermCell
 {
+    // OSC 8 超链接的 URI 池下标（TermScreen::uriAt 取串）；NoUri = 非链接
+    static constexpr quint32 NoUri = 0xFFFFFFFFu;
     char32_t cp = U' ';
     TermColor fg;
     TermColor bg;
     quint8 attr = 0;
     quint8 flags = 0;
+    quint32 uri = NoUri;
 };
 
 struct TermLine
@@ -87,6 +92,10 @@ public:
     int feedPrintableAfterLf() const { return m_feedPrintableAfterLf; }
     bool takeBell();
     void setTitleHandler(std::function<void(const QString &)> title);
+    // OSC 52（远端写剪贴板）解码后的文本经此回调交上层（策略/弹窗归视图层）
+    void setClipboardHandler(std::function<void(const QByteArray &)> handler);
+    // URI 池取串（TermCell::uri 下标）；越界/NoUri 返回空串
+    QString uriAt(quint32 index) const;
     // 清掉可见内容和滚动历史，光标回到左上角。返回 -1，视图据此跳到空白屏底。
     int clearDisplay();
     int cursorRow() const { return m_row; }
@@ -110,6 +119,7 @@ private:
         TermColor fg;
         TermColor bg;
         quint8 attr = 0;
+        quint32 uri = TermCell::NoUri; // OSC 8：本段文字的链接（空 URI 关闭）
     };
 
     void feedByte(unsigned char b);
@@ -152,6 +162,8 @@ private:
     void paintIpTokens(TermLine &line);
     void replyBytes(const QByteArray &data);
     void finishOsc();
+    // OSC 8 链接池：同一 URL 只存一份，cell 存下标（长会话去重后可控）
+    quint32 internUri(const QString &uri);
     QColor resolve(const TermColor &color, bool foreground) const;
 
     static constexpr int kMaxHist = 8000;
@@ -209,6 +221,9 @@ private:
     QByteArray m_osc;
     QString m_title;
     std::function<void(const QString &)> m_onTitle;
+    std::function<void(const QByteArray &)> m_onClipboard;
+    QVector<QString> m_uriPool;          // OSC 8 链接池（下标即 TermCell::uri）
+    QHash<QString, quint32> m_uriIndex;  // 去重索引
 
     std::vector<TermLine> m_lines;
     std::vector<TermLine> m_primary;
