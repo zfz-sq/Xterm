@@ -1081,6 +1081,18 @@ void TermScreen::setPrivateMode(int mode, bool enable)
     case 2004:
         m_bracketPaste = enable;
         break;
+    case 1000:
+    case 1002:
+    case 1003:
+        // 互斥的鼠标跟踪档位：开启即切到新档，关闭只关自己这一档
+        if (enable)
+            m_mouseTrack = mode;
+        else if (m_mouseTrack == mode)
+            m_mouseTrack = 0;
+        break;
+    case 1006:
+        m_mouseSgr = enable;
+        break;
     case 2026:
         m_syncing = enable;
         break;
@@ -1451,6 +1463,8 @@ void TermScreen::reset()
     m_appCursor = false;
     m_bracketPaste = false;
     m_syncing = false;
+    m_mouseTrack = 0;
+    m_mouseSgr = false;
     m_originMode = false;
     m_insertMode = false;
     m_bell = false;

@@ -68,6 +68,11 @@ public:
     bool bracketedPaste() const { return m_bracketPaste; }
     bool cursorHidden() const { return m_cursorHidden; }
     bool syncing() const { return m_syncing; }
+    // 鼠标上报（DECSET 1000/1002/1003，互斥，后设覆盖前设，DECRST 只关
+    // 自己）：0 = 关闭；1000 = 按下/释放；1002 = 加按住拖动；1003 = 任意
+    // 移动。1006 是 SGR 编码开关，与跟踪模式独立。
+    int mouseTrackingMode() const { return m_mouseTrack; }
+    bool mouseSgrEncoding() const { return m_mouseSgr; }
     // 本块是否出现光标定位（CUP/HVP）或整屏擦除（ED 2/3）：BusyBox top、
     // menuconfig 这类不切备用屏的全屏程序靠它认出来。每次 feed() 清零。
     bool screenCtlSeen() const { return m_feedCtl > 0; }
@@ -164,6 +169,8 @@ private:
     bool m_bracketPaste = false;
     bool m_cursorHidden = false;
     bool m_syncing = false;    // DEC 2026：一整帧到齐再画，htop 才不会闪
+    int m_mouseTrack = 0;      // DEC 1000/1002/1003：鼠标上报模式，0 = 关
+    bool m_mouseSgr = false;   // DEC 1006：SGR 编码（\e[<b;x;yM/m）
     bool m_originMode = false; // DEC 6：光标原点落在滚动区
     bool m_insertMode = false;
     bool m_bell = false;

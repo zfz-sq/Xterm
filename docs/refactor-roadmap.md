@@ -182,7 +182,10 @@ FS 安全边界：
       UiBuilder。M1 收官：mainwindow.cpp 85KB→6.8KB/127 行，只余构造编排/信号接线/
       AI 锁 eventFilter/closeEvent 转发；sendRaw/sendLine 实现直迁 SessionController
       （无外部调用者，不留转发死代码），Mode 枚举迁至 SessionController）
-- [ ] M3.1 SGR 鼠标上报
+- [x] M3.1 SGR 鼠标上报（2026-11-04，test_screenview +5 / test_termscreen +1，全套
+      14/14 绿；1000/1002/1003 档位互斥 + 1006 SGR 编码，无 1006 回落 X10 老编码；
+      Shift 强制本地选区/滚历史；滚轮优先 64/65 不再备用屏方向键；1003 的无按钮
+      移动靠 WA_Hover + event() 还原——Qt 桌面把 no-button MouseMove 合成 HoverMove）
 - [ ] M3.2 OSC 8 / OSC 52
 - [ ] M3.3 正则查找 + 选区增强
 - [ ] M3.4 环形缓冲 + 行号语义

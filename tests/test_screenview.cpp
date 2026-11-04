@@ -49,6 +49,40 @@ QString lastLine(ScreenView &view)
     return QString();
 }
 
+// 反解已发送序列里最后一组 SGR 鼠标上报（\e[<code;x;yM/m）：坐标断言
+// 不依赖字体度量，直接从行为输出取真实值。
+struct SgrReport
+{
+    bool valid = false;
+    int code = 0;
+    int x = 0;
+    int y = 0;
+    bool release = false;
+};
+
+SgrReport lastSgr(const QByteArray &sent)
+{
+    SgrReport r;
+    const int at = sent.lastIndexOf("\x1b[<");
+    if (at < 0)
+        return r;
+    const int semi1 = sent.indexOf(';', at + 3);
+    const int semi2 = semi1 >= 0 ? sent.indexOf(';', semi1 + 1) : -1;
+    if (semi1 < 0 || semi2 < 0)
+        return r;
+    int end = semi2 + 1;
+    while (end < sent.size() && sent.at(end) >= '0' && sent.at(end) <= '9')
+        ++end;
+    if (end >= sent.size() || (sent.at(end) != 'M' && sent.at(end) != 'm'))
+        return r;
+    r.valid = true;
+    r.code = sent.mid(at + 3, semi1 - at - 3).toInt();
+    r.x = sent.mid(semi1 + 1, semi2 - semi1 - 1).toInt();
+    r.y = sent.mid(semi2 + 1, end - semi2 - 1).toInt();
+    r.release = sent.at(end) == 'm';
+    return r;
+}
+
 } // namespace
 
 class ScreenViewTest : public QObject
@@ -65,6 +99,11 @@ private slots:
     void pureTerminalModeSendsKeysRaw();
     void localRedrawDoesNotSelfTrigger();
     void wheelBecomesArrowsWhileRemotePaints();
+    void mouseTrackingReportsSgr();
+    void mouseMotionModesGateReporting();
+    void shiftKeepsLocalSelectionWhileTracking();
+    void mouseOffKeepsLocalClicks();
+    void wheelReportsWhileMouseTracking();
     void ctrlFOpensFindAndFullScreenPassesThrough();
     void keywordHighlightPaintsRuleColor();
 
@@ -400,6 +439,199 @@ void ScreenViewTest::wheelBecomesArrowsWhileRemotePaints()
     feed(view, topFrame());
     QApplication::sendEvent(&view, &wheelDown);
     QVERIFY(cap.sent.contains(QByteArray("\x1b[B"))); // top 列表滚动
+}
+
+// 鼠标上报开启（vim 式 ?1049h + 1000 + 1006）：点击/双击/释放编码成 SGR
+// 序列发给当前链路；关掉 1006 后回落 X10 老编码（BusyBox htop 只认这种），
+// X10 无 release 事件。
+void ScreenViewTest::mouseTrackingReportsSgr()
+{
+    ScreenView view;
+    view.resize(100 * 15, 34 * 18);
+    Capture cap;
+    QObject::connect(&view, &ScreenView::sendData,
+                     [&cap](const QByteArray &bytes) { cap.sent += bytes; });
+
+    feed(view, QByteArray("\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[H\x1b[2J"));
+
+    const QPointF pos(30, 12);
+    QMouseEvent press(QEvent::MouseButtonPress, pos, pos, Qt::LeftButton,
+                      Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease, pos, pos, Qt::LeftButton,
+                        Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&view, &press);
+    const SgrReport p = lastSgr(cap.sent);
+    QVERIFY(p.valid);
+    QCOMPARE(p.code, 0);
+    QVERIFY(!p.release);
+    QVERIFY(p.x >= 1);
+    QVERIFY(p.y >= 1);
+
+    QApplication::sendEvent(&view, &release);
+    const SgrReport r = lastSgr(cap.sent);
+    QVERIFY(r.valid);
+    QCOMPARE(r.code, 0);
+    QCOMPARE(r.x, p.x); // 同点按下/释放：坐标一致
+    QCOMPARE(r.y, p.y);
+    QVERIFY(r.release);
+    QCOMPARE(cap.sent.count("\x1b[<"), 2);
+
+    // 双击是第二次按下的上报（Qt 不再补 press）
+    QMouseEvent dblClick(QEvent::MouseButtonDblClick, pos, pos, Qt::LeftButton,
+                         Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&view, &dblClick);
+    QCOMPARE(cap.sent.count("\x1b[<"), 3);
+    QApplication::sendEvent(&view, &release);
+    QCOMPARE(cap.sent.count("\x1b[<"), 4);
+
+    // 回落 X10：\e[M + 三个 +32 单字节（共 6 字节）；release 无从表达，不发
+    feed(view, QByteArray("\x1b[?1006l"));
+    cap.reset();
+    QApplication::sendEvent(&view, &press);
+    QVERIFY(cap.sent.startsWith("\x1b[M"));
+    QCOMPARE(cap.sent.size(), 6);
+    QApplication::sendEvent(&view, &release);
+    QCOMPARE(cap.sent.size(), 6); // X10：release 不上报
+}
+
+// motion 档位门控：1000 只报按下/释放；1002 加按住拖动（按钮+32）；1003
+// 任何移动都报（无按钮 35）；同一格不重发。
+void ScreenViewTest::mouseMotionModesGateReporting()
+{
+    ScreenView view;
+    view.resize(100 * 15, 34 * 18);
+    Capture cap;
+    QObject::connect(&view, &ScreenView::sendData,
+                     [&cap](const QByteArray &bytes) { cap.sent += bytes; });
+
+    feed(view, QByteArray("\x1b[?1000h\x1b[?1006h"));
+    QMouseEvent hover(QEvent::MouseMove, QPointF(30, 12), QPointF(30, 12),
+                      Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&view, &hover);
+    QVERIFY(cap.sent.isEmpty()); // 1000：移动不上报
+
+    feed(view, QByteArray("\x1b[?1002h"));
+    QApplication::sendEvent(&view, &hover);
+    QVERIFY(cap.sent.isEmpty()); // 1002：未按住按钮不报
+
+    const QPointF pressPos(30, 12);
+    const QPointF dragPos(90, 80);
+    QMouseEvent press(QEvent::MouseButtonPress, pressPos, pressPos,
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&view, &press);
+    cap.reset();
+    QMouseEvent drag(QEvent::MouseMove, dragPos, dragPos, Qt::NoButton,
+                     Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&view, &drag);
+    const SgrReport d = lastSgr(cap.sent);
+    QVERIFY(d.valid);
+    QCOMPARE(d.code, 32); // 按住左键拖动：按钮 0 + motion 32
+    QVERIFY(!d.release);
+    QApplication::sendEvent(&view, &drag);
+    QCOMPARE(cap.sent.count("\x1b[<"), 1); // 同格不重发
+
+    QMouseEvent release(QEvent::MouseButtonRelease, dragPos, dragPos,
+                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&view, &release);
+    cap.reset();
+    // 1003：松开后移动也报（编码 35）；同格去重仍生效，换个格再动
+    feed(view, QByteArray("\x1b[?1003h"));
+    QApplication::sendEvent(&view, &drag);
+    QVERIFY(cap.sent.isEmpty()); // 与拖动末格相同：去重
+    QMouseEvent wander(QEvent::MouseMove, QPointF(150, 120), QPointF(150, 120),
+                       Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&view, &wander);
+    const SgrReport w = lastSgr(cap.sent);
+    QVERIFY(w.valid);
+    QCOMPARE(w.code, 35); // 无按钮移动：3 + 32
+}
+
+// Shift+拖动强制本地选区（上报开着也不发一字节），复制行为不回归——
+// vim 里想复制屏幕内容时唯一的逃生口。
+void ScreenViewTest::shiftKeepsLocalSelectionWhileTracking()
+{
+    ScreenView view;
+    view.resize(100 * 15, 34 * 18);
+    Capture cap;
+    QObject::connect(&view, &ScreenView::sendData,
+                     [&cap](const QByteArray &bytes) { cap.sent += bytes; });
+
+    feed(view, QByteArray("root@board:~# hello world\r\n"));
+    feed(view, QByteArray("\x1b[?1002h\x1b[?1006h"));
+
+    QClipboard *clip = QGuiApplication::clipboard();
+    clip->clear();
+    const QPointF from(20, 12);
+    const QPointF to(110, 12);
+    QMouseEvent press(QEvent::MouseButtonPress, from, from, Qt::LeftButton,
+                      Qt::LeftButton, Qt::ShiftModifier);
+    QMouseEvent drag(QEvent::MouseMove, to, to, Qt::NoButton, Qt::LeftButton,
+                     Qt::ShiftModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease, to, to, Qt::LeftButton,
+                        Qt::NoButton, Qt::ShiftModifier);
+    QApplication::sendEvent(&view, &press);
+    QApplication::sendEvent(&view, &drag);
+    QApplication::sendEvent(&view, &release);
+
+    QVERIFY(cap.sent.isEmpty()); // 全程零上报：选区优先
+    QVERIFY(!clip->text().isEmpty()); // 本地选区成立并复制
+}
+
+// 上报未开启（默认）：点击/拖动/双击仍是本地选区行为，一个字节都不发。
+void ScreenViewTest::mouseOffKeepsLocalClicks()
+{
+    ScreenView view;
+    view.resize(100 * 15, 34 * 18);
+    view.setLocalEcho(true);
+    Capture cap;
+    QObject::connect(&view, &ScreenView::sendData,
+                     [&cap](const QByteArray &bytes) { cap.sent += bytes; });
+
+    feed(view, QByteArray("root@board:~# hello world\r\n"));
+    QClipboard *clip = QGuiApplication::clipboard();
+    clip->clear();
+    const QPointF pos(30, 12);
+    QMouseEvent press(QEvent::MouseButtonPress, pos, pos, Qt::LeftButton,
+                      Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent dblClick(QEvent::MouseButtonDblClick, pos, pos, Qt::LeftButton,
+                         Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&view, &press);
+    QApplication::sendEvent(&view, &dblClick);
+    QVERIFY(!clip->text().isEmpty()); // 双击选词照常
+    QVERIFY(cap.sent.isEmpty());      // 且不发任何字节
+}
+
+// 上报开启时滚轮交给程序（64/65），优先于备用屏方向键兼容分支——
+// htop 滚列表靠它；Shift+滚轮仍留给本地历史。
+void ScreenViewTest::wheelReportsWhileMouseTracking()
+{
+    ScreenView view;
+    view.resize(100 * 15, 34 * 18);
+    Capture cap;
+    QObject::connect(&view, &ScreenView::sendData,
+                     [&cap](const QByteArray &bytes) { cap.sent += bytes; });
+
+    feed(view, QByteArray("\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[H\x1b[2J"));
+    QWheelEvent wheelDown(QPointF(10, 10), QPointF(10, 10), QPoint(0, -120),
+                          QPoint(0, -120), Qt::NoButton, Qt::NoModifier,
+                          Qt::ScrollUpdate, false);
+    QApplication::sendEvent(&view, &wheelDown);
+    QVERIFY(cap.sent.contains("\x1b[<65;")); // 滚轮下 = 按钮 65
+    QVERIFY(!cap.sent.contains(QByteArray("\x1b[B"))); // 不再是方向键兑底
+
+    cap.reset();
+    QWheelEvent wheelUp(QPointF(10, 10), QPointF(10, 10), QPoint(0, 120),
+                        QPoint(0, 120), Qt::NoButton, Qt::NoModifier,
+                        Qt::ScrollUpdate, false);
+    QApplication::sendEvent(&view, &wheelUp);
+    QVERIFY(cap.sent.contains("\x1b[<64;")); // 滚轮上 = 按钮 64
+
+    cap.reset();
+    QWheelEvent shiftDown(QPointF(10, 10), QPointF(10, 10), QPoint(0, -120),
+                          QPoint(0, -120), Qt::NoButton, Qt::ShiftModifier,
+                          Qt::ScrollUpdate, false);
+    QApplication::sendEvent(&view, &shiftDown);
+    QVERIFY(cap.sent.isEmpty()); // Shift+滚轮：本地滚动历史，不上报
 }
 
 void ScreenViewTest::ctrlFOpensFindAndFullScreenPassesThrough()

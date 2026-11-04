@@ -44,6 +44,7 @@ private slots:
     void screenCtlFlagTracksPainterBlocks();
     void feedStatsSeparatePromptFromViEcho();
     void boldMapsIndexedToBright();
+    void mouseModesParseAndReset();
 };
 
 void TermScreenTest::growBackfillsFromHistory()
@@ -208,6 +209,36 @@ void TermScreenTest::boldMapsIndexedToBright()
     QCOMPARE(bold.fg.index, quint8(1)); // 存储仍是普通红
     QCOMPARE(bright.fg.index, quint8(9));
     QCOMPARE(screen.foreground(bold), screen.foreground(bright)); // 画出来同色
+}
+
+// 鼠标上报模式解析（DECSET/DECRST 1000/1002/1003/1006）：档位互斥、
+// 后设覆盖前设、DECRST 只关自己这档、RIS 全复位清零。
+// ScreenView 据此决定鼠标事件走远端上报还是本地选区。
+void TermScreenTest::mouseModesParseAndReset()
+{
+    TermScreen screen;
+    QCOMPARE(screen.mouseTrackingMode(), 0);
+    QVERIFY(!screen.mouseSgrEncoding());
+
+    screen.feed("\x1b[?1000h\x1b[?1006h"); // vim/htop 标准开场
+    QCOMPARE(screen.mouseTrackingMode(), 1000);
+    QVERIFY(screen.mouseSgrEncoding());
+
+    screen.feed("\x1b[?1002h"); // 互斥：新档覆盖旧档
+    QCOMPARE(screen.mouseTrackingMode(), 1002);
+    screen.feed("\x1b[?1003h");
+    QCOMPARE(screen.mouseTrackingMode(), 1003);
+    screen.feed("\x1b[?1000l"); // 关闭只关自己这档
+    QCOMPARE(screen.mouseTrackingMode(), 1003);
+    screen.feed("\x1b[?1006l");
+    QVERIFY(!screen.mouseSgrEncoding());
+    screen.feed("\x1b[?1003l");
+    QCOMPARE(screen.mouseTrackingMode(), 0);
+
+    screen.feed("\x1b[?1002h\x1b[?1006h");
+    screen.feed("\x1b" "c"); // RIS 全复位：鼠标模式一并清零
+    QCOMPARE(screen.mouseTrackingMode(), 0);
+    QVERIFY(!screen.mouseSgrEncoding());
 }
 
 QTEST_MAIN(TermScreenTest)

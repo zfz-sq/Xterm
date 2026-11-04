@@ -54,6 +54,9 @@ ScreenView::ScreenView(QWidget *parent)
     setAttribute(Qt::WA_OpaquePaintEvent);
     setAttribute(Qt::WA_InputMethodEnabled);
     setAttribute(Qt::WA_KeyCompression, false);
+    // 鼠标上报 1003（任意移动）需要无按钮的移动事件：Qt 桌面语义里这类
+    // MouseMove 会被合成成 HoverMove，不开 WA_Hover 直接丢弃（event() 还原）
+    setAttribute(Qt::WA_Hover);
     setCursor(Qt::IBeamCursor);
     setMinimumSize(160, 80);
 
@@ -586,6 +589,127 @@ QByteArray ScreenView::arrowKey(char letter) const
     QByteArray seq = m_screen.appCursorKeys() ? QByteArray("\x1bO") : QByteArray("\x1b[");
     seq.append(letter);
     return seq;
+}
+
+int ScreenView::mouseButtonCode(Qt::MouseButton button)
+{
+    switch (button) {
+    case Qt::LeftButton:   return 0;
+    case Qt::MiddleButton: return 1;
+    case Qt::RightButton:  return 2;
+    default:               return -1;
+    }
+}
+
+int ScreenView::mouseModifierCode(Qt::KeyboardModifiers mods)
+{
+    // SGR/X10 修饰键位：4=Shift 8=Alt 16=Ctrl（Shift 在此只影响已放行的
+    // 事件——带 Shift 的按键/滚轮在入口就交给本地逻辑，不会到这里）
+    int code = 0;
+    if (mods & Qt::ShiftModifier)   code += 4;
+    if (mods & Qt::AltModifier)     code += 8;
+    if (mods & Qt::ControlModifier) code += 16;
+    return code;
+}
+
+// 事件格坐标（屏幕 0 基行）转上报序列。1006（SGR）：\e[<code;x;yM/m，
+// 1 基坐标，release 用 'm' 收尾；只开跟踪没开 1006 的老程序（BusyBox
+// htop）回落 X10：\e[M + 三个 +32 单字节，坐标超 222 夹紧，release 无法
+// 表达（X10 语义），拖动/滚轮照常。
+QByteArray ScreenView::mouseSequence(int code, int mods, int row, int col, bool release) const
+{
+    if (m_screen.mouseSgrEncoding()) {
+        QByteArray seq = QByteArrayLiteral("\x1b[<");
+        seq += QByteArray::number(code + mods);
+        seq += ';';
+        seq += QByteArray::number(col + 1);
+        seq += ';';
+        seq += QByteArray::number(row + 1);
+        seq += release ? 'm' : 'M';
+        return seq;
+    }
+    if (release)
+        return QByteArray();
+    QByteArray seq = QByteArrayLiteral("\x1b[M");
+    seq += char(code + mods + 32);
+    seq += char(qMin(222, col) + 33);
+    seq += char(qMin(222, row) + 33);
+    return seq;
+}
+
+/*
+ * 鼠标上报总入口：跟踪模式未开 → false（本地选区/双击选词/右键粘贴
+ * 行为原样保留）；开了则把事件编码发给当前链路并返回 true。
+ * - Shift+任意键 → false：强制走本地（选区/滚历史），与 xterm 语义一致；
+ * - 按下/双击/释放：左中右三键都上报（vim 里右键=粘贴等依赖它）；
+ * - 拖动：1000 不报；1002 只在按住按钮时报（编码 = 按钮+32）；1003 任何
+ *   移动都报（无按钮时编码 35），同一格不重发。
+ */
+bool ScreenView::reportMouseEvent(QMouseEvent *event, bool press, bool release, bool motion)
+{
+    const int track = m_screen.mouseTrackingMode();
+    if (track == 0)
+        return false;
+    if (event->modifiers() & Qt::ShiftModifier)
+        return false;
+
+    const Pos pos = cellAt(event->position().toPoint());
+    const int row = pos.valid
+        ? pos.abs - (m_screen.altScreen() ? 0 : m_origin) : -1;
+    const int mods = mouseModifierCode(event->modifiers());
+
+    if (press) {
+        const int btn = mouseButtonCode(event->button());
+        if (btn >= 0 && row >= 0) {
+            const QByteArray seq = mouseSequence(btn, mods, row, pos.col, false);
+            if (!seq.isEmpty())
+                emit sendData(seq);
+            m_mouseBtn = btn;
+            m_lastMotionRow = row;
+            m_lastMotionCol = pos.col;
+        }
+        return true;
+    }
+    if (release) {
+        const int btn = mouseButtonCode(event->button());
+        if (btn >= 0 && row >= 0) {
+            const QByteArray seq = mouseSequence(btn, mods, row, pos.col, true);
+            if (!seq.isEmpty())
+                emit sendData(seq);
+        }
+        m_mouseBtn = -1;
+        return true;
+    }
+    if (track == 1000)
+        return true; // 纯按下/释放模式：移动不上报，也不驱动本地选区
+    if (track == 1002 && m_mouseBtn < 0)
+        return true;
+    if (!pos.valid || (row == m_lastMotionRow && pos.col == m_lastMotionCol))
+        return true;
+    const int code = (m_mouseBtn >= 0 ? m_mouseBtn : 3) + 32;
+    const QByteArray seq = mouseSequence(code, mods, row, pos.col, false);
+    if (!seq.isEmpty())
+        emit sendData(seq);
+    m_lastMotionRow = row;
+    m_lastMotionCol = pos.col;
+    return true;
+}
+
+// 上报开启时的滚轮：64（上）/65（下）交给远端（vim/htop 滚列表）。
+// 每次滚动步数与备用屏方向键分支一致（×3 行）；Shift+滚轮在入口就留给
+// 本地滚动历史。
+void ScreenView::reportWheelEvent(QWheelEvent *event)
+{
+    const int steps = qMax(1, qAbs(event->angleDelta().y()) / 120);
+    const int btn = event->angleDelta().y() > 0 ? 64 : 65;
+    const Pos pos = cellAt(event->position().toPoint());
+    const int row = pos.valid ? pos.abs - (m_screen.altScreen() ? 0 : m_origin) : 0;
+    const int col = pos.valid ? pos.col : 0;
+    const QByteArray seq = mouseSequence(btn, mouseModifierCode(event->modifiers()),
+                                         row, col, false);
+    for (int i = 0; i < steps * 3 && !seq.isEmpty(); ++i)
+        emit sendData(seq);
+    event->accept();
 }
 
 void ScreenView::paintEvent(QPaintEvent *)
@@ -1526,6 +1650,10 @@ void ScreenView::advanceCompletionCycle()
 void ScreenView::mousePressEvent(QMouseEvent *event)
 {
     setFocus();
+    if (reportMouseEvent(event, true, false, false)) {
+        event->accept();
+        return; // 鼠标上报：事件交给远端程序
+    }
     if (event->button() == Qt::LeftButton && m_lastDoubleMs > 0
         && m_clicks.elapsed() - m_lastDoubleMs < 500) {
         const Pos pos = cellAt(event->position().toPoint());
@@ -1571,6 +1699,10 @@ void ScreenView::mousePressEvent(QMouseEvent *event)
 
 void ScreenView::mouseMoveEvent(QMouseEvent *event)
 {
+    if (reportMouseEvent(event, false, false, true)) {
+        event->accept();
+        return;
+    }
     if (!m_selecting || !(event->buttons() & Qt::LeftButton))
         return;
     const Pos pos = cellAt(event->position().toPoint());
@@ -1582,6 +1714,10 @@ void ScreenView::mouseMoveEvent(QMouseEvent *event)
 
 void ScreenView::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (reportMouseEvent(event, false, true, false)) {
+        event->accept();
+        return;
+    }
     if (event->button() != Qt::LeftButton)
         return;
     m_selecting = false;
@@ -1591,6 +1727,10 @@ void ScreenView::mouseReleaseEvent(QMouseEvent *event)
 
 void ScreenView::mouseDoubleClickEvent(QMouseEvent *event)
 {
+    if (reportMouseEvent(event, true, false, false)) {
+        event->accept();
+        return; // 双击是第二次按下的上报（Qt 不会再发 press）
+    }
     if (event->button() != Qt::LeftButton)
         return;
     const Pos pos = cellAt(event->position().toPoint());
@@ -1628,6 +1768,13 @@ void ScreenView::wheelEvent(QWheelEvent *event)
     if (event->modifiers() & Qt::ControlModifier) {
         zoom(dy > 0 ? 1 : -1);
         event->accept();
+        return;
+    }
+    // 鼠标上报开启：滚轮交给程序（vim/htop 滚列表），优先于方向键兼容
+    // 分支；Shift+滚轮保留给本地滚动历史
+    if (m_screen.mouseTrackingMode() != 0
+        && !(event->modifiers() & Qt::ShiftModifier)) {
+        reportWheelEvent(event);
         return;
     }
     const int steps = qMax(1, qAbs(dy) / 120);
@@ -1754,6 +1901,24 @@ void ScreenView::closeFind()
     m_hitAbs = -1;
     setFocus();
     update();
+}
+
+bool ScreenView::event(QEvent *event)
+{
+    // 1003（任意移动上报）需要无按钮的鼠标移动：Qt 桌面语义里这类
+    // MouseMove 被 QApplication 合成成 HoverMove 投递（mouseMoveEvent 只收
+    // 得到带按钮的拖动）。这里把它还原成 MouseMove 走同一条上报路径；
+    // 其他模式/场景维持 Qt 默认行为。
+    if (event->type() == QEvent::HoverMove
+        && m_screen.mouseTrackingMode() == 1003) {
+        auto *hover = static_cast<QHoverEvent *>(event);
+        QMouseEvent mouse(QEvent::MouseMove, hover->position(),
+                          hover->globalPosition(), Qt::NoButton, Qt::NoButton,
+                          hover->modifiers());
+        if (reportMouseEvent(&mouse, false, false, true))
+            return true;
+    }
+    return QWidget::event(event);
 }
 
 bool ScreenView::eventFilter(QObject *watched, QEvent *event)

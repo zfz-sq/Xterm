@@ -87,6 +87,7 @@ signals:
     void highlightRequested(const QString &word);
 
 protected:
+    bool event(QEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     void showEvent(QShowEvent *event) override;
@@ -143,6 +144,15 @@ private:
     // 一行里所有关键词命中的列区间（绘制时调用，规则空则清空不扫）
     void collectKeywordHits(const TermLine *line, int cols, QList<KeywordHit> *hits) const;
     QByteArray arrowKey(char letter) const;
+    // ---- 鼠标上报（DECSET 1000/1002/1003 + 1006）----
+    // 开启时把鼠标按下/释放/拖动编码发给当前链路（vim/htop 里可点光标、
+    // 滚列表）；Shift 是本地选区/滚历史的逃生口，与现有复制行为互不干扰。
+    // 返回 true = 事件已被上报模式消费（不再走本地选区/粘贴）。
+    bool reportMouseEvent(QMouseEvent *event, bool press, bool release, bool motion);
+    void reportWheelEvent(QWheelEvent *event);
+    QByteArray mouseSequence(int code, int mods, int row, int col, bool release) const;
+    static int mouseButtonCode(Qt::MouseButton button);
+    static int mouseModifierCode(Qt::KeyboardModifiers mods);
     void paintCursor(QPainter &painter);
     // 光标占的像素区（局部重绘用）；span 为占格数（宽字符 2）
     QRect cursorRect(int absRow, int col, int span) const;
@@ -216,6 +226,9 @@ private:
     bool m_wasAlt = false;
     Pos m_anchor;
     Pos m_focus;
+    int m_mouseBtn = -1;      // 上报中按住的按钮（motion 编码用，-1 = 无）
+    int m_lastMotionRow = -1; // motion 去重：上次上报的格，-1 = 无
+    int m_lastMotionCol = -1;
     QList<KeywordRule> m_keywords; // 关键词高亮规则（全局设置同步而来）
 
     // ---- 客户端 Tab 补全（主屏 + 串口/SSH shell 行编辑场景）----
