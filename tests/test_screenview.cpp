@@ -111,6 +111,9 @@ private slots:
     void keywordHighlightPaintsRuleColor();
     void ctrlClickEmitsLinkActivated();
     void osc52PolicyWritesOrDenies();
+    void findRegexCyclesAndHighlightsAll();
+    void tripleClickSelectsLine();
+    void selectToCopyDefaultsOffOptIn();
 
 private:
     void feed(ScreenView &view, const QByteArray &bytes)
@@ -342,7 +345,7 @@ void ScreenViewTest::ctrlCInterruptsFullScreenProgram()
     feed(view, QByteArray("\x1b[H\x1b[2J"));
     feed(view, QByteArray("int main(void)\r\n{\r\n"));
 
-    // 双击第 0 行选词 → 选区成立（剪贴板为证），此时 Ctrl+C 仍必须发出 ETX
+    // 双击第 0 行选词 → 选区成立（选区文本为证），此时 Ctrl+C 仍必须发出 ETX
     QClipboard *clip = QGuiApplication::clipboard();
     clip->clear();
     const QPointF pos(30, 12);
@@ -352,7 +355,8 @@ void ScreenViewTest::ctrlCInterruptsFullScreenProgram()
                          Qt::LeftButton, Qt::NoModifier);
     QApplication::sendEvent(&view, &press);
     QApplication::sendEvent(&view, &dblClick);
-    QVERIFY(!clip->text().isEmpty()); // 双击选词成功，选区挂在画面上
+    // 选区即复制默认关（M3.3）：选区成立不由剪贴板证明，直接看选区文本
+    QCOMPARE(view.selectedText(), QStringLiteral("int"));
     key(view, Qt::Key_C, QStringLiteral("c"), Qt::ControlModifier);
     QCOMPARE(cap.sent, QByteArray("\x03"));
 
@@ -368,10 +372,11 @@ void ScreenViewTest::ctrlCInterruptsFullScreenProgram()
     clip->clear();
     QApplication::sendEvent(&view, &press);
     QApplication::sendEvent(&view, &dblClick);
-    QVERIFY(!clip->text().isEmpty());
+    QVERIFY(!view.selectedText().isEmpty()); // 选区在（自动复制默认关）
     cap.reset();
     key(view, Qt::Key_C, QStringLiteral("c"), Qt::ControlModifier);
     QVERIFY(cap.sent.isEmpty()); // 只复制，不发字节
+    QVERIFY(!clip->text().isEmpty()); // 复制走了显式 Ctrl+C 路径
 }
 
 // 终端档（串口设置里的开关，落到视图就是 setLocalEcho(false)）：
@@ -564,6 +569,7 @@ void ScreenViewTest::shiftKeepsLocalSelectionWhileTracking()
     feed(view, QByteArray("root@board:~# hello world\r\n"));
     feed(view, QByteArray("\x1b[?1002h\x1b[?1006h"));
 
+    view.setSelectToCopy(true); // Shift 逃生口的自动复制是断言点，显式开启
     QClipboard *clip = QGuiApplication::clipboard();
     clip->clear();
     const QPointF from(20, 12);
@@ -593,6 +599,7 @@ void ScreenViewTest::mouseOffKeepsLocalClicks()
                      [&cap](const QByteArray &bytes) { cap.sent += bytes; });
 
     feed(view, QByteArray("root@board:~# hello world\r\n"));
+    view.setSelectToCopy(true); // 双击自动复制是断言点，显式开启
     QClipboard *clip = QGuiApplication::clipboard();
     clip->clear();
     const QPointF pos(30, 12);
@@ -779,6 +786,108 @@ void ScreenViewTest::osc52PolicyWritesOrDenies()
     feed(view, QByteArrayLiteral("\x1b]52;c;dGVzdA==\x07"));
     QCOMPARE(clip->text(), QStringLiteral("keep")); // 未被远端覆盖
     QVERIFY(view.screenText().contains(QStringLiteral("剪贴板"))); // 拒绝提示入屏
+}
+
+// find（M3.3）："." 切正则后 \d+ 命中全部数字串，Enter/Shift+Enter 环形
+// 循环；关掉正则同串无命中；全部命中浅黄底确实上屏（像素容差计数）
+void ScreenViewTest::findRegexCyclesAndHighlightsAll()
+{
+    ScreenView view;
+    view.resize(100 * 15, 34 * 18);
+    feed(view, QByteArray("aa 11 bb\r\ncc 22 dd\r\naa 33 bb\r\n"));
+    view.show(); // offscreen 下 isVisible 需要真正在屏（与 ctrlF 老用例一致）
+
+    key(view, Qt::Key_F, QStringLiteral("f"), Qt::ControlModifier);
+    QLineEdit *find = view.findChild<QLineEdit *>();
+    QVERIFY(find != nullptr && find->isVisible());
+    find->setText(QStringLiteral("\\d+"));
+    view.setFindRegex(true); // 触发首次查找：光标在末行，环形回卷到 abs 0
+    QCOMPARE(view.findHitRow(), 0);
+    QCOMPARE(view.findHitCol(), 3); // "aa 11 bb" 里的 11
+
+    auto enter = [&find](Qt::KeyboardModifiers mods) {
+        QKeyEvent ev(QEvent::KeyPress, Qt::Key_Return, mods, QStringLiteral("\r"));
+        QApplication::sendEvent(find, &ev);
+    };
+    enter(Qt::NoModifier);
+    QCOMPARE(view.findHitRow(), 1); // 22
+    enter(Qt::NoModifier);
+    QCOMPARE(view.findHitRow(), 2); // 33
+    enter(Qt::NoModifier);
+    QCOMPARE(view.findHitRow(), 0); // 环回
+    enter(Qt::ShiftModifier);
+    QCOMPARE(view.findHitRow(), 2); // 逆向
+
+    // 关掉正则：同串当纯文本找，无命中
+    view.setFindRegex(false);
+    QCOMPARE(view.findHitRow(), -1);
+    view.setFindRegex(true);
+    QCOMPARE(view.findHitRow(), 0); // 重开恢复命中
+
+    // 全部命中浅黄底（暗色主题 0x4A3F0A）真画在屏上：容差计数
+    QImage img = view.grab().toImage();
+    int lightYellow = 0;
+    for (int y = 0; y < img.height(); ++y)
+        for (int x = 0; x < img.width(); ++x) {
+            const QColor c = img.pixelColor(x, y);
+            if (qAbs(c.red() - 0x4A) <= 25 && qAbs(c.green() - 0x3F) <= 25
+                && qAbs(c.blue() - 0x0A) <= 25)
+                ++lightYellow;
+        }
+    QVERIFY(lightYellow > 20); // 3 处数字串都有底色
+}
+
+// 三击选行：双击选词后第三击在 500ms 窗口内落下 → 整行选区（既有行为上锁）
+void ScreenViewTest::tripleClickSelectsLine()
+{
+    ScreenView view;
+    view.resize(100 * 15, 34 * 18);
+    feed(view, QByteArray("one two three\r\nrest\r\n"));
+
+    const QPointF word(70, 12); // 第 0 行 col 4（two 区）
+    QMouseEvent press(QEvent::MouseButtonPress, word, word, Qt::LeftButton,
+                      Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent dbl(QEvent::MouseButtonDblClick, word, word, Qt::LeftButton,
+                    Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&view, &press);
+    QApplication::sendEvent(&view, &dbl);
+    QCOMPARE(view.selectedText(), QStringLiteral("two"));
+
+    const QPointF third(100, 12); // 第三击（仍在 500ms 窗口内）
+    QMouseEvent tri(QEvent::MouseButtonPress, third, third, Qt::LeftButton,
+                    Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&view, &tri);
+    QCOMPARE(view.selectedText(), QStringLiteral("one two three"));
+}
+
+// 选区即复制：默认关（拖完不进剪贴板，选区仍在）；显式开启后自动复制
+void ScreenViewTest::selectToCopyDefaultsOffOptIn()
+{
+    ScreenView view;
+    view.resize(100 * 15, 34 * 18);
+    feed(view, QByteArray("hello world\r\n"));
+    QClipboard *clip = QGuiApplication::clipboard();
+    clip->clear();
+
+    const QPointF from(10, 12);  // col 0
+    const QPointF to(80, 12);    // col 4（hello）
+    QMouseEvent press(QEvent::MouseButtonPress, from, from, Qt::LeftButton,
+                      Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent drag(QEvent::MouseMove, to, to, Qt::NoButton, Qt::LeftButton,
+                     Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease, to, to, Qt::LeftButton,
+                        Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&view, &press);
+    QApplication::sendEvent(&view, &drag);
+    QApplication::sendEvent(&view, &release);
+    QVERIFY(clip->text().isEmpty());       // 默认关：不自动复制
+    QCOMPARE(view.selectedText(), QStringLiteral("hello")); // 但选区成立
+
+    view.setSelectToCopy(true);
+    QApplication::sendEvent(&view, &press);
+    QApplication::sendEvent(&view, &drag);
+    QApplication::sendEvent(&view, &release);
+    QCOMPARE(clip->text(), QStringLiteral("hello")); // 开启：松开即复制
 }
 
 int main(int argc, char **argv)

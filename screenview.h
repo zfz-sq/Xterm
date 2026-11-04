@@ -2,7 +2,9 @@
 #define SCREENVIEW_H
 
 #include <QElapsedTimer>
+#include <QHash>
 #include <QUrl>
+#include <QVector>
 #include <QWidget>
 
 #include "commandstore.h"
@@ -12,6 +14,7 @@ class CompletionEngine;
 class QLineEdit;
 class QScrollBar;
 class QTimer;
+class QToolButton;
 
 /*
  * 屏幕式终端视图（SSH / 串口共用）。格子缓冲 + 自绘，键盘原样送给会话，
@@ -80,6 +83,21 @@ public:
     enum class Osc52Policy { Ask, Allow, Deny };
     void setOsc52Policy(Osc52Policy policy) { m_osc52Policy = policy; }
 
+    // 选区即复制：拖动/双击/三击选行结束时自动进剪贴板（默认关；
+    // Ctrl+C / 右键菜单复制始终可用）。右键菜单可切换，发信号落配置
+    void setSelectToCopy(bool enabled) { m_selectToCopy = enabled; }
+
+    // find 的正则模式（".*" 按钮同款语义，测试与启动恢复直接调）
+    void setFindRegex(bool enabled);
+
+    // find 当前命中的观察口（测试 / M2.d snapshot 用；-1 = 无命中）
+    int findHitRow() const { return m_hitAbs; }
+    int findHitCol() const { return m_hitCol; }
+    int findHitEnd() const { return m_hitEnd; }
+
+    // 当前选区文本（空 = 无选区）。测试断言与 M2.d snapshot 共用
+    QString selectedText() const;
+
 signals:
     void sendData(const QByteArray &data);
     void terminalSizeChanged(int cols, int rows);
@@ -97,6 +115,8 @@ signals:
     void linkActivated(const QUrl &url);
     // 询问弹窗里勾了「以后自动允许」：外层落 osc52Policy 配置并同步两页
     void osc52AlwaysAllowRequested();
+    // 右键菜单切了「选区即复制」：外层落配置并同步两页
+    void selectToCopyToggled(bool enabled);
 
 protected:
     bool event(QEvent *event) override;
@@ -143,7 +163,10 @@ private:
     void openFind();
     void closeFind();
     bool runFind(bool forward);
-    QString selectedText() const;
+    // find 全部命中缓存：文本/正则变化或新数据到达后置脏，下次绘制/runFind
+    // 前重建。全部命中画浅黄底，当前命中（m_hit*）另用深黄覆盖
+    struct FindHit { int abs; int col; int end; };
+    void rebuildFindMatches();
     void selectLine(int absRow);
     void pasteClipboard();
     void copySelection();
@@ -205,6 +228,12 @@ private:
     int m_lastCursorCol = -1;
     bool m_lastCursorHidden = false;
     QLineEdit *m_find = nullptr;
+    QToolButton *m_findRegexBtn = nullptr; // ".." 正则/纯文本切换
+    bool m_findRegex = false;
+    bool m_findDirty = true;               // 命中缓存待重建
+    QVector<FindHit> m_findMatches;        // 全部命中（abs 升、col 升）
+    QHash<int, QVector<FindHit>> m_findRowHits; // 行号 → 命中（绘制直接取）
+    bool m_selectToCopy = false;           // 选区即复制（默认关）
     QByteArray m_rx;
     int m_rxUsed = 0;
     bool m_bell = false;

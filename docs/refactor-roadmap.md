@@ -192,7 +192,12 @@ FS 安全边界：
       先本地、否则 SSH 在线走 FileBrowser::fetchRemoteFile 取回后自动打开）；
       OSC 52：Abort 严格 base64 + 256KB 上限，Ask 默认弹 FramelessDialog
       （可勾「以后自动允许」落 osc52Policy 配置），Allow/Deny 两档有测试锁）
-- [ ] M3.3 正则查找 + 选区增强
+- [x] M3.3 正则查找 + 选区增强（2026-11-04，test_screenview +3，14/14 绿；
+      find 加「.*」正则切换（大小写不敏感，非法正则当无命中，空匹配防死循环）
+      + 全部命中浅黄底/当前命中深黄两档高亮，命中缓存脏标记（新输出自动重建）；
+      Enter/Shift+Enter/F3 环形循环即 n/N；三击选行/双击选词（词边界含 / . _ - :）
+      上测试锁；选区即复制改默认关（CommandStore.selectToCopy + 右键菜单入口，
+      Ctrl+C 显式复制不变；老用例两处断言改用 selectedText 观察口）
 - [ ] M3.4 环形缓冲 + 行号语义
 - [ ] M3.5 渲染帧合并（可选）
 - [ ] M2.a 命名空间 + tools.list

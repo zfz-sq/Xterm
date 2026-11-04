@@ -67,6 +67,9 @@ MainWindow::MainWindow(QWidget *parent)
                                         : ScreenView::Osc52Policy::Ask);
     m_uiBuilder->serialView()->setOsc52Policy(osc52Policy);
     m_uiBuilder->sshView()->setOsc52Policy(osc52Policy);
+    // 选区即复制（全局，两页一致，默认关）
+    for (ScreenView *view : { m_uiBuilder->serialView(), m_uiBuilder->sshView() })
+        view->setSelectToCopy(m_store->selectToCopy());
     ui->advancedBar->hide(); // 高级参数默认收起
     m_session->refreshPorts();
     m_session->reloadProfiles(m_store->lastProfile());
@@ -127,6 +130,13 @@ void MainWindow::connectSignals()
             m_store->setOsc52Policy(QStringLiteral("allow"));
             m_store->save();
             view->setOsc52Policy(ScreenView::Osc52Policy::Allow);
+        });
+        // 右键菜单切「选区即复制」：落配置并同步两页
+        connect(view, &ScreenView::selectToCopyToggled, this, [this](bool on) {
+            m_store->setSelectToCopy(on);
+            m_store->save();
+            m_uiBuilder->serialView()->setSelectToCopy(on);
+            m_uiBuilder->sshView()->setSelectToCopy(on);
         });
     }
 }

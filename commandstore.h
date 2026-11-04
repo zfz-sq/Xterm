@@ -99,6 +99,11 @@ public:
                             : QStringLiteral("ask");
     }
 
+    // 选区即复制：拖动/双击/选行结束时自动进剪贴板（默认关；Ctrl+C 始终可用）。
+    // 终端右键菜单可切换，两页同步
+    bool selectToCopy() const { return m_selectToCopy; }
+    void setSelectToCopy(bool enabled) { m_selectToCopy = enabled; }
+
     // 终端关键词高亮规则（全局，串口 / SSH 两页共用）
     QList<KeywordRule> keywords() const { return m_keywords; }
     void setKeywords(const QList<KeywordRule> &rules) { m_keywords = rules; }
@@ -126,6 +131,7 @@ private:
     QString m_terminalFont;
     bool m_commandBarCollapsed = false;
     QString m_osc52Policy = QStringLiteral("ask");
+    bool m_selectToCopy = false;
     QList<KeywordRule> m_keywords;
 };
 

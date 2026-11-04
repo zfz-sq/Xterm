@@ -201,6 +201,7 @@ bool CommandStore::load()
     m_terminalFont = root.value(QStringLiteral("terminalFont")).toString();
     m_commandBarCollapsed = root.value(QStringLiteral("commandBarCollapsed")).toBool(false);
     setOsc52Policy(root.value(QStringLiteral("osc52Policy")).toString(QStringLiteral("ask")));
+    m_selectToCopy = root.value(QStringLiteral("selectToCopy")).toBool(false);
 
     m_keywords.clear();
     // 老配置没有 keywords 键 = 从没用过高亮：给一套日志惯例默认规则
@@ -274,6 +275,7 @@ bool CommandStore::save() const
         { QStringLiteral("terminalFont"), m_terminalFont },
         { QStringLiteral("commandBarCollapsed"), m_commandBarCollapsed },
         { QStringLiteral("osc52Policy"), m_osc52Policy },
+        { QStringLiteral("selectToCopy"), m_selectToCopy },
         { QStringLiteral("keywords"), kws },
         { QStringLiteral("profiles"), arr },
     };

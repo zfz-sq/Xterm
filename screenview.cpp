@@ -17,10 +17,13 @@
 #include <QPainter>
 #include <QPaintEvent>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QResizeEvent>
 #include <QScrollBar>
 #include <QShowEvent>
+#include <QSignalBlocker>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QVector>
 #include <QWheelEvent>
@@ -41,6 +44,28 @@ bool wordChar(char32_t cp)
     const QChar ch = QChar(ushort(cp));
     return ch.isLetterOrNumber() || ch == QLatin1Char('_') || ch == QLatin1Char('-')
            || ch == QLatin1Char('.') || ch == QLatin1Char('/') || ch == QLatin1Char(':');
+}
+
+// 行文本 + 「文本下标 → 屏幕列」映射（宽字符占两列不进文本；查找/命中
+// 缓存都需要它把文本命中折回列区间）
+void lineTextWithCols(const TermLine *line, QString &text, QVector<int> &cols)
+{
+    text.clear();
+    cols.clear();
+    if (!line)
+        return;
+    text.reserve(int(line->cells.size()));
+    for (int col = 0; col < int(line->cells.size());) {
+        const TermCell &cell = line->cells[size_t(col)];
+        if (cell.flags & TermScreen::FlagWideCont) {
+            ++col;
+            continue;
+        }
+        cols.append(col);
+        const char32_t cp = cell.cp ? cell.cp : U' ';
+        text += QString::fromUcs4(&cp, 1);
+        col += (cell.flags & TermScreen::FlagWide) ? 2 : 1;
+    }
 }
 
 // 默认字体族 = 系统等宽字体，与「设置 → 字体」功能加入前完全一致。
@@ -143,6 +168,15 @@ ScreenView::ScreenView(QWidget *parent)
     m_find->setPlaceholderText(QStringLiteral("查找    Enter/F3 下一个   Shift+Enter 上一个   Esc 关闭"));
     m_find->hide();
     m_find->installEventFilter(this);
+    // ".*" 按钮：正则 / 纯文本切换（正则大小写不敏感，非法正则当作无命中）
+    m_findRegexBtn = new QToolButton(this);
+    m_findRegexBtn->setText(QStringLiteral(".*"));
+    m_findRegexBtn->setToolTip(tr("正则表达式查找（大小写不敏感）"));
+    m_findRegexBtn->setCheckable(true);
+    m_findRegexBtn->setFocusPolicy(Qt::NoFocus); // Enter/F3 仍由查找框接管
+    m_findRegexBtn->hide();
+    connect(m_findRegexBtn, &QToolButton::toggled, this,
+            [this](bool on) { setFindRegex(on); });
 }
 
 void ScreenView::applyTheme(bool dark)
@@ -152,10 +186,16 @@ void ScreenView::applyTheme(bool dark)
         const QString bg = dark ? QStringLiteral("#2C2C30") : QStringLiteral("#FFFFFF");
         const QString fg = dark ? QStringLiteral("#D4D4D4") : QStringLiteral("#24292E");
         const QString bd = dark ? QStringLiteral("#3B8EEA") : QStringLiteral("#2472C8");
-        m_find->setStyleSheet(QStringLiteral(
+        const QString sheet = QStringLiteral(
                                   "QLineEdit { background:%1; color:%2; border:1px solid %3;"
-                                  " border-radius:3px; padding:2px 8px; }")
-                                  .arg(bg, fg, bd));
+                                  " border-radius:3px; padding:2px 8px; }");
+        m_find->setStyleSheet(sheet.arg(bg, fg, bd));
+        if (m_findRegexBtn)
+            m_findRegexBtn->setStyleSheet(QStringLiteral(
+                "QToolButton { background:%1; color:%2; border:1px solid %3;"
+                " border-radius:3px; }"
+                "QToolButton:checked { background:%3; color:%1; }")
+                .arg(bg, fg, bd));
     }
     update();
 }
@@ -164,6 +204,7 @@ void ScreenView::receiveData(const QByteArray &data)
 {
     if (data.isEmpty())
         return;
+    m_findDirty = true; // 新数据可能带来新命中，find 缓存待重建
     if (m_rxUsed > 0 && m_rxUsed >= m_rx.size()) {
         m_rx.clear();
         m_rxUsed = 0;
@@ -732,6 +773,9 @@ void ScreenView::paintEvent(QPaintEvent *)
     const bool alt = m_screen.altScreen();
     const int origin = alt ? 0 : m_origin;
     QList<KeywordHit> kwHits; // 当前行的关键词命中，逐行重算
+    // find 打开时命中缓存脏了（新输出/正则/文本变化）：绘制前同步重建一次
+    if (!m_find->isHidden() && m_findDirty)
+        rebuildFindMatches();
 
     auto colorsOf = [&](const TermCell &cell, int rowAbs, int column, QColor &fg, QColor &bg) {
         fg = m_screen.foreground(cell);
@@ -748,6 +792,17 @@ void ScreenView::paintEvent(QPaintEvent *)
         if (cellSelected(rowAbs, column)) {
             bg = m_screen.selectionBackground();
             fg = m_screen.defaultForeground();
+        }
+        // find 全部命中：浅黄底（当前命中下方深黄覆盖，一眼分清 n/N 落点）
+        const auto rowHits = m_findRowHits.constFind(rowAbs);
+        if (rowHits != m_findRowHits.constEnd()) {
+            for (const FindHit &hit : *rowHits) {
+                if (column >= hit.col && column <= hit.end) {
+                    bg = m_screen.isDark() ? QColor(0x4A, 0x3F, 0x0A)
+                                           : QColor(0xFB, 0xEE, 0xA0);
+                    break;
+                }
+            }
         }
         if (m_hitAbs == rowAbs && column >= m_hitCol && column <= m_hitEnd) {
             bg = m_screen.isDark() ? QColor(0x8A, 0x6A, 0x00) : QColor(0xF5, 0xD7, 0x6E);
@@ -1753,6 +1808,14 @@ void ScreenView::mousePressEvent(QMouseEvent *event)
             });
             menu.addAction(tr("复制"), this, [this] { copySelection(); });
             menu.addAction(tr("粘贴"), this, [this] { pasteClipboard(); });
+            menu.addSeparator();
+            auto *selCopy = menu.addAction(tr("选区即复制（松开鼠标自动复制）"));
+            selCopy->setCheckable(true);
+            selCopy->setChecked(m_selectToCopy);
+            connect(selCopy, &QAction::triggered, this, [this](bool on) {
+                m_selectToCopy = on;
+                emit selectToCopyToggled(on); // 主窗口落配置并同步两页
+            });
             menu.exec(event->globalPosition().toPoint());
         }
         event->accept();
@@ -1796,8 +1859,9 @@ void ScreenView::mouseReleaseEvent(QMouseEvent *event)
     if (event->button() != Qt::LeftButton)
         return;
     m_selecting = false;
-    if (m_anchor.valid && (m_anchor.abs != m_focus.abs || m_anchor.col != m_focus.col))
-        copySelection();
+    if (m_anchor.valid && (m_anchor.abs != m_focus.abs || m_anchor.col != m_focus.col)
+        && m_selectToCopy)
+        copySelection(); // 选区即复制（默认关，右键菜单可开）
 }
 
 void ScreenView::mouseDoubleClickEvent(QMouseEvent *event)
@@ -1829,7 +1893,8 @@ void ScreenView::mouseDoubleClickEvent(QMouseEvent *event)
     m_focus = Pos{pos.abs, right, true};
     m_selecting = false;
     m_lastDoubleMs = m_clicks.elapsed();
-    copySelection();
+    if (m_selectToCopy)
+        copySelection();
     update();
 }
 
@@ -1954,6 +2019,8 @@ void ScreenView::placeFind()
         return;
     const int w = qMin(360, qMax(160, width() / 3));
     m_find->setGeometry(width() - m_bar->width() - w - 8, 8, w, 28);
+    m_findRegexBtn->setGeometry(m_find->x() - 38, 8, 32, 28);
+    m_findRegexBtn->show();
     m_find->raise();
 }
 
@@ -1973,6 +2040,7 @@ void ScreenView::openFind()
 void ScreenView::closeFind()
 {
     m_find->hide();
+    m_findRegexBtn->hide();
     m_hitAbs = -1;
     setFocus();
     update();
@@ -2035,113 +2103,146 @@ void ScreenView::selectLine(int absRow)
     m_anchor = Pos{absRow, 0, true};
     m_focus = Pos{absRow, end, true};
     m_selecting = false;
-    if (m_anchor.col != m_focus.col)
+    if (m_anchor.col != m_focus.col && m_selectToCopy)
         copySelection();
     update();
 }
 
+/*
+ * find 全部命中缓存（M3.3）：文本/正则、正则开关、新输出任一变化即置脏，
+ * 绘制或 runFind 前重建。全部命中画浅黄底，当前命中（n/N 落点）深黄覆盖。
+ * 正则大小写不敏感；输入中的非法正则当作无命中（不弹错）。空匹配（如
+ * "a*"）跳过一格防死循环。
+ */
+void ScreenView::setFindRegex(bool enabled)
+{
+    if (m_findRegex == enabled)
+        return;
+    m_findRegex = enabled;
+    m_findDirty = true;
+    if (m_findRegexBtn) {
+        QSignalBlocker block(m_findRegexBtn); // 防 toggled 回环（测试直调时同步按钮）
+        m_findRegexBtn->setChecked(enabled);
+    }
+    if (m_find && !m_find->isHidden() && !m_find->text().isEmpty())
+        runFind(true);
+    update();
+}
+
+void ScreenView::rebuildFindMatches()
+{
+    m_findDirty = false;
+    m_findMatches.clear();
+    m_findRowHits.clear();
+    const QString query = m_find ? m_find->text() : QString();
+    if (query.isEmpty())
+        return;
+    QRegularExpression rx;
+    if (m_findRegex) {
+        rx.setPattern(query);
+        rx.setPatternOptions(QRegularExpression::CaseInsensitiveOption);
+        if (!rx.isValid())
+            return; // 输入中的非法正则：当作无命中
+    }
+    const int total = m_screen.altScreen()
+                          ? m_screen.rows()
+                          : m_screen.historySize() + m_screen.rows();
+    QString text;
+    QVector<int> cols;
+    for (int abs = 0; abs < total; ++abs) {
+        lineTextWithCols(m_screen.lineAbsolute(abs), text, cols);
+        if (text.isEmpty() || cols.isEmpty())
+            continue;
+        int from = 0;
+        while (from < text.size()) {
+            int found = -1;
+            int len = 0;
+            if (m_findRegex) {
+                const QRegularExpressionMatch m = rx.match(text, from);
+                if (!m.hasMatch())
+                    break;
+                found = m.capturedStart();
+                len = m.capturedLength();
+                if (len <= 0) { // 空匹配：前进一格继续，防死循环
+                    from = found + 1;
+                    continue;
+                }
+            } else {
+                found = text.indexOf(query, from, Qt::CaseInsensitive);
+                if (found < 0)
+                    break;
+                len = query.size();
+            }
+            if (found < cols.size()) {
+                const int col = cols.at(found);
+                const int after = found + len;
+                const int end = after < cols.size() ? cols.at(after) - 1 : m_screen.cols() - 1;
+                m_findMatches.append(FindHit{abs, col, qMax(end, col)});
+            }
+            from = found + len;
+        }
+    }
+    m_findRowHits.reserve(m_findMatches.size());
+    for (const FindHit &hit : m_findMatches)
+        m_findRowHits[hit.abs].append(hit);
+}
+
 bool ScreenView::runFind(bool forward)
 {
-    const QString query = m_find ? m_find->text() : QString();
-    if (query.isEmpty()) {
+    if (!m_find || m_find->text().isEmpty()) {
         m_hitAbs = -1;
         update();
         return false;
     }
-    const bool alt = m_screen.altScreen();
-    const int total = alt ? m_screen.rows() : m_screen.historySize() + m_screen.rows();
-    if (total <= 0)
+    if (m_findDirty)
+        rebuildFindMatches();
+    if (m_findMatches.isEmpty()) {
+        m_hitAbs = -1;
+        update();
         return false;
+    }
 
-    int row = m_hitAbs >= 0 ? m_hitAbs
-                            : (alt ? m_screen.cursorRow()
-                                   : m_screen.historySize() + m_screen.cursorRow());
-    int fromCol = 0;
-    if (m_hitAbs >= 0)
-        fromCol = forward ? m_hitEnd + 1 : m_hitCol - 1;
-    else if (!forward)
-        fromCol = m_screen.cols();
-    row = qBound(0, row, total - 1);
-
-    auto scan = [&](int absRow, int startCol, int &hitCol, int &hitEnd) -> bool {
-        const TermLine *line = m_screen.lineAbsolute(absRow);
-        if (!line)
-            return false;
-        QString text;
-        QVector<int> cols;
-        text.reserve(int(line->cells.size()));
-        for (int col = 0; col < int(line->cells.size());) {
-            const TermCell &cell = line->cells[size_t(col)];
-            if (cell.flags & TermScreen::FlagWideCont) {
-                ++col;
-                continue;
-            }
-            cols.append(col);
-            const char32_t cp = cell.cp ? cell.cp : U' ';
-            text += QString::fromUcs4(&cp, 1);
-            col += (cell.flags & TermScreen::FlagWide) ? 2 : 1;
-        }
-        if (text.isEmpty() || cols.isEmpty())
-            return false;
-        int found = -1;
-        if (forward) {
-            int index = 0;
-            for (int i = 0; i < cols.size(); ++i) {
-                if (cols.at(i) >= startCol) {
-                    index = i;
-                    break;
-                }
-                index = i + 1;
-            }
-            if (index >= text.size())
-                return false;
-            found = text.indexOf(query, index, Qt::CaseInsensitive);
-        } else {
-            int limit = 0;
-            for (int i = 0; i < cols.size(); ++i) {
-                if (cols.at(i) > startCol)
-                    break;
-                limit = i + 1;
-            }
-            if (limit <= 0)
-                return false;
-            found = text.lastIndexOf(query, limit - 1, Qt::CaseInsensitive);
-            if (found < 0 || found + query.size() > limit)
-                return false;
-        }
-        if (found < 0 || found >= cols.size())
-            return false;
-        hitCol = cols.at(found);
-        const int after = found + query.size();
-        hitEnd = after < cols.size() ? cols.at(after) - 1 : m_screen.cols() - 1;
-        if (hitEnd < hitCol)
-            hitEnd = hitCol;
-        return true;
-    };
-
-    for (int n = 0; n < total; ++n) {
-        int hitCol = 0;
-        int hitEnd = 0;
-        if (scan(row, fromCol, hitCol, hitEnd)) {
-            m_hitAbs = row;
-            m_hitCol = hitCol;
-            m_hitEnd = hitEnd;
-            if (!alt) {
-                const int max = m_screen.historySize();
-                m_origin = qBound(0, row - m_screen.rows() / 3, max);
-                m_follow = m_origin >= max;
-                syncBar();
-            }
-            update();
-            return true;
-        }
-        if (forward) {
-            row = (row + 1) % total;
-            fromCol = 0;
-        } else {
-            row = (row + total - 1) % total;
-            fromCol = m_screen.cols();
+    // 定位当前命中在有序数组里的下标；没有当前命中则从光标行起找首个
+    const bool alt = m_screen.altScreen();
+    const int cursorAbs = alt ? m_screen.cursorRow()
+                              : m_screen.historySize() + m_screen.cursorRow();
+    int index = -1;
+    for (int i = 0; i < m_findMatches.size(); ++i) {
+        const FindHit &h = m_findMatches.at(i);
+        if (h.abs == m_hitAbs && h.col == m_hitCol) {
+            index = i;
+            break;
         }
     }
-    return false;
+    int next = 0;
+    if (index < 0) {
+        if (forward) {
+            while (next < m_findMatches.size() && m_findMatches.at(next).abs < cursorAbs)
+                ++next;
+            if (next >= m_findMatches.size())
+                next = 0; // 环回
+        } else {
+            next = m_findMatches.size() - 1;
+            while (next >= 0 && m_findMatches.at(next).abs > cursorAbs)
+                --next;
+            if (next < 0)
+                next = m_findMatches.size() - 1;
+        }
+    } else {
+        next = forward ? (index + 1) % m_findMatches.size()
+                       : (index + m_findMatches.size() - 1) % m_findMatches.size();
+    }
+
+    const FindHit &hit = m_findMatches.at(next);
+    m_hitAbs = hit.abs;
+    m_hitCol = hit.col;
+    m_hitEnd = hit.end;
+    if (!alt) {
+        const int max = m_screen.historySize();
+        m_origin = qBound(0, hit.abs - m_screen.rows() / 3, max);
+        m_follow = m_origin >= max;
+        syncBar();
+    }
+    update();
+    return true;
 }
