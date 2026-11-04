@@ -234,7 +234,24 @@ FS 安全边界：
       server.py tools/list 改为动态转发管道级清单（扩展工具免改声明）。
       坑：fake libssh 的 opendir 对任意路径都成功，失败路径要用
       opendirResults 注入；测试忘了 refreshRoot 会全部撞「未连接」）
-- [ ] M2.c Host 工具
+- [x] M2.c Host 工具
+      （HostBridge 新协作类：五件 xterm.host.cpu/mem/disk/uptime/top 注册进
+      Hooks.tools。cpu/mem 直读 HostStats 下沉缓存帧新增的 snapshot()
+      ——CPU 差值需第二帧（连接后约 6 秒就绪），未就绪时工具成功返回
+      ok=false 附重试说明；disk/uptime/top 按需在远端跑只读命令
+      （LC_ALL=C df -P -k / cat /proc/uptime /proc/loadavg /
+      ps auxww --sort=-%cpu | head，count 经 qBound 1..50 无注入面），
+      输出在本类解析成结构化 JSON。后端 HostHooks 纯函数注入，真实
+      hooksForStats 放 sftpclient.cpp（exec 复用 opFinished(op="exec")
+      成功时 error 字段装 stdout 的既有约定），MainWindow 独立
+      SftpClient 适配器。坑：QEventLoop::exec 进入时会重置 exit 标志，
+      离线时 submit() 同步发的失败结果在 exec 前调 quit() 会丢、
+      空转 15s——hooksForStats 与 hooksForSftp 四处桥接统一补「结果
+      已到不进事件循环」保护；QStringList::at() 返回 const 引用不能
+      调非 const remove；QLatin1String 不能装中文（逐字节 Latin-1，
+      测试断言乱码挂掉，中文一律 QStringLiteral）。新增
+      test_agentbridge_host 8 用例 + test_sftpclient 补 exec 桥接
+      （离线同步失败不超时）并连带 hoststats.cpp，全套 16/16 绿）
 - [ ] M2.d Screen 扩展工具
 - [ ] M2.e 审计 + 徽标 + 限流
 - [ ] M2.f Session 工具

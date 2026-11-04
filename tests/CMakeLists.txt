@@ -138,6 +138,37 @@ set_target_properties(test_agentbridge_fs PROPERTIES
 
 add_test(NAME test_agentbridge_fs COMMAND test_agentbridge_fs)
 
+# HostBridge + xterm.host.* 工具（M2.c）：内存 fake 后端（snapshot 手造帧 +
+# exec 回放预置 df//proc/ps 文本），不碰 SSH 栈与网络；hooksForStats 的
+# 异步同步桥接由 test_sftpclient 覆盖。hoststats.h 只用 HostSnapshot 纯结构
+# 不链 hoststats.cpp/moc
+add_executable(test_agentbridge_host
+    test_agentbridge_host.cpp
+    "${CMAKE_SOURCE_DIR}/hostbridge.cpp"
+    "${CMAKE_SOURCE_DIR}/hostbridge.h"
+    "${CMAKE_SOURCE_DIR}/agentbridge.cpp"
+    "${CMAKE_SOURCE_DIR}/agentbridge.h"
+    "${CMAKE_SOURCE_DIR}/commandstore.cpp"
+)
+
+target_include_directories(test_agentbridge_host
+    PRIVATE
+        "${CMAKE_SOURCE_DIR}"
+)
+
+target_link_libraries(test_agentbridge_host
+    PRIVATE
+        Qt6::Test
+        Qt6::Network
+        Qt6::Gui
+)
+
+set_target_properties(test_agentbridge_host PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)
+
+add_test(NAME test_agentbridge_host COMMAND test_agentbridge_host)
+
 # 主题协作类（M1.a）：不碰主窗口，只验状态翻转/信号/QSS；qrc 链入供 :/style-*.qss
 add_executable(test_thememanager
     test_thememanager.cpp
@@ -361,6 +392,9 @@ add_executable(test_sftpclient
     test_sftpclient.cpp
     "${CMAKE_SOURCE_DIR}/sftpclient.cpp"
     "${CMAKE_SOURCE_DIR}/sftpclient.h"
+    # hooksForStats 引 HostStats::snapshot（M2.c），连带 hoststats.cpp
+    "${CMAKE_SOURCE_DIR}/hoststats.cpp"
+    "${CMAKE_SOURCE_DIR}/hoststats.h"
     "${CMAKE_SOURCE_DIR}/sshsession.cpp"
     "${CMAKE_SOURCE_DIR}/sshsession.h"
     "${CMAKE_SOURCE_DIR}/transport.h"

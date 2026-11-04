@@ -112,6 +112,12 @@ MainWindow::MainWindow(QWidget *parent)
         else
             m_fs.clearRoot();
     });
+    // ---- M2.c：xterm.host.* 工具后端。cpu/mem 走 stats 通道缓存帧
+    // （HostStats 挂在 SessionController），disk/uptime/top 按需远端命令
+    // （独立 SftpClient 适配器，与文件管理器/FsBridge 互不干扰）----
+    auto *agentHostExec = new SftpClient(m_session->ssh(), this);
+    m_host.setBackend(HostBridge::hooksForStats(m_session->hostStats(), agentHostExec));
+    m_host.registerTools(&hooks);
     m_mcp->start(hooks, m_store->mcpAllowWrite());
 }
 

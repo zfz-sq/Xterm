@@ -1,5 +1,6 @@
 #include "fakes/fakelibsshapi.h"
 #include "fsbridge.h"
+#include "hostbridge.h"
 #include "sftpclient.h"
 #include "ssh/knownhostsstore.h"
 #include "sshsession.h"
@@ -60,6 +61,7 @@ private slots:
     void destructionCancelsOwnRequestsAndKeepsSession();
     void ignoresResultsFromOtherAdapters();
     void synchronousHooksBridgeSignals();
+    void hooksForStatsBridgesExec();
 
 private:
     void connectSession();
@@ -328,6 +330,34 @@ void TestSftpClient::synchronousHooksBridgeSignals()
     const QVector<SftpEntry> none = hooks.list(QStringLiteral("/home"), &err);
     QVERIFY(none.isEmpty());
     QVERIFY(!err.isEmpty()); // 后端错误同步冒泡，不是静默空结果
+}
+
+// HostBridge::hooksForStats（M2.c）：snapshot 直读 + exec 同步桥接。
+// 离线时 submit() 同步回失败结果，桥接不进事件循环立即冒泡
+// （exec 前的 quit 会丢，这正是 hooksForSftp 同款保护要防的坑）。
+void TestSftpClient::hooksForStatsBridgesExec()
+{
+    HostBridge::HostHooks off = HostBridge::hooksForStats(nullptr, m_client);
+    QVERIFY(!off.snapshot().cpuOk); // stats 为空 → 全字段未就绪
+    QString err;
+    QVERIFY(off.exec(QStringLiteral("true"), &err).isEmpty());
+    QCOMPARE(err, QStringLiteral("SSH 会话未连接")); // 同步失败，不卡 15s
+
+    connectSession();
+    m_api->execStdout = QByteArrayLiteral("8615.93 33472.85\n0.52 0.58 0.59");
+    m_api->execExitStatus = 0;
+    HostBridge::HostHooks on = HostBridge::hooksForStats(nullptr, m_client);
+    err.clear();
+    const QString out = on.exec(QStringLiteral("cat /proc/uptime /proc/loadavg"), &err);
+    QVERIFY(err.isEmpty());
+    QCOMPARE(out, QString::fromUtf8("8615.93 33472.85\n0.52 0.58 0.59"));
+    QCOMPARE(m_api->execCommands.last(),
+             QByteArrayLiteral("cat /proc/uptime /proc/loadavg"));
+
+    m_api->execExitStatus = 2; // 退出码非零：输出空时错误是「退出码 2」
+    err.clear();
+    QVERIFY(on.exec(QStringLiteral("false"), &err).isEmpty());
+    QVERIFY(!err.isEmpty());
 }
 
 QTEST_MAIN(TestSftpClient)

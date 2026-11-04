@@ -156,6 +156,19 @@ void HostStats::testApplySample(const QString &sample)
     applySample(sample);
 }
 
+HostSnapshot HostStats::snapshot() const
+{
+    HostSnapshot snap;
+    snap.cpuOk = m_cpuOk;
+    snap.cpuPercent = m_cpuPercent;
+    snap.memOk = m_memOk;
+    snap.memPercentOk = m_memPercentOk;
+    snap.memPercent = m_memPercent;
+    snap.usedKiB = m_usedKiB;
+    snap.totalKiB = m_totalKiB;
+    return snap;
+}
+
 void HostStats::onSample(const QString &sample)
 {
     // 断开后仍在途的帧直接丢弃，不污染展示缓存（原 MainWindow 逻辑下沉）

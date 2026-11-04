@@ -272,8 +272,8 @@ def dispatch_tool(name, arguments):
             {"contains": arguments.get("contains", ""), "timeout_ms": timeout},
             timeout,
         )
-    # 扩展工具（xterm.fs.* 等）：参数名与管道一致，直接透传
-    if name.startswith("xterm.fs."):
+    # 扩展工具（xterm.fs.* / xterm.host.* 等）：参数名与管道一致，直接透传
+    if name.startswith(("xterm.fs.", "xterm.host.")):
         timeout = int(arguments.get("timeout_ms") or 15000)
         return call_xterm(name, arguments, timeout)
     raise RuntimeError("未知工具: " + name)

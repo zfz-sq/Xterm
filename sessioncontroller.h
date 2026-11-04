@@ -104,6 +104,9 @@ public:
     // —— SSH 状态栏文本（数据源为 HostStats 下沉缓存）——
     QString sshStatusText() const;
 
+    // M2.c：HostBridge 的 stats 缓存源（xterm.host.* 的 cpu/mem 数据，不拥有）
+    HostStats *hostStats() const { return m_hostStats; }
+
     // —— MCP 数据适配器（依赖会话/视图状态，见类注释）——
     QJsonObject agentStatus() const;
     QString agentRecentText(int maxLines) const;

@@ -22,6 +22,18 @@ struct HostMemSample
     qint64 totalKiB = 0;
 };
 
+// 最新缓存帧的快照（M2.c：xterm.host.cpu / .mem 的数据源，纯值传递）
+struct HostSnapshot
+{
+    bool cpuOk = false;
+    int cpuPercent = 0;
+    bool memOk = false;
+    bool memPercentOk = false;
+    int memPercent = 0;
+    qint64 usedKiB = 0;
+    qint64 totalKiB = 0;
+};
+
 /*
  * HostStats: 状态栏的主机 CPU/内存适配器。
  *
@@ -32,6 +44,7 @@ struct HostMemSample
  * M1.d 起最新一帧的展示缓存（CPU/内存各字段与 ok 标志）下沉到本类，
  * 状态栏文案由 statusText() 直接生成（MainWindow 不再逐字段保存）；
  * 未连接期间到达的迟到帧在 onSample 里丢弃，避免断开后残留旧读数。
+ * M2.c 起 snapshot() 把缓存帧暴露给 HostBridge（xterm.host.* 工具）。
  */
 class HostStats : public QObject
 {
@@ -52,6 +65,9 @@ public:
     // 状态栏文本："user@host:port · CPU xx% · 内存 xx% · used/total"。
     // 主机标识取会话当前 target；未连接/无样本时各字段显示 "--"。
     QString statusText() const;
+
+    // 最新缓存帧快照（M2.c：HostBridge 直读，未就绪字段 ok=false）
+    HostSnapshot snapshot() const;
 
     void testApplySample(const QString &sample);   // 仅单测用
 

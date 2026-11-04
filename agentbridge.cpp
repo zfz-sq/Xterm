@@ -72,6 +72,10 @@ QString AgentBridge::instructions()
         "若 tools.list 里有 xterm.fs.*，可读写远端文件：仅限会话根目录及子路径"
         "（沙箱）；写类默认关闭，被拒时说明用户未开启 allow_write。\n"
         "\n"
+        "若 tools.list 里有 xterm.host.*，可读远端主机状态：cpu/mem 来自采样通道"
+        "（SSH 连接后约 6 秒就绪，ok=false 时稍后重试），disk/uptime/top 按需"
+        "在远端跑只读命令。仅 SSH 会话可用。\n"
+        "\n"
         "这些调用会直接作用到连接的设备上，与在终端里敲命令相同。");
 }
 

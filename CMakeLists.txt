@@ -75,6 +75,8 @@ qt_add_executable(Xterm
     agentbridge.h
     fsbridge.cpp
     fsbridge.h
+    hostbridge.cpp
+    hostbridge.h
     mcpmainhook.cpp
     mcpmainhook.h
     sessioncontroller.cpp

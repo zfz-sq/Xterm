@@ -1,7 +1,9 @@
 #include "sftpclient.h"
 
 #include "fsbridge.h"
+#include "hostbridge.h"
 
+#include "hoststats.h"
 #include "sshsession.h"
 
 #include <QEventLoop>
@@ -280,11 +282,13 @@ FsBridge::FsHooks FsBridge::hooksForSftp(SftpClient *client)
         QString result;
         QEventLoop loop;
         bool ok = false;
+        bool done = false;
         const auto c = QObject::connect(
             client, &SftpClient::opFinished, client,
             [&](const QString &op, const QString &arg, bool succeeded, const QString &error) {
                 if (op != QLatin1String("realpath"))
                     return; // 本实例只有 FsBridge 在用，不会有别的 op 插入
+                done = true;
                 ok = succeeded && !arg.isEmpty();
                 if (ok)
                     result = arg;
@@ -294,9 +298,10 @@ FsBridge::FsHooks FsBridge::hooksForSftp(SftpClient *client)
             });
         QTimer::singleShot(kTimeoutMs, &loop, &QEventLoop::quit);
         client->realPath(path);
-        loop.exec();
+        if (!done) // 离线时 submit() 同步回结果；exec 前的 quit 会丢，别进空循环
+            loop.exec();
         QObject::disconnect(c);
-        if (!ok && err->isEmpty())
+        if (!done && err->isEmpty())
             *err = QStringLiteral("realpath 超时");
         return result;
     };
@@ -325,7 +330,8 @@ FsBridge::FsHooks FsBridge::hooksForSftp(SftpClient *client)
             });
         QTimer::singleShot(kTimeoutMs, &loop, &QEventLoop::quit);
         client->listDir(path);
-        loop.exec();
+        if (!done) // 离线同步失败不进事件循环（同 realPath 注释）
+            loop.exec();
         QObject::disconnect(c1);
         QObject::disconnect(c2);
         if (!done && err->isEmpty())
@@ -357,7 +363,8 @@ FsBridge::FsHooks FsBridge::hooksForSftp(SftpClient *client)
                 client->uploadFile(id, a, b); // a=local b=remote
             else
                 client->downloadFile(id, a, b); // a=remote b=local
-            loop.exec();
+            if (!done) // 离线同步失败不进事件循环（同 realPath 注释）
+                loop.exec();
             QObject::disconnect(c);
             if (!done)
                 *err = QString::fromUtf8(upload ? "上传超时" : "下载超时");
@@ -367,5 +374,50 @@ FsBridge::FsHooks FsBridge::hooksForSftp(SftpClient *client)
     h.download = bridgeTransfer(false);
     h.upload = bridgeTransfer(true);
 
+    return h;
+}
+
+// —— HostBridge 真实后端（M2.c）：stats 缓存直读 + 按需 exec 的同步桥接 ——
+// exec 结果经 opFinished(op="exec", arg=命令) 回来；成功时 error 字段装
+// stdout（SftpChannel 的既有约定，详见 advanceExec 的 completeOp）。
+HostBridge::HostHooks HostBridge::hooksForStats(HostStats *stats, SftpClient *client)
+{
+    constexpr int kTimeoutMs = 15000;
+    HostHooks h;
+    h.snapshot = [stats]() {
+        HostSnapshot snap;
+        if (stats != nullptr)
+            snap = stats->snapshot();
+        return snap;
+    };
+    h.exec = [client](const QString &command, QString *err) {
+        QString out;
+        if (client == nullptr) {
+            *err = QStringLiteral("Host 后端未挂载");
+            return out;
+        }
+        QEventLoop loop;
+        bool done = false;
+        const auto c = QObject::connect(
+            client, &SftpClient::opFinished, client,
+            [&](const QString &op, const QString &arg, bool succeeded, const QString &error) {
+                if (op != QLatin1String("exec") || arg != command)
+                    return; // 本实例只有 HostBridge 在用
+                done = true;
+                if (succeeded)
+                    out = error; // exec 约定：成功时 error 字段装 stdout
+                else
+                    *err = error.isEmpty() ? QStringLiteral("远程命令失败") : error;
+                loop.quit();
+            });
+        QTimer::singleShot(kTimeoutMs, &loop, &QEventLoop::quit);
+        client->execCommand(command);
+        if (!done) // 离线时 submit() 同步回结果；exec 前的 quit 会丢，别进空循环
+            loop.exec();
+        QObject::disconnect(c);
+        if (!done && err->isEmpty())
+            *err = QStringLiteral("远程命令超时");
+        return out;
+    };
     return h;
 }
