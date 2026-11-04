@@ -88,6 +88,7 @@ add_test(NAME test_knownhosts COMMAND test_knownhosts)
 add_executable(test_agentbridge
     test_agentbridge.cpp
     "${CMAKE_SOURCE_DIR}/agentbridge.cpp"
+    "${CMAKE_SOURCE_DIR}/auditlog.cpp"
     "${CMAKE_SOURCE_DIR}/commandstore.cpp"
 )
 
@@ -109,6 +110,30 @@ set_target_properties(test_agentbridge PROPERTIES
 
 add_test(NAME test_agentbridge COMMAND test_agentbridge)
 
+# AuditLog（M2.e 可观测）：纯文件协作类，验证 jsonl 追加/轮转/坏路径静默；
+# AgentBridge 集成侧的审计与限流用例在 test_agentbridge 里
+add_executable(test_auditlog
+    test_auditlog.cpp
+    "${CMAKE_SOURCE_DIR}/auditlog.cpp"
+    "${CMAKE_SOURCE_DIR}/auditlog.h"
+)
+
+target_include_directories(test_auditlog
+    PRIVATE
+        "${CMAKE_SOURCE_DIR}"
+)
+
+target_link_libraries(test_auditlog
+    PRIVATE
+        Qt6::Test
+)
+
+set_target_properties(test_auditlog PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)
+
+add_test(NAME test_auditlog COMMAND test_auditlog)
+
 # FsBridge + xterm.fs.* 工具（M2.b）：内存 fake 后端，不碰 SSH 栈与网络；
 # hooksForSftp 的异步同步桥接由 test_sftpclient 覆盖
 add_executable(test_agentbridge_fs
@@ -117,6 +142,9 @@ test_agentbridge_fs.cpp
     "${CMAKE_SOURCE_DIR}/fsbridge.h"
     "${CMAKE_SOURCE_DIR}/agentbridge.cpp"
     "${CMAKE_SOURCE_DIR}/agentbridge.h"
+    # agentbridge 引 AuditLog（M2.e 审计），连带
+    "${CMAKE_SOURCE_DIR}/auditlog.cpp"
+    "${CMAKE_SOURCE_DIR}/auditlog.h"
     "${CMAKE_SOURCE_DIR}/commandstore.cpp"
 )
 
@@ -148,6 +176,9 @@ add_executable(test_agentbridge_host
     "${CMAKE_SOURCE_DIR}/hostbridge.h"
     "${CMAKE_SOURCE_DIR}/agentbridge.cpp"
     "${CMAKE_SOURCE_DIR}/agentbridge.h"
+    # agentbridge 引 AuditLog（M2.e 审计），连带
+    "${CMAKE_SOURCE_DIR}/auditlog.cpp"
+    "${CMAKE_SOURCE_DIR}/auditlog.h"
     "${CMAKE_SOURCE_DIR}/commandstore.cpp"
 )
 
@@ -180,6 +211,9 @@ add_executable(test_agentbridge_screen
     "${CMAKE_SOURCE_DIR}/termscreen.h"
     "${CMAKE_SOURCE_DIR}/agentbridge.cpp"
     "${CMAKE_SOURCE_DIR}/agentbridge.h"
+    # agentbridge 引 AuditLog（M2.e 审计），连带
+    "${CMAKE_SOURCE_DIR}/auditlog.cpp"
+    "${CMAKE_SOURCE_DIR}/auditlog.h"
     "${CMAKE_SOURCE_DIR}/commandstore.cpp"
 )
 
@@ -269,6 +303,9 @@ add_executable(test_mcpmainhook
     "${CMAKE_SOURCE_DIR}/mcpmainhook.h"
     "${CMAKE_SOURCE_DIR}/agentbridge.cpp"
     "${CMAKE_SOURCE_DIR}/agentbridge.h"
+    # agentbridge 引 AuditLog（M2.e 审计），连带
+    "${CMAKE_SOURCE_DIR}/auditlog.cpp"
+    "${CMAKE_SOURCE_DIR}/auditlog.h"
     "${CMAKE_SOURCE_DIR}/commandstore.cpp"
     "${CMAKE_SOURCE_DIR}/commandstore.h"
     "${CMAKE_SOURCE_DIR}/framelessdialog.cpp"
@@ -516,6 +553,9 @@ add_executable(test_sessioncontroller
     "${CMAKE_SOURCE_DIR}/mcpmainhook.h"
     "${CMAKE_SOURCE_DIR}/agentbridge.cpp"
     "${CMAKE_SOURCE_DIR}/agentbridge.h"
+    # agentbridge 引 AuditLog（M2.e 审计），连带
+    "${CMAKE_SOURCE_DIR}/auditlog.cpp"
+    "${CMAKE_SOURCE_DIR}/auditlog.h"
     "${CMAKE_SOURCE_DIR}/commandstore.cpp"
     "${CMAKE_SOURCE_DIR}/commandstore.h"
     "${CMAKE_SOURCE_DIR}/commandbar.cpp"

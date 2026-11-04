@@ -52,6 +52,9 @@ private:
     void setActive(bool on);
     void refreshStatus();
     void showPromptDialog();
+    // M2.e 三态文案：「最近调用 <tool>（Ns 前）」的短名与人读时长
+    static QString shortToolName(const QString &method);
+    static QString humanAge(qint64 ageMs);
 
     QStatusBar *m_statusBar = nullptr;
     AgentBridge *m_agent = nullptr;
@@ -59,6 +62,9 @@ private:
     QLabel *m_mcpStatusLabel = nullptr;
     QLabel *m_agentLockLabel = nullptr;
     QTimer *m_mcpActiveTimer = nullptr;
+    QTimer *m_lastCallTimer = nullptr;  // 在线期间 1s 刷新「N秒前」文案
+    QString m_lastCallMethod;           // 最近一次工具调用（空 = 尚无）
+    qint64 m_lastCallMs = 0;
     bool m_mcpActive = false;
 };
 

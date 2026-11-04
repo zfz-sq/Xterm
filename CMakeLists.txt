@@ -73,6 +73,8 @@ qt_add_executable(Xterm
     mainwindow.ui
     agentbridge.cpp
     agentbridge.h
+    auditlog.cpp
+    auditlog.h
     fsbridge.cpp
     fsbridge.h
     hostbridge.cpp

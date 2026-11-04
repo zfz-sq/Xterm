@@ -15,6 +15,7 @@
 class QLocalServer;
 class QLocalSocket;
 class QTimer;
+class AuditLog;
 
 /*
  * AgentBridge: 本机命名管道，把已经连上的串口/SSH 暴露给 MCP。
@@ -95,17 +96,34 @@ public:
     // 打字机是否正在输入（用于界面锁定人工输入）
     bool isTyping() const { return m_typing.active; }
 
+    // 速率限制（M2.e 令牌桶）：容量 capacity 个、每秒回填 perSecond 个，
+    // 超性请求立即拒绝（防 AI 循环刷 read 类工具卡 GUI 线程）。start 前后
+    // 均可调；单测用小参数验证拒绝路径
+    void setRateLimit(int capacity, int perSecond);
+
     static QString instructions();
 
 signals:
     // 携带合法令牌的请求到达: 有 AI 正在通过 MCP 访问本窗口（用于点亮状态角标）。
     // 连接是按请求建立的，没有“断开”事件，状态由上层超时判定。
     void agentActive();
+    // 一次工具调用完成（M2.e 可观测）：method 带命名空间全名，
+    // durationMs 含挂起类工具的等待时间（从请求到达到应答）。
+    // 挂起后客户端断开没应答的调用不发声；上层用幂等文案刷新
+    void agentToolCall(const QString &method, bool ok, qint64 durationMs);
     // 打字机状态变化：active=true 时 text 是正在逐字输入的命令（进度随 tick 刷新），
     // active=false 表示结束（发完或被打断）。
     void agentTypingChanged(bool active, const QString &text);
 
 private:
+    // 审计结算上下文（M2.e）：请求到达时入表，reply() 统一出口结算
+    struct PendingCall
+    {
+        QString method;
+        QJsonObject params;
+        qint64 startMs = 0;
+    };
+
     struct Waiter
     {
         QLocalSocket *sock = nullptr;
@@ -145,6 +163,11 @@ private:
     void reply(QLocalSocket *sock, const QJsonValue &id, bool ok, const QJsonObject &result,
                const QString &error);
     void pollWaiters();
+    // —— M2.e 可观测：审计 + 限流 ——
+    bool takeRateToken();                          // 令牌桶取令牌（自回填）
+    QString pendingKey(QLocalSocket *sock, const QJsonValue &id) const;
+    void settlePending(QLocalSocket *sock, const QJsonValue &id,
+                       bool ok, const QString &error); // reply 出口结算审计+信号
     void startTyping(QLocalSocket *sock, const QJsonValue &id, const QString &text,
                      const QString &waitNeedle, int timeoutMs, int intervalMs);
     void typingTick();
@@ -156,6 +179,12 @@ private:
     Hooks m_hooks;
     QHash<QString, ToolHandler> m_tools;      // 完整工具名 → 处理器（路由表）
     QHash<QString, QJsonObject> m_toolMeta;   // 同名 → tools.list 元数据
+    AuditLog *m_audit = nullptr;              // agentFile 同目录 logs/ 下 jsonl
+    QHash<QString, PendingCall> m_pending;    // sock#id → 调用上下文（审计结算）
+    double m_rateTokens = 30.0;               // 令牌桶当前令牌（容量默认 30）
+    int m_rateCapacity = 30;
+    int m_ratePerSecond = 10;                 // 每秒回填（默认 10）
+    qint64 m_rateLastMs = 0;
     QLocalServer *m_server = nullptr;
     QTimer *m_poll = nullptr;
     QTimer *m_typeTimer = nullptr;

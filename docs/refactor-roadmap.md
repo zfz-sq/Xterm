@@ -274,6 +274,26 @@ FS 安全边界：
       test_agentbridge_screen 9 用例（静态 snapshot 喂真 VT 序列验颜色段
       /OSC 8/绝对行号/备用屏 + 工具级管道 fake）+ test_agentbridge 补
       waitForPattern 两用例（回显免疫命中 + 非法正则拒绝），全套 17/17 绿）
-- [ ] M2.e 审计 + 徽标 + 限流
+- [x] M2.e 审计 + 徽标 + 限流
+      （验收「jsonl 落盘、限流生效」达成。三件：①审计 AuditLog 新协作类，
+      追加式 jsonl + 按大小轮转（.old 只保两代）、惰性打开、写失败静默，
+      路径 = agent.json 同目录 logs/agent-audit.jsonl（测试注入临时
+      agentFile 时审计也落临时目录）；结算点在 reply() 统一出口——
+      同步/挂起（wait 轮询/打字机）全路径覆盖，pending 表 sock#id →
+      {method, params, startMs}，对端断开时按连接前缀清理不残留；
+      条目 event=call（method/ok/duration_ms/params/error 截 200 字）
+      + rate_limited + auth_failed（谁在试探管道）。②三态：AgentBridge
+      新发 agentToolCall(method, ok, durationMs)（settle 时发射），
+      McpMainHook 记最近调用 + 在线期间 1s 定时刷新，「AI 在线」态升级为
+      「MCP · screen.read（3 秒前）」（短名去 xterm. 前缀，人读时长
+      秒/分/时三档，5 分钟后太陈旧不再带），离线时停刷新。③限流令牌桶
+      setRateLimit(capacity, perSecond)（默认 30/10），handleLine 在
+      令牌校验后取令牌，超性立即拒「rate limited…稍后重试」并记审计；
+      挂起中的 wait 轮询是内部定时器不占令牌。坑：agentbridge.cpp 一引
+      AuditLog，六个链它的测试目标全部要连带 auditlog.cpp（replace_all
+      一次补齐）；多行 tr 字面量里的 \n 若变成真实换行即非法 C++，
+      拼接型相邻字符串要小心。新增 test_auditlog 3 用例（追加/轮转/
+      坏路径静默）+ test_agentbridge 补 3 用例（jsonl 字段 + QSignalSpy
+      信号、失败审计、容量 2 连发第 3 个被拒），全套 18/18 绿）
 - [ ] M2.f Session 工具
 - [ ] M2.g HTTP/SSE 端点（可选）

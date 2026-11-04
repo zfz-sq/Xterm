@@ -1,5 +1,7 @@
 #include "agentbridge.h"
 
+#include "auditlog.h"
+
 #include "commandstore.h"
 
 #include <QDateTime>
@@ -103,6 +105,7 @@ AgentBridge::~AgentBridge()
     if (m_server)
         m_server->close();
     removeAgentFile();
+    delete m_audit;
 }
 
 void AgentBridge::start(Hooks hooks, const QString &agentFile, bool allowWrite)
@@ -139,6 +142,10 @@ void AgentBridge::start(Hooks hooks, const QString &agentFile, bool allowWrite)
     connect(m_server, &QLocalServer::newConnection, this, &AgentBridge::onNewConnection);
     m_token = QUuid::createUuid().toString(QUuid::WithoutBraces);
     writeAgentFile();
+    // 审计（M2.e）：agent.json 同目录 logs/ 下 jsonl，滚动轮转。
+    // 测试注入临时 agentFile 时审计也落临时目录，不碰真实配置
+    m_audit = new AuditLog(
+        QDir(QFileInfo(m_agentFile).absolutePath()).filePath(QStringLiteral("logs/agent-audit.jsonl")));
 }
 
 bool AgentBridge::probeExistingAgent() const
@@ -221,6 +228,15 @@ void AgentBridge::onNewConnection()
 void AgentBridge::onSocketClosed(QLocalSocket *sock)
 {
     m_buf.remove(sock);
+    // 对端断开还没应答的调用：不再结算（审计只在真正应答时记一条完整事件），
+    // 按连接前缀清掉，防止同地址复用时串到新连接
+    const QString prefix = QString::number(quintptr(sock)) + QLatin1Char('#');
+    for (auto it = m_pending.begin(); it != m_pending.end();) {
+        if (it.key().startsWith(prefix))
+            it = m_pending.erase(it);
+        else
+            ++it;
+    }
     for (int i = m_waiters.size() - 1; i >= 0; --i) {
         if (m_waiters.at(i).sock == sock)
             m_waiters.removeAt(i);
@@ -252,6 +268,9 @@ void AgentBridge::onSocketReady(QLocalSocket *sock)
 void AgentBridge::reply(QLocalSocket *sock, const QJsonValue &id, bool ok, const QJsonObject &result,
                         const QString &error)
 {
+    // 统一应答出口：先结算审计与 agentToolCall（即使对端已断开，
+    // 调用本身也发生了，照样记一条完整事件），再尝试写回
+    settlePending(sock, id, ok, error);
     if (!sock || sock->state() != QLocalSocket::ConnectedState)
         return;
     QJsonObject obj;
@@ -276,13 +295,43 @@ void AgentBridge::handleLine(QLocalSocket *sock, const QByteArray &line)
     }
     const QJsonObject req = doc.object();
     const QJsonValue id = req.value(QStringLiteral("id"));
+    const QString method = req.value(QStringLiteral("method")).toString();
     if (req.value(QStringLiteral("token")).toString() != m_token) {
+        // 审计（M2.e）：非法令牌也是可观测事件（谁在试探管道）
+        if (m_audit) {
+            QJsonObject e;
+            e.insert(QStringLiteral("event"), QStringLiteral("auth_failed"));
+            e.insert(QStringLiteral("method"), method);
+            m_audit->append(e);
+        }
         reply(sock, id, false, {}, QStringLiteral("令牌不匹配"));
         return;
     }
-    const QString method = req.value(QStringLiteral("method")).toString();
     const QJsonObject params = req.value(QStringLiteral("params")).toObject();
     emit agentActive(); // 令牌校验通过: 合法的 AI 客户端正在访问
+
+    // 限流（M2.e 令牌桶）：超性请求立即拒绝——防 AI 循环刷 read 类工具
+    // 卡死 GUI 线程。错误文案引导稍等重试（挂起中的 wait 不占令牌，
+    // 轮询是内部定时器不走这条路径）
+    if (!takeRateToken()) {
+        if (m_audit) {
+            QJsonObject e;
+            e.insert(QStringLiteral("event"), QStringLiteral("rate_limited"));
+            e.insert(QStringLiteral("method"), method);
+            m_audit->append(e);
+        }
+        reply(sock, id, false, {},
+              QStringLiteral("rate limited：请求过快，请等待约 1 秒后重试"));
+        return;
+    }
+    // 审计上下文入表：reply() 统一出口结算（同步与挂起类工具都覆盖）
+    {
+        PendingCall p;
+        p.method = method;
+        p.params = params;
+        p.startMs = QDateTime::currentMSecsSinceEpoch();
+        m_pending.insert(pendingKey(sock, id), p);
+    }
 
     // 协议级：工具自发现（不带 xterm. 前缀）
     if (method == QLatin1String("tools.list")) {
@@ -504,6 +553,67 @@ QJsonArray AgentBridge::toolCatalog() const
     for (auto it = m_toolMeta.constBegin(); it != m_toolMeta.constEnd(); ++it)
         tools.append(it.value());
     return tools;
+}
+
+void AgentBridge::setRateLimit(int capacity, int perSecond)
+{
+    m_rateCapacity = qMax(1, capacity);
+    m_ratePerSecond = qMax(1, perSecond);
+    m_rateTokens = m_rateCapacity; // 重置满桶，语义直观：改参数即重启计量
+    m_rateLastMs = 0;
+}
+
+bool AgentBridge::takeRateToken()
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (m_rateLastMs > 0) {
+        const double refill = (now - m_rateLastMs) * double(m_ratePerSecond) / 1000.0;
+        m_rateTokens = qMin(double(m_rateCapacity), m_rateTokens + refill);
+    }
+    m_rateLastMs = now;
+    if (m_rateTokens < 1.0)
+        return false;
+    m_rateTokens -= 1.0;
+    return true;
+}
+
+QString AgentBridge::pendingKey(QLocalSocket *sock, const QJsonValue &id) const
+{
+    QString idStr;
+    if (id.isString())
+        idStr = id.toString();
+    else if (id.isDouble())
+        idStr = QString::number(id.toDouble());
+    else if (id.isBool())
+        idStr = id.toBool() ? QStringLiteral("1") : QStringLiteral("0");
+    else
+        idStr = QStringLiteral("_"); // 无 id 请求（协议允许）：占位同名覆盖
+    return QString::number(quintptr(sock)) + QLatin1Char('#') + idStr;
+}
+
+void AgentBridge::settlePending(QLocalSocket *sock, const QJsonValue &id,
+                                bool ok, const QString &error)
+{
+    const QString key = pendingKey(sock, id);
+    const auto it = m_pending.constFind(key);
+    if (it == m_pending.constEnd())
+        return; // 非工具调用应答（坏 JSON 的占位回复等），不审计不发射
+    const PendingCall p = it.value();
+    m_pending.erase(it);
+
+    const qint64 durationMs = QDateTime::currentMSecsSinceEpoch() - p.startMs;
+    if (m_audit) {
+        QJsonObject e;
+        e.insert(QStringLiteral("event"), QStringLiteral("call"));
+        e.insert(QStringLiteral("method"), p.method);
+        e.insert(QStringLiteral("ok"), ok);
+        e.insert(QStringLiteral("duration_ms"), double(durationMs));
+        e.insert(QStringLiteral("params"), p.params);
+        if (!error.isEmpty())
+            e.insert(QStringLiteral("error"), error.left(200)); // 摘要：防整屏文本进日志
+        m_audit->append(e);
+    }
+    emit agentToolCall(p.method, ok, durationMs);
 }
 
 void AgentBridge::addWaiter(QLocalSocket *sock, const QJsonValue &id, const QString &needle,

@@ -6,6 +6,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLocalSocket>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 
 #include "agentbridge.h"
@@ -29,10 +30,15 @@ private slots:
     void waitForPatternMatchesNewText();
     void waitForPatternRejectsInvalidRegex();
     void clearAIsInstant();
+    void auditJsonlRecordsCallsAndSignals();
+    void auditRecordsFailures();
+    void rateLimitRejectsBurst();
 
 private:
     QJsonObject waitReply(QLocalSocket *sock);
     void sendRequest(QLocalSocket *sock, int id, const QString &method, const QJsonObject &params);
+    // 读临时 agent.json 同目录 logs/ 下的审计 jsonl，返回全部条目
+    QJsonArray readAuditEntries() const;
 
     AgentBridge *m_bridge = nullptr;
     QTemporaryDir m_dir;
@@ -313,6 +319,122 @@ void AgentBridgeTest::clearAIsInstant()
     QVERIFY(resp.value(QStringLiteral("ok")).toBool());
     QCOMPARE(m_directLines, QStringList{ QStringLiteral("clear -a") });
     QVERIFY(m_sink.isEmpty()); // 本地命令不进打字机、不出字节
+    sock.disconnectFromServer();
+}
+
+QJsonArray AgentBridgeTest::readAuditEntries() const
+{
+    QJsonArray out;
+    QFile f(m_dir.filePath(QStringLiteral("logs/agent-audit.jsonl")));
+    if (!f.open(QIODevice::ReadOnly))
+        return out;
+    while (!f.atEnd()) {
+        const QByteArray line = f.readLine().trimmed();
+        if (!line.isEmpty())
+            out.append(QJsonDocument::fromJson(line).object());
+    }
+    return out;
+}
+
+// M2.e 审计：调用落 jsonl（method/ok/duration_ms/params/ts），
+// 同时发 agentToolCall 信号（McpMainHook 三态文案的数据源）
+void AgentBridgeTest::auditJsonlRecordsCallsAndSignals()
+{
+    QLocalSocket sock;
+    sock.connectToServer(m_pipe);
+    QVERIFY(sock.waitForConnected(2000));
+
+    QSignalSpy spy(m_bridge, &AgentBridge::agentToolCall);
+    QJsonObject params;
+    params.insert(QStringLiteral("max_lines"), 5);
+    sendRequest(&sock, 30, QStringLiteral("xterm.session.status"), params);
+    const QJsonObject resp = waitReply(&sock);
+    QVERIFY(resp.value(QStringLiteral("ok")).toBool());
+    sock.disconnectFromServer();
+
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(spy.at(0).at(0).toString(), QStringLiteral("xterm.session.status"));
+    QCOMPARE(spy.at(0).at(1).toBool(), true);
+    QVERIFY(spy.at(0).at(2).toLongLong() >= 0);
+
+    const QJsonArray entries = readAuditEntries();
+    bool found = false;
+    for (const QJsonValue &v : entries) {
+        const QJsonObject e = v.toObject();
+        if (e.value(QStringLiteral("event")).toString() == QLatin1String("call")
+            && e.value(QStringLiteral("method")).toString()
+                   == QLatin1String("xterm.session.status")) {
+            found = true;
+            QVERIFY(e.value(QStringLiteral("ok")).toBool());
+            QVERIFY(e.contains(QStringLiteral("duration_ms")));
+            QVERIFY(e.value(QStringLiteral("params")).toObject()
+                        .contains(QStringLiteral("max_lines")));
+            QVERIFY(!e.value(QStringLiteral("ts")).toString().isEmpty());
+        }
+    }
+    QVERIFY(found);
+}
+
+// 失败调用也审计：未知工具的拒绝带 error 摘要
+void AgentBridgeTest::auditRecordsFailures()
+{
+    QLocalSocket sock;
+    sock.connectToServer(m_pipe);
+    QVERIFY(sock.waitForConnected(2000));
+
+    sendRequest(&sock, 31, QStringLiteral("xterm.nope.nothere"), {});
+    const QJsonObject resp = waitReply(&sock);
+    QVERIFY(!resp.value(QStringLiteral("ok")).toBool());
+    sock.disconnectFromServer();
+
+    const QJsonArray entries = readAuditEntries();
+    bool found = false;
+    for (const QJsonValue &v : entries) {
+        const QJsonObject e = v.toObject();
+        if (e.value(QStringLiteral("method")).toString()
+                == QLatin1String("xterm.nope.nothere")) {
+            found = true;
+            QVERIFY(!e.value(QStringLiteral("ok")).toBool());
+            QVERIFY(e.value(QStringLiteral("error")).toString()
+                        .contains(QStringLiteral("未知工具")));
+        }
+    }
+    QVERIFY(found);
+}
+
+// M2.e 限流：令牌桶容量 2、每秒 1 个时，连发第 3 个被拒（防循环刷屏）；
+// 结束恢复默认，不影响其他用例
+void AgentBridgeTest::rateLimitRejectsBurst()
+{
+    QLocalSocket sock;
+    sock.connectToServer(m_pipe);
+    QVERIFY(sock.waitForConnected(2000));
+
+    m_bridge->setRateLimit(2, 1);
+    int rejected = 0;
+    int accepted = 0;
+    for (int i = 0; i < 4; ++i) {
+        sendRequest(&sock, 40 + i, QStringLiteral("xterm.session.status"), {});
+        const QJsonObject resp = waitReply(&sock);
+        if (resp.value(QStringLiteral("ok")).toBool())
+            ++accepted;
+        else if (resp.value(QStringLiteral("error")).toString()
+                     .contains(QStringLiteral("rate limited")))
+            ++rejected;
+    }
+    m_bridge->setRateLimit(30, 10); // 恢复默认，后续用例不受影响
+    QCOMPARE(accepted, 2);
+    QVERIFY(rejected >= 1);
+
+    // 被拒事件也进审计（可观测）
+    const QJsonArray entries = readAuditEntries();
+    bool sawLimited = false;
+    for (const QJsonValue &v : entries) {
+        if (v.toObject().value(QStringLiteral("event")).toString()
+                == QLatin1String("rate_limited"))
+            sawLimited = true;
+    }
+    QVERIFY(sawLimited);
     sock.disconnectFromServer();
 }
 

@@ -22,6 +22,8 @@
 #include "framelessdialog.h"
 #include "icons.h"
 
+#include <QDateTime>
+
 McpMainHook::McpMainHook(QStatusBar *statusBar, QObject *parent)
     : QObject(parent)
     , m_statusBar(statusBar)
@@ -63,6 +65,19 @@ void McpMainHook::start(const AgentBridge::Hooks &hooks, bool allowWrite)
         setActive(true);
         m_mcpActiveTimer->start();
     });
+    // M2.e 三态文案：最近一次工具调用带「Ns 前」，在线期间每秒刷新；
+    // 打字态优先（refreshStatus 分支顺序），转回在线时自动带出最近调用
+    m_lastCallTimer = new QTimer(this);
+    m_lastCallTimer->setInterval(1000);
+    connect(m_lastCallTimer, &QTimer::timeout, this, &McpMainHook::refreshStatus);
+    connect(m_agent, &AgentBridge::agentToolCall, this,
+            [this](const QString &method, bool, qint64) {
+        m_lastCallMethod = method;
+        m_lastCallMs = QDateTime::currentMSecsSinceEpoch();
+        if (m_mcpActive)
+            m_lastCallTimer->start();
+        refreshStatus();
+    });
     // AI 打字机：状态栏常亮锁定提示 + 命令进度，打完/被打断时释放
     connect(m_agent, &AgentBridge::agentTypingChanged, this,
             [this](bool active, const QString &text) {
@@ -100,6 +115,8 @@ void McpMainHook::setActive(bool on)
     if (m_mcpActive == on)
         return;
     m_mcpActive = on;
+    if (!on && m_lastCallTimer)
+        m_lastCallTimer->stop(); // 离线后不再刷新「N秒前」
     refreshIcon();
     refreshStatus();
 }
@@ -114,10 +131,21 @@ void McpMainHook::refreshStatus()
         m_mcpStatusLabel->setToolTip(
             tr("AI（MCP）正在逐字输入命令，普通输入已锁定，按 Ctrl+C 打断"));
     } else if (m_mcpActive) {
-        m_mcpStatusLabel->setText(tr("MCP · AI 在线"));
+        // 在线态：有最近调用就展示「tool（Ns 前）」，5 分钟后信息太陈旧不再带
+        QString text = tr("MCP · AI 在线");
+        QString tip = tr("AI 正在通过 MCP 访问本窗口（30 秒无活动自动转回就绪）");
+        if (!m_lastCallMethod.isEmpty()) {
+            const qint64 age = QDateTime::currentMSecsSinceEpoch() - m_lastCallMs;
+            if (age < 5 * 60 * 1000) {
+                text = tr("MCP · %1（%2 前）")
+                           .arg(shortToolName(m_lastCallMethod), humanAge(age));
+                tip = tr("AI 最近一次 MCP 调用：%1（耗时计入挂起等待），"
+                         "30 秒无活动自动转回就绪").arg(m_lastCallMethod);
+            }
+        }
+        m_mcpStatusLabel->setText(text);
         m_mcpStatusLabel->setStyleSheet(QStringLiteral("color: #4CAF50; font-weight: 600;"));
-        m_mcpStatusLabel->setToolTip(
-            tr("AI 正在通过 MCP 访问本窗口（30 秒无活动自动转回就绪）"));
+        m_mcpStatusLabel->setToolTip(tip);
     } else if (m_agent && m_agent->isServing()) {
         m_mcpStatusLabel->setText(tr("MCP 就绪"));
         m_mcpStatusLabel->setStyleSheet(QString());
@@ -150,6 +178,24 @@ void McpMainHook::refreshIcon()
     m_mcpBtn->setIcon(QIcon(pm));
     m_mcpBtn->setToolTip(m_mcpActive ? tr("MCP 在线（AI 正在访问本窗口），点击查看提示词")
                                      : tr("显示 MCP 提示词"));
+}
+
+// xterm.screen.read → screen.read：状态栏宽度有限，去掉命名空间前缀
+QString McpMainHook::shortToolName(const QString &method)
+{
+    return method.startsWith(QLatin1String("xterm.")) ? method.mid(6) : method;
+}
+
+// 人读时长：60s 内按秒、1h 内按分、更久按时（与「最近调用」的陈旧度匹配）
+QString McpMainHook::humanAge(qint64 ageMs)
+{
+    const qint64 s = ageMs / 1000;
+    if (s < 60)
+        return QObject::tr("%1 秒").arg(s);
+    const qint64 m = s / 60;
+    if (m < 60)
+        return QObject::tr("%1 分").arg(m);
+    return QObject::tr("%1 时").arg(m / 60);
 }
 
 void McpMainHook::showPromptDialog()
