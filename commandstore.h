@@ -108,6 +108,11 @@ public:
     int maxScrollback() const { return m_maxScrollback; }
     void setMaxScrollback(int lines) { m_maxScrollback = qBound(100, lines, 1000000); }
 
+    // MCP 写类 FS 工具（xterm.fs.write / upload）总开关（M2.b 安全边界：
+    // 默认拒绝，需显式开启；agent.json 里同步披露 allow_write）。读类不受控
+    bool mcpAllowWrite() const { return m_mcpAllowWrite; }
+    void setMcpAllowWrite(bool allow) { m_mcpAllowWrite = allow; }
+
     // 终端关键词高亮规则（全局，串口 / SSH 两页共用）
     QList<KeywordRule> keywords() const { return m_keywords; }
     void setKeywords(const QList<KeywordRule> &rules) { m_keywords = rules; }
@@ -137,6 +142,7 @@ private:
     QString m_osc52Policy = QStringLiteral("ask");
     bool m_selectToCopy = false;
     int m_maxScrollback = 10000;
+    bool m_mcpAllowWrite = false;
     QList<KeywordRule> m_keywords;
 };
 

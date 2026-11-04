@@ -3,6 +3,7 @@
 
 #include <QMainWindow>
 
+#include "fsbridge.h"       // FsBridge 值成员（M2.b：xterm.fs.* 工具后端）
 #include "sessioncontroller.h" // Mode（别名保留）与会话协作类
 
 class CommandStore;
@@ -52,5 +53,6 @@ private:
     McpMainHook *m_mcp = nullptr;           // MCP 挂钩/角标/状态提示（M1.c）
     SessionController *m_session = nullptr; // 会话生命周期协作类（M1.d）
     UiBuilder *m_uiBuilder = nullptr;       // UI 编排与状态刷新协作类（M1.d）
+    FsBridge m_fs;                          // xterm.fs.* 工具后端（M2.b，非 QObject）
 };
 #endif // MAINWINDOW_H

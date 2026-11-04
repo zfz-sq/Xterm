@@ -227,6 +227,28 @@ TOOLS = [
 ]
 
 
+def to_mcp_tool(entry):
+    """管道 tools.list 条目（name/description/params）→ MCP 标准工具描述。"""
+    return {
+        "name": entry.get("name", ""),
+        "description": entry.get("description", ""),
+        "inputSchema": {"type": "object", "properties": entry.get("params") or {}},
+    }
+
+
+def dynamic_tools():
+    """优先转发 Xterm 管道级 tools.list（含 xterm.fs.* 等扩展工具，随版本
+    动态变化）；管道不可用时回退静态 TOOLS（仅内置五件）。"""
+    try:
+        result = call_xterm("tools.list", {}, 3000)
+        tools = result.get("tools")
+        if isinstance(tools, list) and tools:
+            return [to_mcp_tool(t) for t in tools if isinstance(t, dict)]
+    except RuntimeError:
+        pass
+    return None
+
+
 def dispatch_tool(name, arguments):
     arguments = arguments or {}
     if name == "xterm.session.status":
@@ -250,6 +272,10 @@ def dispatch_tool(name, arguments):
             {"contains": arguments.get("contains", ""), "timeout_ms": timeout},
             timeout,
         )
+    # 扩展工具（xterm.fs.* 等）：参数名与管道一致，直接透传
+    if name.startswith("xterm.fs."):
+        timeout = int(arguments.get("timeout_ms") or 15000)
+        return call_xterm(name, arguments, timeout)
     raise RuntimeError("未知工具: " + name)
 
 
@@ -345,7 +371,9 @@ def main():
             io.write({"jsonrpc": "2.0", "id": req_id, "result": {}})
             continue
         if method == "tools/list":
-            io.write({"jsonrpc": "2.0", "id": req_id, "result": {"tools": TOOLS}})
+            tools = dynamic_tools()
+            io.write({"jsonrpc": "2.0", "id": req_id,
+                      "result": {"tools": tools if tools is not None else TOOLS}})
             continue
         if method == "tools/call":
             params = msg.get("params") or {}

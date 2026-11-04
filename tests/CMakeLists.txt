@@ -109,6 +109,35 @@ set_target_properties(test_agentbridge PROPERTIES
 
 add_test(NAME test_agentbridge COMMAND test_agentbridge)
 
+# FsBridge + xterm.fs.* 工具（M2.b）：内存 fake 后端，不碰 SSH 栈与网络；
+# hooksForSftp 的异步同步桥接由 test_sftpclient 覆盖
+add_executable(test_agentbridge_fs
+test_agentbridge_fs.cpp
+    "${CMAKE_SOURCE_DIR}/fsbridge.cpp"
+    "${CMAKE_SOURCE_DIR}/fsbridge.h"
+    "${CMAKE_SOURCE_DIR}/agentbridge.cpp"
+    "${CMAKE_SOURCE_DIR}/agentbridge.h"
+    "${CMAKE_SOURCE_DIR}/commandstore.cpp"
+)
+
+target_include_directories(test_agentbridge_fs
+    PRIVATE
+        "${CMAKE_SOURCE_DIR}"
+)
+
+target_link_libraries(test_agentbridge_fs
+    PRIVATE
+        Qt6::Test
+        Qt6::Network
+        Qt6::Gui
+)
+
+set_target_properties(test_agentbridge_fs PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)
+
+add_test(NAME test_agentbridge_fs COMMAND test_agentbridge_fs)
+
 # 主题协作类（M1.a）：不碰主窗口，只验状态翻转/信号/QSS；qrc 链入供 :/style-*.qss
 add_executable(test_thememanager
     test_thememanager.cpp

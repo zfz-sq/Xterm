@@ -79,7 +79,9 @@ public:
     ~AgentBridge() override;
 
     // 监听成功后写 agent.json。已经有实例占着管道时什么都不改。
-    void start(Hooks hooks, const QString &agentFile = QString());
+    // allowWrite：写类工具（xterm.fs.write/upload）总开关，写入 agent.json
+    // 披露给客户端；默认 false（M2.b 安全边界：读类默认可用，写类需显式开）
+    void start(Hooks hooks, const QString &agentFile = QString(), bool allowWrite = false);
     QString pipeName() const { return m_pipeName; }
     // 本实例是否在服务管道（false = 被另一个 Xterm 实例占用）
     bool isServing() const { return m_server != nullptr; }
@@ -155,6 +157,7 @@ private:
     QString m_pipeName;
     QString m_token;
     QString m_agentFile;
+    bool m_allowWrite = false;
     QHash<QLocalSocket *, QByteArray> m_buf;
     QList<Waiter> m_waiters;
 };

@@ -48,10 +48,10 @@ McpMainHook::McpMainHook(QStatusBar *statusBar, QObject *parent)
     m_agentLockLabel->hide();
 }
 
-void McpMainHook::start(const AgentBridge::Hooks &hooks)
+void McpMainHook::start(const AgentBridge::Hooks &hooks, bool allowWrite)
 {
     m_agent = new AgentBridge(this);
-    m_agent->start(hooks);
+    m_agent->start(hooks, QString(), allowWrite);
 
     // MCP 在线角标: 有合法请求时点亮，30 秒无活动自动熄灭
     // （管道连接按请求建立，没有“断开”事件可依赖）

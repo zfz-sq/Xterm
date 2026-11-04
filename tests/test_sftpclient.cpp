@@ -1,4 +1,5 @@
 #include "fakes/fakelibsshapi.h"
+#include "fsbridge.h"
 #include "sftpclient.h"
 #include "ssh/knownhostsstore.h"
 #include "sshsession.h"
@@ -58,6 +59,7 @@ private slots:
     void cancelTransferCancelsActiveDownload();
     void destructionCancelsOwnRequestsAndKeepsSession();
     void ignoresResultsFromOtherAdapters();
+    void synchronousHooksBridgeSignals();
 
 private:
     void connectSession();
@@ -283,6 +285,49 @@ void TestSftpClient::ignoresResultsFromOtherAdapters()
     QCOMPARE(otherListed.count(), 0);
     QCOMPARE(otherFailed.count(), 0);
     QCOMPARE(otherOps.count(), 0);
+}
+
+// FsBridge::hooksForSftp（M2.b）：异步信号桥接成同步 FsHooks——
+// 调用返回即有结果（QEventLoop 在实现内部转），错误经 *err 冒泡
+void TestSftpClient::synchronousHooksBridgeSignals()
+{
+    connectSession();
+    m_api->directoryEntries[QStringLiteral("/home")] = {
+        {QStringLiteral("a"), 0, 12, 0755, true, false}
+    };
+    m_api->realPaths[QStringLiteral(".")] = QStringLiteral("/home/tester");
+    m_api->remoteContents[QStringLiteral("/home/a/note.txt")] = QByteArrayLiteral("hi");
+
+    const FsBridge::FsHooks hooks = FsBridge::hooksForSftp(m_client);
+
+    QString err;
+    QCOMPARE(hooks.realPath(QStringLiteral("."), &err), QStringLiteral("/home/tester"));
+    QVERIFY(err.isEmpty());
+
+    const QVector<SftpEntry> entries = hooks.list(QStringLiteral("/home"), &err);
+    QVERIFY(err.isEmpty());
+    QCOMPARE(entries.size(), 1);
+    QCOMPARE(entries.at(0).name, QStringLiteral("a"));
+
+    const QString down = m_dir->filePath(QStringLiteral("note.txt"));
+    QVERIFY(hooks.download(QStringLiteral("/home/a/note.txt"), down, &err));
+    QVERIFY(err.isEmpty());
+    QFile f(down);
+    QVERIFY(f.open(QIODevice::ReadOnly));
+    QCOMPARE(f.readAll(), QByteArrayLiteral("hi"));
+
+    const QString up = writeTempFile(*m_dir, QStringLiteral("push.txt"),
+                                     QByteArrayLiteral("yo"));
+    QVERIFY(hooks.upload(up, QStringLiteral("/home/push.txt"), &err));
+    QVERIFY(err.isEmpty());
+    QCOMPARE(m_api->remoteContents.value(QStringLiteral("/home/push.txt")),
+             QByteArrayLiteral("yo"));
+
+    err.clear();
+    m_api->opendirResults << nullptr; // 下一次 opendir 失败 → 无法打开目录
+    const QVector<SftpEntry> none = hooks.list(QStringLiteral("/home"), &err);
+    QVERIFY(none.isEmpty());
+    QVERIFY(!err.isEmpty()); // 后端错误同步冒泡，不是静默空结果
 }
 
 QTEST_MAIN(TestSftpClient)

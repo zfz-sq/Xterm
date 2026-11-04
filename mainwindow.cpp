@@ -11,8 +11,10 @@
 #include "hotkeymanager.h"
 #include "mcpmainhook.h"
 #include "screenview.h"
+#include "sftpclient.h"
 #include "sshsession.h"
 #include "thememanager.h"
+#include "transport.h"
 #include "uibuilder.h"
 #include "ui_mainwindow.h"
 
@@ -98,7 +100,19 @@ MainWindow::MainWindow(QWidget *parent)
         if (view)
             view->rememberSentLine(line);
     };
-    m_mcp->start(hooks);
+    // ---- M2.b：xterm.fs.* 工具后端。独立 SftpClient 挂终端的 SshSession
+    // （共享 SFTP 通道，与文件管理器互不干扰）；沙箱根随 SSH 连接状态解析/清空 ----
+    auto *agentFs = new SftpClient(m_session->ssh(), this);
+    m_fs.setBackend(FsBridge::hooksForSftp(agentFs));
+    m_fs.setAllowWrite(m_store->mcpAllowWrite());
+    m_fs.registerTools(&hooks);
+    connect(m_session, &SessionController::connectionStateChanged, this, [this] {
+        if (m_session->ssh()->state() == Transport::Connected)
+            m_fs.refreshRoot(); // 解析失败（通道未就绪）会清空根，工具不可用
+        else
+            m_fs.clearRoot();
+    });
+    m_mcp->start(hooks, m_store->mcpAllowWrite());
 }
 
 MainWindow::~MainWindow()

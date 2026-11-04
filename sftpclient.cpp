@@ -1,6 +1,13 @@
 #include "sftpclient.h"
 
+#include "fsbridge.h"
+
 #include "sshsession.h"
+
+#include <QEventLoop>
+#include <QTimer>
+
+#include <memory>
 
 SftpClient::SftpClient(SshSession *session, QObject *parent)
     : QObject(parent), m_session(session)
@@ -259,4 +266,106 @@ void SftpClient::onSessionOpFinished(SshRequestId requestId, const QString &op,
     if (!trackedTake(requestId, nullptr))
         return;
     emit opFinished(op, arg, ok, error);
+}
+
+// —— FsBridge 真实后端（M2.b）：把本类的异步信号桥接成同步 FsHooks ——
+// AgentBridge 在 GUI 线程串行处理请求，同一时刻至多一个 FS 操作挂起，
+// 嵌套事件循环等单个操作完成即可；超时兜底防远端卡死拖住界面。
+FsBridge::FsHooks FsBridge::hooksForSftp(SftpClient *client)
+{
+    constexpr int kTimeoutMs = 15000;
+    FsHooks h;
+
+    h.realPath = [client](const QString &path, QString *err) {
+        QString result;
+        QEventLoop loop;
+        bool ok = false;
+        const auto c = QObject::connect(
+            client, &SftpClient::opFinished, client,
+            [&](const QString &op, const QString &arg, bool succeeded, const QString &error) {
+                if (op != QLatin1String("realpath"))
+                    return; // 本实例只有 FsBridge 在用，不会有别的 op 插入
+                ok = succeeded && !arg.isEmpty();
+                if (ok)
+                    result = arg;
+                else
+                    *err = error.isEmpty() ? QStringLiteral("realpath 失败") : error;
+                loop.quit();
+            });
+        QTimer::singleShot(kTimeoutMs, &loop, &QEventLoop::quit);
+        client->realPath(path);
+        loop.exec();
+        QObject::disconnect(c);
+        if (!ok && err->isEmpty())
+            *err = QStringLiteral("realpath 超时");
+        return result;
+    };
+
+    h.list = [client](const QString &path, QString *err) {
+        QVector<SftpEntry> entries;
+        QEventLoop loop;
+        bool done = false;
+        const auto c1 = QObject::connect(
+            client, &SftpClient::listed, client,
+            [&](const QString &p, const QVector<SftpEntry> &es) {
+                if (p != path)
+                    return;
+                entries = es;
+                done = true;
+                loop.quit();
+            });
+        const auto c2 = QObject::connect(
+            client, &SftpClient::listedFailed, client,
+            [&](const QString &p, const QString &error) {
+                if (p != path)
+                    return;
+                *err = error;
+                done = true;
+                loop.quit();
+            });
+        QTimer::singleShot(kTimeoutMs, &loop, &QEventLoop::quit);
+        client->listDir(path);
+        loop.exec();
+        QObject::disconnect(c1);
+        QObject::disconnect(c2);
+        if (!done && err->isEmpty())
+            *err = QStringLiteral("列目录超时");
+        return entries;
+    };
+
+    // 传输 id 与界面无关（独立 SftpClient 实例），共享计数器够用
+    const auto nextId = std::make_shared<int>(1);
+    auto bridgeTransfer = [client, nextId](bool upload) {
+        return [client, nextId, upload](const QString &a, const QString &b, QString *err) {
+            QEventLoop loop;
+            bool ok = false;
+            bool done = false;
+            const int id = (*nextId)++;
+            const auto c = QObject::connect(
+                client, &SftpClient::transferFinished, client,
+                [&](int tid, bool succeeded, const QString &error) {
+                    if (tid != id)
+                        return;
+                    ok = succeeded;
+                    done = true;
+                    if (!succeeded)
+                        *err = error;
+                    loop.quit();
+                });
+            QTimer::singleShot(kTimeoutMs, &loop, &QEventLoop::quit);
+            if (upload)
+                client->uploadFile(id, a, b); // a=local b=remote
+            else
+                client->downloadFile(id, a, b); // a=remote b=local
+            loop.exec();
+            QObject::disconnect(c);
+            if (!done)
+                *err = QString::fromUtf8(upload ? "上传超时" : "下载超时");
+            return ok;
+        };
+    };
+    h.download = bridgeTransfer(false);
+    h.upload = bridgeTransfer(true);
+
+    return h;
 }

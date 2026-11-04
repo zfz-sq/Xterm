@@ -32,8 +32,9 @@ public:
     // statusBar 仅用于打字机/打断的临时提示消息（showMessage）
     explicit McpMainHook(QStatusBar *statusBar, QObject *parent = nullptr);
 
-    // 用主窗口提供的数据适配器启动桥接，并接好在线/打字信号与角标定时器
-    void start(const AgentBridge::Hooks &hooks);
+    // 用主窗口提供的数据适配器启动桥接，并接好在线/打字信号与角标定时器。
+    // allowWrite 透传给 AgentBridge（写类 FS 工具开关，写入 agent.json 披露）
+    void start(const AgentBridge::Hooks &hooks, bool allowWrite = false);
 
     // 供主窗口挂载的部件（内容/可见性由本类管理，位置由主窗口决定）
     QToolButton *button() const { return m_mcpBtn; }

@@ -69,6 +69,9 @@ QString AgentBridge::instructions()
         "\n"
         "不要用这些工具操作 top、vim 等全屏程序。\n"
         "\n"
+        "若 tools.list 里有 xterm.fs.*，可读写远端文件：仅限会话根目录及子路径"
+        "（沙箱）；写类默认关闭，被拒时说明用户未开启 allow_write。\n"
+        "\n"
         "这些调用会直接作用到连接的设备上，与在终端里敲命令相同。");
 }
 
@@ -93,9 +96,10 @@ AgentBridge::~AgentBridge()
     removeAgentFile();
 }
 
-void AgentBridge::start(Hooks hooks, const QString &agentFile)
+void AgentBridge::start(Hooks hooks, const QString &agentFile, bool allowWrite)
 {
     m_hooks = std::move(hooks);
+    m_allowWrite = allowWrite;
     if (m_server)
         return;
 
@@ -173,6 +177,8 @@ void AgentBridge::writeAgentFile()
     // pid 供客户端判断实例存活性（异常退出残留的文件可识别）
     obj.insert(QStringLiteral("pid"), static_cast<double>(QCoreApplication::applicationPid()));
     obj.insert(QStringLiteral("instructions"), instructions());
+    // 写类 FS 工具开关（M2.b）：客户端可读；真实判定在 FsBridge，同源同步
+    obj.insert(QStringLiteral("allow_write"), m_allowWrite);
     QSaveFile file(m_agentFile);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
         return;

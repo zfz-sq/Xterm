@@ -222,7 +222,18 @@ FS 安全边界：
       同名覆盖内置。probe 探测新旧名两试防升级窗口双开误判。坑：
       toolCatalog 返回 QJsonArray（h/cpp 两处都要改）；test 用 PowerShell
       Set-Content 会把文件写成 GBK 损坏中文，改用逐段替换）
-- [ ] M2.b FS 工具
+- [x] M2.b FS 工具
+      （FsBridge 新协作类：六件 xterm.fs.stat/list/read/write/download/upload
+      注册进 M2.a 预留的 Hooks.tools；安全边界 = 词法沙箱（归一化后必须
+      在 realPath(".") 会话根及子路径内，防 .. 逃逸）+ allow_write（写类
+      默认拒绝，CommandStore.mcpAllowWrite 持久化，agent.json 同步披露）。
+      后端 FsHooks 纯函数注入：真实实现 hooksForSftp 放 sftpclient.cpp
+      （QEventLoop 同步桥接，15s 超时兜底，保持 fsbridge 零 SSH 依赖、
+      测试轻链）；read/write 走临时文件复用传输链路。MainWindow 独立
+      SftpClient 挂同一 SshSession，connectionStateChanged 刷沙箱根。
+      server.py tools/list 改为动态转发管道级清单（扩展工具免改声明）。
+      坑：fake libssh 的 opendir 对任意路径都成功，失败路径要用
+      opendirResults 注入；测试忘了 refreshRoot 会全部撞「未连接」）
 - [ ] M2.c Host 工具
 - [ ] M2.d Screen 扩展工具
 - [ ] M2.e 审计 + 徽标 + 限流
