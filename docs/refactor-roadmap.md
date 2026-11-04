@@ -318,3 +318,11 @@ FS 安全边界：
 - [~] M2.g HTTP/SSE 端点（可选）——跳过（用户指示 2026-11-04：当前无跨机/
       WSL 场景需求，命名管道够用；日后需要时按 M2.4 原案动工：本地
       HTTP + SSE 只绑 127.0.0.1，同一套令牌校验）
+- [x] M2.2 B 组正名收尾（2026-11-04，随路线图收官批次）：
+      sendTypewriter（sendLine 的正式命名入口，注册表直接复用同一处理器，
+      meta 改名+描述注明行为一致）+ interrupt（API 级 Ctrl+C =
+      interruptTyping() 停打字机后 \x03 直达链路，区别于用户侧只停不发；
+      返回 sent=^C + typing_interrupted）；server.py 透传加 xterm.transport.
+      前缀（sendLine/sendControl 专门分支在前不冲突）；instructions 补
+      两句；test_agentbridge 补 2 用例（别名行为一致 + 打字机双应答顺序
+      与 \x03 落链路）+ tools/list 断言 + test_mcp.py 下限集合，19/19 绿

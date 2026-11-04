@@ -25,6 +25,8 @@ private slots:
     void legacyShortNamesAreRejected();
     void typingCompletes();
     void typingInterrupted();
+    void sendTypewriterMatchesSendLine();
+    void interruptToolStopsTypingAndSendsCtrlC();
     void typingWaits();
     void waitTimesOutWhenNeedleNotNew();
     void waitForPatternMatchesNewText();
@@ -126,7 +128,9 @@ void AgentBridgeTest::toolsListDiscoversNamespacedTools()
     for (const char *name : { "xterm.session.status", "xterm.screen.read",
                               "xterm.screen.wait", "xterm.screen.waitForPattern",
                               "xterm.transport.sendLine",
-                              "xterm.transport.sendControl" })
+                              "xterm.transport.sendControl",
+                              "xterm.transport.sendTypewriter",
+                              "xterm.transport.interrupt" })
         QVERIFY2(names.contains(QString::fromLatin1(name)), name);
     QVERIFY(sendLineHasParams);
     sock.disconnectFromServer();
@@ -198,6 +202,74 @@ void AgentBridgeTest::typingInterrupted()
     QVERIFY(m_sink.size() < longCmd.size() + 1); // 剩余字符没有继续发出
     QVERIFY(m_sentLines.isEmpty());              // 被打断不算完整一行
     QVERIFY(!m_bridge->interruptTyping());       // 已无打字可打断
+    sock.disconnectFromServer();
+}
+
+// B 组正名：sendTypewriter 是 sendLine 的正式命名入口，行为完全一致
+void AgentBridgeTest::sendTypewriterMatchesSendLine()
+{
+    QLocalSocket sock;
+    sock.connectToServer(m_pipe);
+    QVERIFY(sock.waitForConnected(2000));
+
+    m_sink.clear();
+    m_sentLines.clear();
+    QJsonObject params;
+    params.insert(QStringLiteral("text"), QStringLiteral("dmesg"));
+    params.insert(QStringLiteral("interval_ms"), 5);
+    sendRequest(&sock, 21, QStringLiteral("xterm.transport.sendTypewriter"), params);
+
+    const QJsonObject resp = waitReply(&sock);
+    QCOMPARE(resp.value(QStringLiteral("id")).toInt(), 21);
+    QVERIFY(resp.value(QStringLiteral("ok")).toBool());
+    QCOMPARE(m_sink, QByteArray("dmesg\n")); // 同 sendLine：逐字汇聚 + 链路行尾
+    QCOMPARE(m_sentLines, QStringList{ QStringLiteral("dmesg") });
+    sock.disconnectFromServer();
+}
+
+// B 组正名：interrupt 工具 = 停打字机（那次调用收到 interrupted）+ \x03 直达链路
+void AgentBridgeTest::interruptToolStopsTypingAndSendsCtrlC()
+{
+    QLocalSocket sock;
+    sock.connectToServer(m_pipe);
+    QVERIFY(sock.waitForConnected(2000));
+
+    QString longCmd;
+    for (int i = 0; i < 80; ++i)
+        longCmd += QChar(char('a' + (i % 26)));
+    m_sink.clear();
+    m_sentLines.clear();
+    QJsonObject params;
+    params.insert(QStringLiteral("text"), longCmd);
+    params.insert(QStringLiteral("interval_ms"), 30);
+    sendRequest(&sock, 22, QStringLiteral("xterm.transport.sendLine"), params);
+
+    QTest::qWait(70); // 只打出去一小截
+    QVERIFY(m_bridge->isTyping());
+    sendRequest(&sock, 23, QStringLiteral("xterm.transport.interrupt"), {});
+
+    // 先到打字机那次的 interrupted 应答，后到 interrupt 本次的成功应答
+    QJsonObject typingResp;
+    QJsonObject interruptResp;
+    for (int i = 0; i < 2; ++i) {
+        const QJsonObject resp = waitReply(&sock);
+        const int id = resp.value(QStringLiteral("id")).toInt();
+        if (id == 22)
+            typingResp = resp;
+        else if (id == 23)
+            interruptResp = resp;
+    }
+    QVERIFY(!typingResp.isEmpty());
+    QVERIFY(typingResp.value(QStringLiteral("error")).toString()
+                .contains(QStringLiteral("interrupted")));
+    QVERIFY(interruptResp.value(QStringLiteral("ok")).toBool());
+    const QJsonObject data = interruptResp.value(QStringLiteral("result")).toObject();
+    QCOMPARE(data.value(QStringLiteral("sent")).toString(), QStringLiteral("^C"));
+    QCOMPARE(data.value(QStringLiteral("typing_interrupted")).toBool(), true);
+
+    QVERIFY(!m_bridge->isTyping());
+    QVERIFY(m_sentLines.isEmpty());           // 被打断不算完整一行
+    QVERIFY(m_sink.endsWith(QByteArray(1, char(0x03)))); // \x03 已发链路
     sock.disconnectFromServer();
 }
 

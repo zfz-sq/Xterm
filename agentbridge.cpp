@@ -70,11 +70,14 @@ QString AgentBridge::instructions()
         "wait 自带回显免疫：等待词出现在命令文本里时，会等它再次出现"
         "（真实输出）才命中，无需用引号拆分等技巧绕开回显。\n"
         "\n"
-        "xterm.transport.sendLine 是打字机式逐字发送，用户在界面上能看到输入过程。"
+        "xterm.transport.sendLine 是打字机式逐字发送，用户在界面上能看到输入过程"
+        "（sendTypewriter 是它的正式命名入口，行为一致）。"
         "打字期间用户终端的普通输入被锁定，用户按 Ctrl+C 会主动打断 AI 输入："
         "剩余字符不会发出，你会收到 interrupted by user 错误——"
         "这不是设备或网络故障，也不代表命令失败，是用户要亲自操作设备，"
-        "应停止当前动作，等待用户指示后再继续。\n"
+        "应停止当前动作，等待用户指示后再继续。"
+        "AI 自己要中断远端长输出命令时用 xterm.transport.interrupt"
+        "（停打字机 + 发 Ctrl+C）。\n"
         "\n"
         "不要用这些工具操作 top、vim 等全屏程序。\n"
         "\n"
@@ -440,6 +443,28 @@ void AgentBridge::registerBuiltinTools()
         meta("xterm.transport.sendControl", QStringLiteral("发送单个控制字符/键"), params);
     }
 
+    // B 组正名（M2.2）：API 级 Ctrl+C——若打字机在打先停（该次调用会收到
+    // interrupted 错误），再把 \x03 直达当前链路。区别于用户侧只停打字机
+    // 不发字节的 interruptTyping()：那是用户要亲自接管，这里是 AI 自己要
+    // 中断远端命令
+    m_tools.insert(QStringLiteral("xterm.transport.interrupt"),
+                   [this](const ToolCall &) -> ToolResult {
+                       const bool wasTyping = interruptTyping();
+                       const QString err = m_hooks.sendBytes
+                                               ? m_hooks.sendBytes(QByteArray(1, char(0x03)))
+                                               : QStringLiteral("未连接");
+                       if (!err.isEmpty())
+                           return ToolResult{false, false, {}, err};
+                       QJsonObject data;
+                       data.insert(QStringLiteral("sent"), QStringLiteral("^C"));
+                       data.insert(QStringLiteral("typing_interrupted"), wasTyping);
+                       return ToolResult{true, false, data, QString()};
+                   });
+    meta("xterm.transport.interrupt",
+         QStringLiteral("中断当前命令：停掉 AI 打字机（若在打）并向链路发 Ctrl+C，"
+                        "用于打断 top/cat 大文件等长输出"),
+         QJsonObject());
+
     m_tools.insert(QStringLiteral("xterm.transport.sendLine"),
                    [this](const ToolCall &call) -> ToolResult {
                        const QString text = call.params.value(QStringLiteral("text")).toString();
@@ -484,6 +509,21 @@ void AgentBridge::registerBuiltinTools()
         params.insert(QStringLiteral("interval_ms"), interval);
         meta("xterm.transport.sendLine",
              QStringLiteral("打字机式逐字发送一行（用户可见、可 Ctrl+C 打断），可附带 wait"), params);
+    }
+
+    // B 组正名（M2.2）：sendTypewriter 是 sendLine 的正式命名入口（sendLine
+    // 本身就是打字机式，两者行为完全一致），同名同参直接复用同一处理器
+    m_tools.insert(QStringLiteral("xterm.transport.sendTypewriter"),
+                   m_tools.value(QStringLiteral("xterm.transport.sendLine")));
+    {
+        QJsonObject twMeta = m_toolMeta.value(
+            QStringLiteral("xterm.transport.sendLine"));
+        twMeta.insert(QStringLiteral("name"),
+                      QStringLiteral("xterm.transport.sendTypewriter"));
+        twMeta.insert(QStringLiteral("description"),
+                      QStringLiteral("sendLine 的正式命名入口：打字机式逐字发送一行，"
+                                     "行为与 sendLine 完全一致，可附带 wait"));
+        m_toolMeta.insert(QStringLiteral("xterm.transport.sendTypewriter"), twMeta);
     }
 
     m_tools.insert(QStringLiteral("xterm.screen.wait"),

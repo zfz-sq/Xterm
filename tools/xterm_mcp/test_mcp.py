@@ -206,10 +206,17 @@ def test_mcp():
                                "method": "tools/list"})
         tools = [t.get("name") for t in
                  ((resp.get("result") or {}).get("tools") or [])]
-        report("tools/list", set(tools) >= {"xterm.session.status",
-                                            "xterm.screen.read",
-                                            "xterm.transport.sendLine",
-                                            "xterm.screen.wait"}, str(tools))
+        report("tools/list", set(tools) >= {
+            "xterm.session.status",
+            "xterm.screen.read",
+            "xterm.transport.sendLine",
+            "xterm.screen.wait",
+            # M2.f 起六件会话工具 + B 组正名两件也在清单里
+            "xterm.session.list",
+            "xterm.session.switch",
+            "xterm.transport.sendTypewriter",
+            "xterm.transport.interrupt",
+        }, str(tools))
 
         resp = client.request({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
                                "params": {"name": "xterm.session.status",

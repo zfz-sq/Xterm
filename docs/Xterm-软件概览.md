@@ -22,9 +22,11 @@
 ### 终端核心（串口 / SSH 共用一套）
 
 - 自绘格子模型终端（TermScreen + ScreenView）：VT 转义解析（光标定位、滚动区、备用屏、16/256/真彩色 SGR、设备状态应答），`vim` / `htop` / `top` 等全屏程序可正常渲染与退出还原；光标闪烁半周期跟随系统设置，输出后立即点亮
-- 滚动历史：滚轮翻看；备用屏程序里滚轮自动变成方向键
-- 选中即复制，右键粘贴；Ctrl+滚轮改字号
-- Ctrl+F / Ctrl+Shift+F 在滚动历史里查找并高亮命中（全屏程序里 Ctrl+F 直通给程序）
+- 滚动历史：滚轮翻看（上限可配，默认 1 万行）；备用屏程序里滚轮自动变成方向键
+- 选区即复制默认关（右键菜单可开），Ctrl+C 显式复制，右键粘贴；双击选词、三击选行；Ctrl+滚轮改字号
+- Ctrl+F / Ctrl+Shift+F 在滚动历史里查找并高亮命中，支持「.*」正则切换（大小写不敏感）；Enter / F3 环形跳转（全屏程序里 Ctrl+F 直通给程序）
+- 超链接与剪贴板回传：OSC 8 链接下划线渲染，Ctrl+点击打开（http(s) 交系统，file:// 本地优先、SSH 在线时远端路径自动经 SFTP 取回后用关联程序打开）；OSC 52 剪贴板写入弹窗授权，可勾选「以后自动允许」
+- 鼠标上报：SGR 模式（vim / htop 里滚轮翻页、点击定位坐标上报），Shift 强制本地选区/滚历史不受程序接管
 - Ctrl+S（XOFF）可能挂起设备输出（画面假死、按键仍在发送）：状态栏黄色常驻提示，Ctrl+Q（XON）或断开连接时熄灭
 - 串口场景：本地行编辑与全屏程序自动共存——远端一画屏（备用屏或 BusyBox top 这类仅光标定位的程序），行编辑自动让路变直通；输出回落到提示符样纯文本时自动恢复
 - 客户端 Tab 补全：内置常用 Linux/shell 命令 + 命令栏里的命令自动成为候选（嵌入式 shell 多数不吃 Tab，所以补全在本地做）
@@ -49,9 +51,14 @@
 
 ### AI / MCP 集成
 
-- AgentBridge：本机命名管道 + 本次启动令牌，把已连上的串口/SSH 暴露给 MCP 客户端（Claude 等 AI 工具可直接读屏幕、发命令、发裸字节、等待某段文本出现）
-- 管道名与令牌写在配置目录 agent.json；带令牌的请求到达时标题栏点亮「AI 在线」角标
-- 工具菜单里有现成的 MCP 提示词可以复制
+- AgentBridge：本机命名管道 + 本次启动令牌，把已连上的串口/SSH 暴露给 MCP 客户端（Claude 等 AI 工具），五组 `xterm.*` 工具：
+  - **Screen**：`read` 纯文本 / `snapshot` 结构化快照（每行文本 + 颜色段 + 超链接段，绝对行号）/ `find` 滚动历史查找（子串/正则）/ `wait`·`waitForPattern` 等新输出（回显免疫，正则可设最少命中次数）
+  - **Transport**：`sendLine`（打字机式逐字发送，`sendTypewriter` 为正式命名入口，可附带 wait）/ `sendControl`（裸控制字符）/ `interrupt`（停打字机 + 发 Ctrl+C 中断远端命令）
+  - **FS**（仅 SSH）：`fsStat` / `fsList` / `fsRead` / `fsDownload`，写类（`fsWrite` / `fsUpload`）需 agent.json 显式 `allow_write: true`，路径限当前会话根目录沙箱——形成「读远端日志 → 分析 → 改文件 → 推回」闭环
+  - **Host**（仅 SSH）：`cpu` / `mem`（状态栏同源采样）/ `disk` / `uptime` / `top`
+  - **Session**：`list` / `current` / `switch`（切串口/SSH 不断另一条）/ `openSsh` / `openSerial`（参数写回参数栏再连接，凭据只认界面配置）/ `close`
+- 可观测与防护：所有调用落 `logs/agent-audit.jsonl`（按大小滚动保留）；状态栏角标三态（就绪 / 打字机中 / 「MCP · 工具名（N 秒前）」）；令牌桶限流防 AI 循环刷屏卡界面
+- AI 打字期间用户输入锁定，用户 Ctrl+C 可打断（AI 会收到明确的 interrupted 错误）；管道名与令牌在配置目录 agent.json，工具菜单里有现成的 MCP 提示词可复制
 
 ### 外观与平台
 
@@ -97,7 +104,7 @@ MainWindow（胶水层：构造编排、信号接线、关闭流程）
 
 - 依赖：Qt 6.8（Widgets / SerialPort / Network）+ libssh + OpenSSL（vcpkg 管理）
 - 构建：CMake ≥ 3.19，Windows llvm-mingw 工具链；自动部署 SSH 相关 DLL（步骤与构建选项详见 [README.md](../README.md)，含 `XTERM_BUILD_TOOLS`、`XTERM_VCPKG_TRIPLET`）
-- 测试：14 个单测目标（终端解析、视图渲染、SSH 连接/会话/SFTP 通道/客户端、known_hosts、主机统计解析、AgentBridge、主题、快捷键、MCP 挂钩、会话控制器组装），当前 14/14 通过；另有 sshtest / sftptest 调试工具（默认不构建，`-DXTERM_BUILD_TOOLS=ON` 开启）
+- 测试：19 个单测目标（终端解析、视图渲染、SSH 连接/会话/SFTP 通道/客户端、known_hosts、主机统计解析、AgentBridge 与四组扩展工具桥、审计日志、主题、快捷键、MCP 挂钩、会话控制器组装），当前 19/19 通过；另有 sshtest / sftptest 调试工具（默认不构建，`-DXTERM_BUILD_TOOLS=ON` 开启）
 
 ## 当前状态与已知边界
 
