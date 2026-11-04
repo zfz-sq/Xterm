@@ -198,7 +198,13 @@ FS 安全边界：
       Enter/Shift+Enter/F3 环形循环即 n/N；三击选行/双击选词（词边界含 / . _ - :）
       上测试锁；选区即复制改默认关（CommandStore.selectToCopy + 右键菜单入口，
       Ctrl+C 显式复制不变；老用例两处断言改用 selectedText 观察口）
-- [ ] M3.4 环形缓冲 + 行号语义
+- [x] M3.4 环形缓冲 + 行号语义（2026-11-04，test_termscreen/test_screenview
+      各 +1，14/14 绿；历史上限 kMaxHist 8000 硬编码 → m_maxHist 可配
+      （setMaxHistory，qBound [100,1000000]，默认 10000）+ CommandStore
+      .maxScrollback 持久化、启动两页接线；绝对行号：TermScreen.droppedLines
+      单调累计环形/清屏/RIS 丢弃，recentLineCount/recentTextFrom 改 qint64
+      绝对序号（AgentBridge::Hooks 同步，wait 锚点环形丢行后不漂移——
+      M3 唯一动 M2 语义的点；锚点早于现存最老行时从最老可用行起）
 - [ ] M3.5 渲染帧合并（可选）
 - [ ] M2.a 命名空间 + tools.list
 - [ ] M2.b FS 工具

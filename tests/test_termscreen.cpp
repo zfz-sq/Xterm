@@ -47,6 +47,7 @@ private slots:
     void mouseModesParseAndReset();
     void osc8AnnotatesCells();
     void osc52DecodesBase64();
+    void historyRingBufferCapsAndCounts();
 };
 
 void TermScreenTest::growBackfillsFromHistory()
@@ -288,6 +289,42 @@ void TermScreenTest::osc52DecodesBase64()
     QVERIFY(got.isEmpty());
     screen.feed("\x1b]52;c\x07"); // 没有第二个分号
     QVERIFY(got.isEmpty());
+}
+
+// 环形历史（M3.4）：上限可配（默认 10000），超限丢最老；绝对基数
+// droppedLines 单调累计（含清屏/收紧上限丢弃），总数不回退
+void TermScreenTest::historyRingBufferCapsAndCounts()
+{
+    TermScreen screen;
+    screen.resize(80, 10);
+    QCOMPARE(screen.maxHistory(), 10000); // 新默认（旧硬编码 8000）
+
+    screen.setMaxHistory(100); // 下限 100（qBound 钳位，太小失去回滚意义）
+    // 喂 130 行：屏内第 10 个换行起就往历史滚，共 121 行（末尾多一空行），
+    // 环形只留 100，最老 21 行被丢
+    QByteArray block;
+    for (int i = 0; i < 130; ++i)
+        block += "L" + QByteArray::number(i) + "\r\n";
+    screen.feed(block);
+    QCOMPARE(screen.historySize(), 100);
+    QCOMPARE(screen.droppedLines(), qint64(21));
+    QCOMPARE(lineText(screen, 0), QStringLiteral("L21")); // 最老现存行
+    // 绝对总数 = 丢弃 + 现存（含尾空行）
+    QCOMPARE(screen.droppedLines() + screen.historySize() + screen.rows(), qint64(131));
+
+    // 再喂 5 行：丢 5 留 100，总数单调涨（内存封顶、行号不封顶）
+    QByteArray more;
+    for (int i = 130; i < 135; ++i)
+        more += "L" + QByteArray::number(i) + "\r\n";
+    screen.feed(more);
+    QCOMPARE(screen.historySize(), 100);
+    QCOMPARE(screen.droppedLines(), qint64(26));
+    QCOMPARE(screen.droppedLines() + screen.historySize() + screen.rows(), qint64(136));
+
+    // 清滚动历史（ED 3，私有接口的外部触发链路）：丢弃计入基数，总数不回退
+    screen.feed("\x1b[3J");
+    QCOMPARE(screen.historySize(), 0);
+    QCOMPARE(screen.droppedLines() + screen.rows(), qint64(136));
 }
 
 QTEST_MAIN(TermScreenTest)

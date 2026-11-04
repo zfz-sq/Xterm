@@ -38,7 +38,7 @@ private:
     QStringList m_sentLines;   // lineSent 记录（打字机完整发完的行）
     QStringList m_directLines; // sendLine 记录（clear -a 整行直达）
     QString m_recentText;      // recentText 可变内容
-    int m_lineCount = 0;       // recentLineCount 可变（行锚点）
+    qint64 m_lineCount = 0;   // recentLineCount 可变（绝对行锚点）
     QString m_freshText;       // recentTextFrom 可变（锚点之后的新增）
 };
 
@@ -51,7 +51,7 @@ void AgentBridgeTest::initTestCase()
         [] { return QJsonObject(); },
         [this](int) { return m_recentText; },
         [this] { return m_lineCount; },
-        [this](int, int) { return m_freshText; },
+        [this](qint64, int) { return m_freshText; },
         [this](const QString &text) { m_directLines.append(text); return QString(); },
         [this](const QByteArray &bytes) { m_sink += bytes; return QString(); },
         [] { return '\n'; },

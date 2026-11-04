@@ -114,6 +114,7 @@ private slots:
     void findRegexCyclesAndHighlightsAll();
     void tripleClickSelectsLine();
     void selectToCopyDefaultsOffOptIn();
+    void waitAnchorUsesAbsoluteLines();
 
 private:
     void feed(ScreenView &view, const QByteArray &bytes)
@@ -888,6 +889,35 @@ void ScreenViewTest::selectToCopyDefaultsOffOptIn()
     QApplication::sendEvent(&view, &drag);
     QApplication::sendEvent(&view, &release);
     QCOMPARE(clip->text(), QStringLiteral("hello")); // 开启：松开即复制
+}
+
+// 环形历史 + 绝对行号（M3.4）：环形丢行后 recentLineCount 仍单调递增；
+// wait 锚点（recentTextFrom）只含锚点之后的新增行——相对行号在环形丢行
+// 后会漂移，绝对行号不会
+void ScreenViewTest::waitAnchorUsesAbsoluteLines()
+{
+    ScreenView view;
+    view.resize(100 * 15, 34 * 18);
+    view.setMaxHistory(100); // 小环形（下限 100），强制丢最老行
+
+    QByteArray block;
+    for (int i = 0; i < 200; ++i)
+        block += "line " + QByteArray::number(i) + "\r\n";
+    feed(view, block);
+    // 200 行：屏内第 34 个换行起往历史滚 167 行，环形只留 100（丢 67）；
+    // 绝对总数 = 67 + 100 + 34 = 201（末尾一空行）
+    QCOMPARE(view.recentLineCount(), qint64(201));
+
+    // wait 语义：此刻记锚点，再喂 3 行（含唯一标记）。锚点后的新输出
+    // 从锚点行起：MARKER_1 写在锚点行（abs 200），换行后的 201/202 才是「锚点后」
+    const qint64 anchor = view.recentLineCount();
+    feed(view, QByteArray("MARKER_1\r\nMARKER_2\r\nMARKER_3\r\n"));
+    QCOMPARE(view.recentLineCount(), qint64(204)); // 单调涨，环形丢行不回退
+
+    const QString fresh = view.recentTextFrom(anchor, 400);
+    QVERIFY(fresh.contains(QStringLiteral("MARKER_2")));
+    QVERIFY(fresh.contains(QStringLiteral("MARKER_3")));
+    QVERIFY(!fresh.contains(QStringLiteral("line 199"))); // 锚点前行不进 fresh
 }
 
 int main(int argc, char **argv)

@@ -107,8 +107,8 @@ public:
     // —— MCP 数据适配器（依赖会话/视图状态，见类注释）——
     QJsonObject agentStatus() const;
     QString agentRecentText(int maxLines) const;
-    int agentRecentLineCount() const; // wait 的行锚点（见 AgentBridge::Hooks）
-    QString agentRecentTextFrom(int fromLine, int maxLines) const;
+    qint64 agentRecentLineCount() const; // wait 的绝对行锚点（见 AgentBridge::Hooks）
+    QString agentRecentTextFrom(qint64 fromLine, int maxLines) const;
     QString agentSendLine(const QString &text);
     QString agentSendBytes(const QByteArray &bytes); // send_control 用: 裸字节直达
     char agentLineEnding() const;                    // 打字机行尾（串口 \n / SSH \r）

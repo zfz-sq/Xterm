@@ -68,6 +68,12 @@ public:
     int cols() const { return m_cols; }
     int rows() const { return m_rows; }
     int historySize() const { return int(m_hist.size()); }
+    // 滚动历史行数上限（环形：超限丢最老，长跑内存封顶）。可配，默认 10000
+    void setMaxHistory(int lines);
+    int maxHistory() const { return m_maxHist; }
+    // 环形丢掉的最老行累计（含清屏/复位丢弃）——绝对行号 = dropped +
+    // historySize + rows，单调不回退，wait 锚点靠它不漂移
+    qint64 droppedLines() const { return m_histDropped; }
     bool altScreen() const { return m_alt; }
     bool appCursorKeys() const { return m_appCursor; }
     bool bracketedPaste() const { return m_bracketPaste; }
@@ -166,7 +172,10 @@ private:
     quint32 internUri(const QString &uri);
     QColor resolve(const TermColor &color, bool foreground) const;
 
-    static constexpr int kMaxHist = 8000;
+    static constexpr int kDefaultMaxHist = 10000;
+
+    int m_maxHist = kDefaultMaxHist;  // 环形历史上限（setMaxHistory 可调）
+    qint64 m_histDropped = 0;         // 环形/清屏累计丢弃行数（绝对行号基数）
 
     int m_cols = 80;
     int m_rows = 24;

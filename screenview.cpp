@@ -1562,24 +1562,30 @@ QString ScreenView::recentText(int maxLines) const
     return lines.join(QLatin1Char('\n'));
 }
 
-int ScreenView::recentLineCount() const
+qint64 ScreenView::recentLineCount() const
 {
-    return m_screen.altScreen() ? m_screen.rows()
-                                : m_screen.historySize() + m_screen.rows();
+    if (m_screen.altScreen())
+        return m_screen.rows(); // 备用屏不进滚动历史，维持屏内行数
+    // 绝对行号：环形丢弃 + 现存（历史 + 屏）。环形丢行/清屏只搬基数，
+    // 总数不回退——wait 锚点不漂移的关键
+    return m_screen.droppedLines() + m_screen.historySize() + m_screen.rows();
 }
 
-QString ScreenView::recentTextFrom(int fromLine, int maxLines) const
+QString ScreenView::recentTextFrom(qint64 fromLine, int maxLines) const
 {
     maxLines = qBound(1, maxLines, 400);
-    if (fromLine < 0)
-        return QString();
-    const int total = recentLineCount();
-    const int begin = qMax(fromLine, total - maxLines); // 起点不早于窗口底
+    const bool alt = m_screen.altScreen();
+    const qint64 dropped = alt ? 0 : m_screen.droppedLines();
+    const qint64 total = recentLineCount();
+    // 比现存最老行还老：从最老可用行起（锚点期间环形丢了行也不误判）
+    if (fromLine < dropped)
+        fromLine = dropped;
+    const qint64 begin = qMax<qint64>(fromLine, total - maxLines); // 不早于窗口底
     if (begin >= total)
         return QString();
     QStringList lines;
-    for (int abs = begin; abs < total; ++abs)
-        lines << lineToPlain(m_screen.lineAbsolute(abs));
+    for (qint64 abs = begin; abs < total; ++abs)
+        lines << lineToPlain(m_screen.lineAbsolute(int(abs - dropped))); // 折回缓冲区行号
     while (!lines.isEmpty() && lines.last().isEmpty())
         lines.removeLast();
     return lines.join(QLatin1Char('\n'));

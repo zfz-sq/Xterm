@@ -104,6 +104,10 @@ public:
     bool selectToCopy() const { return m_selectToCopy; }
     void setSelectToCopy(bool enabled) { m_selectToCopy = enabled; }
 
+    // 滚动历史行数上限（环形缓冲，超限丢最老；长跑内存封顶）。默认 10000
+    int maxScrollback() const { return m_maxScrollback; }
+    void setMaxScrollback(int lines) { m_maxScrollback = qBound(100, lines, 1000000); }
+
     // 终端关键词高亮规则（全局，串口 / SSH 两页共用）
     QList<KeywordRule> keywords() const { return m_keywords; }
     void setKeywords(const QList<KeywordRule> &rules) { m_keywords = rules; }
@@ -132,6 +136,7 @@ private:
     bool m_commandBarCollapsed = false;
     QString m_osc52Policy = QStringLiteral("ask");
     bool m_selectToCopy = false;
+    int m_maxScrollback = 10000;
     QList<KeywordRule> m_keywords;
 };
 

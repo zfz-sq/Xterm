@@ -582,13 +582,13 @@ QString SessionController::agentRecentText(int maxLines) const
     return view ? view->recentText(maxLines) : QString();
 }
 
-int SessionController::agentRecentLineCount() const
+qint64 SessionController::agentRecentLineCount() const
 {
     const ScreenView *view = activeView();
     return view ? view->recentLineCount() : 0;
 }
 
-QString SessionController::agentRecentTextFrom(int fromLine, int maxLines) const
+QString SessionController::agentRecentTextFrom(qint64 fromLine, int maxLines) const
 {
     const ScreenView *view = activeView();
     return view ? view->recentTextFrom(fromLine, maxLines) : QString();

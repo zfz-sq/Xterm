@@ -70,6 +70,9 @@ MainWindow::MainWindow(QWidget *parent)
     // 选区即复制（全局，两页一致，默认关）
     for (ScreenView *view : { m_uiBuilder->serialView(), m_uiBuilder->sshView() })
         view->setSelectToCopy(m_store->selectToCopy());
+    // 滚动历史环形上限（全局，两页一致，默认 10000 行）
+    for (ScreenView *view : { m_uiBuilder->serialView(), m_uiBuilder->sshView() })
+        view->setMaxHistory(m_store->maxScrollback());
     ui->advancedBar->hide(); // 高级参数默认收起
     m_session->refreshPorts();
     m_session->reloadProfiles(m_store->lastProfile());
@@ -80,9 +83,9 @@ MainWindow::MainWindow(QWidget *parent)
     AgentBridge::Hooks hooks;
     hooks.status = [this] { return m_session->agentStatus(); };
     hooks.recentText = [this](int maxLines) { return m_session->agentRecentText(maxLines); };
-    // wait 的行锚点：命中只看「挂起之后新增」的行，高频刷屏下才不会误判
+    // wait 的绝对行锚点（M3.4）：环形丢行后也不漂移，命中只看新增行
     hooks.recentLineCount = [this] { return m_session->agentRecentLineCount(); };
-    hooks.recentTextFrom = [this](int fromLine, int maxLines) {
+    hooks.recentTextFrom = [this](qint64 fromLine, int maxLines) {
         return m_session->agentRecentTextFrom(fromLine, maxLines);
     };
     hooks.sendLine = [this](const QString &text) { return m_session->agentSendLine(text); };

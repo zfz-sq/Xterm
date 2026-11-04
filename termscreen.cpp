@@ -419,13 +419,22 @@ int TermScreen::finishFeed()
 int TermScreen::trim()
 {
     int dropped = 0;
-    while (int(m_hist.size()) > kMaxHist) {
+    while (int(m_hist.size()) > m_maxHist) {
         m_hist.pop_front();
         ++dropped;
     }
-    if (dropped > 0)
+    if (dropped > 0) {
+        m_histDropped += dropped; // 绝对行号基数：丢多少记多少，只增不减
         m_unscannedHist = qMax(0, m_unscannedHist - dropped); // 头部丢弃后下标前移
+    }
     return dropped;
+}
+
+void TermScreen::setMaxHistory(int lines)
+{
+    // 上限可配但给个安全范围：太小失去回滚意义，太大失控吃内存
+    m_maxHist = qBound(100, lines, 1000000);
+    m_histDropped += trim(); // 收紧上限时立即丢多余行，基数同步累计
 }
 
 void TermScreen::touchRow(int row)
@@ -1297,6 +1306,7 @@ void TermScreen::deleteChars(int n)
 
 int TermScreen::clearDisplay()
 {
+    m_histDropped += qint64(m_hist.size()); // 清屏也是丢弃：绝对行号不回退
     m_hist.clear();
     m_histCleared = true;
     m_unscannedHist = 0;
@@ -1316,6 +1326,7 @@ void TermScreen::clearScrollback()
 {
     if (m_alt)
         return;
+    m_histDropped += qint64(m_hist.size()); // 同 clearDisplay：丢弃计入基数
     m_hist.clear();
     m_histCleared = true;
     m_unscannedHist = 0;
@@ -1447,6 +1458,7 @@ void TermScreen::leaveAlt()
 
 void TermScreen::reset()
 {
+    m_histDropped += qint64(m_hist.size()); // RIS 同样：行号基数单调
     m_hist.clear();
     m_histCleared = true;
     m_unscannedHist = 0;

@@ -47,13 +47,14 @@ public:
     QString screenText() const;
     // 滚动历史末尾加上当前屏，供本机控制口读取。maxLines 含当前屏。
     QString recentText(int maxLines) const;
-    // 滚动历史 + 当前屏的总行数（备用屏时仅当前屏行数）。
-    // 单调递增（主屏），可作为「自某时刻起新增」的行锚点。
-    int recentLineCount() const;
-    // 自 fromLine（含）起的新增文本，最多 maxLines 行。fromLine 越界返回空。
-    // wait 命中判定用它：滑动窗口内的出现次数差在高频刷屏下不会增长，
-    // 必须只看锚点之后的新行。
-    QString recentTextFrom(int fromLine, int maxLines) const;
+    // 绝对行号（M3.4）：会话开始累计的总行数 = 环形丢弃 + 现存，单调递增，
+    // 不受环形丢行/清屏回退——wait 锚点靠它不漂移。备用屏仅当前屏行数。
+    qint64 recentLineCount() const;
+    // 自绝对行号 fromLine（含）起的文本，最多 maxLines 行。fromLine 早于
+    // 现存最老行时从最老可用行开始；越界（>= 总数）返回空。wait 命中判定用它。
+    QString recentTextFrom(qint64 fromLine, int maxLines) const;
+    // 滚动历史行数上限（转发给 TermScreen，环形缓冲；长跑内存封顶）
+    void setMaxHistory(int lines) { m_screen.setMaxHistory(lines); }
     bool usingAltScreen() const { return m_screen.altScreen(); }
     // 本地回显打开时，把已经发出去的字节画到屏幕上（不再次发送）。
     void showOutbound(const QByteArray &bytes);

@@ -28,10 +28,11 @@ public:
     {
         std::function<QJsonObject()> status;
         std::function<QString(int maxLines)> recentText;
-        // 滚动历史 + 当前屏的总行数（单调递增），wait 的「新增」锚点。
-        std::function<int()> recentLineCount;
-        // 自 fromLine 起的新增文本（wait 命中只看这段）。
-        std::function<QString(int fromLine, int maxLines)> recentTextFrom;
+        // 绝对行号（M3.4）：环形丢弃计数 + 现存行数，单调递增。wait 的「新增」
+        // 锚点——相对行号在环形丢行后会漂移，这是 M3 唯一动 M2 语义的点
+        std::function<qint64()> recentLineCount;
+        // 自绝对行号 fromLine 起的新增文本（wait 命中只看这段）。
+        std::function<QString(qint64 fromLine, int maxLines)> recentTextFrom;
         // 空字符串表示已交给当前链路；非空是可以直接返回给调用方的错误。
         // 整行直达（clear -a 等本地命令走这里）。
         std::function<QString(const QString &text)> sendLine;
@@ -78,7 +79,7 @@ private:
         QLocalSocket *sock = nullptr;
         QJsonValue id;
         QString needle;
-        int fromLine = -1; // 挂起时的行锚点：命中只看这之后的新增文本
+        qint64 fromLine = -1; // 挂起时的绝对行锚点：命中只看这之后的新增文本
         int minNew = 1;    // needle 需在新增里出现的最少次数（回显免疫时为 2）
         int timeoutMs = 3000;
         qint64 deadlineMs = 0;
