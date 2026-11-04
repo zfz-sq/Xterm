@@ -17,6 +17,7 @@ class QComboBox;
 class SerialSession;
 class ScreenView;
 class SshSession;
+class TermScreen;
 class QTimer;
 class Transport;
 class QWidget;
@@ -109,6 +110,8 @@ public:
 
     // —— MCP 数据适配器（依赖会话/视图状态，见类注释）——
     QJsonObject agentStatus() const;
+    // 当前活动终端的屏幕模型（M2.d：ScreenBridge snapshot 数据源，无视图为 null）
+    const TermScreen *agentActiveScreen() const;
     QString agentRecentText(int maxLines) const;
     qint64 agentRecentLineCount() const; // wait 的绝对行锚点（见 AgentBridge::Hooks）
     QString agentRecentTextFrom(qint64 fromLine, int maxLines) const;

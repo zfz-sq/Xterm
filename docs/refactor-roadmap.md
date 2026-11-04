@@ -252,7 +252,28 @@ FS 安全边界：
       测试断言乱码挂掉，中文一律 QStringLiteral）。新增
       test_agentbridge_host 8 用例 + test_sftpclient 补 exec 桥接
       （离线同步失败不超时）并连带 hoststats.cpp，全套 16/16 绿）
-- [ ] M2.d Screen 扩展工具
+- [x] M2.d Screen 扩展工具
+      （验收「正则等待 + URI 可见」达成。三件分两处落地：snapshot/find 是
+      ScreenBridge 新协作类（FsBridge 同款：ScreenHooks 纯函数注入，
+      自持 screen/lineCount/textFrom 三数据源，零 GUI 依赖）；
+      waitForPattern 是 AgentBridge 内置（挂起/超时/轮询复用 Waiter 机制，
+      外部工具复制这套生命周期不划算）。snapshot 每行 text + 非默认样式
+      段 runs（TermScreen::foreground/background 按当前主题解析成 #rrggbb，
+      bold/underline/inverse 旗标）+ OSC 8 链接段 links（M3.2 URI 池），
+      行号是 dropped+history+rows 的绝对行号（与 wait 锚点同源，M3.4），
+      备用屏 alt_screen=true 且历史不参与；find 扫滚动历史尾部 400 行
+      （子串/正均可，大小写不敏感、空匹配不计次，语义对齐 M3.3 查找），
+      命中带绝对行号/列/命中串/整行；waitForPattern 给 Waiter 加 regex
+      旗标（pollWaiters 正则计非空匹配次数），min_new 供回显免疫，
+      非法正则当场报错不挂起。接线：ScreenView::screenModel() 只读访问器
+      + SessionController::agentActiveScreen() + MainWindow 值成员。
+      server.py 透传前缀加 xterm.screen.。坑：字符串里的引号样例转义
+      层级多套一层（\\" 变「反斜杠+串终止」编译错）；TermScreen::resize
+      的 rows 有最小 4 行钳制，想触发滚屏得写满 rows+1 行；lineText
+      去尾空白保留一格（与 lineToPlain 同款），判空白行用 trimmed。新增
+      test_agentbridge_screen 9 用例（静态 snapshot 喂真 VT 序列验颜色段
+      /OSC 8/绝对行号/备用屏 + 工具级管道 fake）+ test_agentbridge 补
+      waitForPattern 两用例（回显免疫命中 + 非法正则拒绝），全套 17/17 绿）
 - [ ] M2.e 审计 + 徽标 + 限流
 - [ ] M2.f Session 工具
 - [ ] M2.g HTTP/SSE 端点（可选）

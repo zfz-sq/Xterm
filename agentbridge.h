@@ -7,6 +7,7 @@
 #include <QJsonValue>
 #include <QList>
 #include <QObject>
+#include <QRegularExpression>
 #include <QString>
 
 #include <functional>
@@ -110,6 +111,10 @@ private:
         QLocalSocket *sock = nullptr;
         QJsonValue id;
         QString needle;
+        // M2.d waitForPattern：needle 按正则解释（大小写不敏感）；
+        // 空匹配不计次，与 M3.3 的查找语义一致
+        bool regex = false;
+        QRegularExpression re;
         qint64 fromLine = -1; // 挂起时的绝对行锚点：命中只看这之后的新增文本
         int minNew = 1;    // needle 需在新增里出现的最少次数（回显免疫时为 2）
         int timeoutMs = 3000;
@@ -135,7 +140,8 @@ private:
     void registerBuiltinTools();               // 基于 m_hooks 能力字段注册内置工具
     QJsonArray toolCatalog() const;            // tools.list 的清单（含参数描述）
     void addWaiter(QLocalSocket *sock, const QJsonValue &id, const QString &needle,
-                   int minNew, int timeoutMs);  // wait 挂起（sendLine 带也用）
+                   int minNew, int timeoutMs,
+                   const QRegularExpression &re = QRegularExpression()); // wait 挂起（sendLine 带也用）
     void reply(QLocalSocket *sock, const QJsonValue &id, bool ok, const QJsonObject &result,
                const QString &error);
     void pollWaiters();

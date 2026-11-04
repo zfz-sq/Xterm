@@ -76,6 +76,11 @@ QString AgentBridge::instructions()
         "（SSH 连接后约 6 秒就绪，ok=false 时稍后重试），disk/uptime/top 按需"
         "在远端跑只读命令。仅 SSH 会话可用。\n"
         "\n"
+        "读屏优先 xterm.screen.snapshot（结构化：文本/颜色/超链接段，适合看"
+        "带布局的输出）；xterm.screen.find 在滚动历史里查（可正则）；"
+        "xterm.screen.waitForPattern 按正则等新输出，发命令后建议 min_new=2"
+        "防回显。\n"
+        "\n"
         "这些调用会直接作用到连接的设备上，与在终端里敲命令相同。");
 }
 
@@ -449,6 +454,48 @@ void AgentBridge::registerBuiltinTools()
         params.insert(QStringLiteral("timeout_ms"), timeout);
         meta("xterm.screen.wait", QStringLiteral("等待屏幕新增文本出现指定子串，超时返回 timed_out"), params);
     }
+
+    m_tools.insert(QStringLiteral("xterm.screen.waitForPattern"),
+                   [this](const ToolCall &call) -> ToolResult {
+                       const QString pattern =
+                           call.params.value(QStringLiteral("pattern")).toString();
+                       if (pattern.isEmpty())
+                           return ToolResult{false, false, {},
+                                             QStringLiteral("waitForPattern 需要 pattern")};
+                       // 语义对齐 M3.3 查找：大小写不敏感；非法正则直接报错
+                       // （比 GUI 的「当无命中」更显式，AI 能感知写错了）
+                       QRegularExpression re(pattern,
+                                             QRegularExpression::CaseInsensitiveOption);
+                       if (!re.isValid())
+                           return ToolResult{false, false, {},
+                                             QStringLiteral("正则无效 (%1): %2")
+                                                 .arg(re.errorString(), pattern)};
+                       const int minNew = qBound(
+                           1, call.params.value(QStringLiteral("min_new")).toInt(1), 10);
+                       addWaiter(call.sock, call.id, pattern, minNew,
+                                 clampTimeout(call.params.value(QStringLiteral("timeout_ms")).toInt()),
+                                 re);
+                       return ToolResult{true, true, {}, QString()}; // 轮询器接管应答
+                   });
+    {
+        QJsonObject params;
+        QJsonObject pattern;
+        pattern.insert(QStringLiteral("type"), QStringLiteral("string"));
+        pattern.insert(QStringLiteral("description"),
+                       QStringLiteral("正则（大小写不敏感），如 \"error\"|\"fail\""));
+        params.insert(QStringLiteral("pattern"), pattern);
+        QJsonObject minNew;
+        minNew.insert(QStringLiteral("type"), QStringLiteral("integer"));
+        minNew.insert(QStringLiteral("description"),
+                      QStringLiteral("新增中至少出现次数，默认 1；发命令后等输出用 2 防回显"));
+        params.insert(QStringLiteral("min_new"), minNew);
+        QJsonObject timeout;
+        timeout.insert(QStringLiteral("type"), QStringLiteral("integer"));
+        timeout.insert(QStringLiteral("description"), QStringLiteral("超时毫秒数，默认 3000，上限 30000"));
+        params.insert(QStringLiteral("timeout_ms"), timeout);
+        meta("xterm.screen.waitForPattern",
+             QStringLiteral("等待屏幕新增文本匹配正则（比 wait 的子串更活），超时返回 timed_out"), params);
+    }
 }
 
 QJsonArray AgentBridge::toolCatalog() const
@@ -460,12 +507,14 @@ QJsonArray AgentBridge::toolCatalog() const
 }
 
 void AgentBridge::addWaiter(QLocalSocket *sock, const QJsonValue &id, const QString &needle,
-                            int minNew, int timeoutMs)
+                            int minNew, int timeoutMs, const QRegularExpression &re)
 {
     Waiter w;
     w.sock = sock;
     w.id = id;
     w.needle = needle;
+    w.regex = re.isValid() && !re.pattern().isEmpty();
+    w.re = w.regex ? re : QRegularExpression();
     // 挂起时刻的绝对行锚点：命中只看这之后新增的行（M3.4 语义）
     w.fromLine = m_hooks.recentLineCount ? m_hooks.recentLineCount() : -1;
     w.minNew = minNew;
@@ -487,10 +536,20 @@ void AgentBridge::pollWaiters()
     for (int i = m_waiters.size() - 1; i >= 0; --i) {
         const Waiter w = m_waiters.at(i);
         // 命中条件: 锚点之后的新增文本里 needle 出现次数达到 minNew
-        // （普通为 1，回显免疫场景为 2）
+        // （普通为 1，回显免疫场景为 2）；正则模式（M2.d waitForPattern）
+        // 计非空匹配次数，空匹配不计
         const QString fresh = (m_hooks.recentTextFrom && w.fromLine >= 0)
                                   ? m_hooks.recentTextFrom(w.fromLine, 400) : QString();
-        const int count = fresh.count(w.needle);
+        int count = 0;
+        if (w.regex) {
+            auto it = w.re.globalMatch(fresh);
+            while (it.hasNext()) {
+                if (it.next().capturedLength() > 0)
+                    ++count;
+            }
+        } else {
+            count = fresh.count(w.needle);
+        }
         const bool hit = count >= w.minNew;
         const bool timedOut = clock >= w.deadlineMs;
         if (!hit && !timedOut)

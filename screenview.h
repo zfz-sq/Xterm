@@ -57,6 +57,9 @@ public:
     // 滚动历史行数上限（转发给 TermScreen，环形缓冲；长跑内存封顶）
     void setMaxHistory(int lines) { m_screen.setMaxHistory(lines); }
     bool usingAltScreen() const { return m_screen.altScreen(); }
+    // 屏幕模型只读访问（M2.d：ScreenBridge 的 snapshot 数据源，行号口径
+    // 与上面的 recentTextFrom/recentLineCount 同源）
+    const TermScreen &screenModel() const { return m_screen; }
     // 本地回显打开时，把已经发出去的字节画到屏幕上（不再次发送）。
     void showOutbound(const QByteArray &bytes);
     // 只清本机画面和滚动历史，不向设备发送任何字节。

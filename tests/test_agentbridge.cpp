@@ -26,6 +26,8 @@ private slots:
     void typingInterrupted();
     void typingWaits();
     void waitTimesOutWhenNeedleNotNew();
+    void waitForPatternMatchesNewText();
+    void waitForPatternRejectsInvalidRegex();
     void clearAIsInstant();
 
 private:
@@ -116,7 +118,8 @@ void AgentBridgeTest::toolsListDiscoversNamespacedTools()
         }
     }
     for (const char *name : { "xterm.session.status", "xterm.screen.read",
-                              "xterm.screen.wait", "xterm.transport.sendLine",
+                              "xterm.screen.wait", "xterm.screen.waitForPattern",
+                              "xterm.transport.sendLine",
                               "xterm.transport.sendControl" })
         QVERIFY2(names.contains(QString::fromLatin1(name)), name);
     QVERIFY(sendLineHasParams);
@@ -243,6 +246,53 @@ void AgentBridgeTest::waitTimesOutWhenNeedleNotNew()
     QVERIFY(resp.value(QStringLiteral("ok")).toBool());
     QVERIFY(resp.value(QStringLiteral("result")).toObject()
                 .value(QStringLiteral("timed_out")).toBool());
+    sock.disconnectFromServer();
+}
+
+// M2.d waitForPattern：正则在新增文本里命中（锚点后），大小写不敏感
+void AgentBridgeTest::waitForPatternMatchesNewText()
+{
+    QLocalSocket sock;
+    sock.connectToServer(m_pipe);
+    QVERIFY(sock.waitForConnected(2000));
+
+    // 命令回显里就带 pattern 字样，min_new=2 要求真实输出再出现一次才命中
+    m_recentText = QStringLiteral("$ dmesg | grep error");
+    m_lineCount = 200;
+    m_freshText = QStringLiteral("$ dmesg | grep error"); // 新增第 1 次（回显）
+    QJsonObject params;
+    params.insert(QStringLiteral("pattern"), QStringLiteral("ERROR|FAIL"));
+    params.insert(QStringLiteral("min_new"), 2);
+    params.insert(QStringLiteral("timeout_ms"), 3000);
+    sendRequest(&sock, 6, QStringLiteral("xterm.screen.waitForPattern"), params);
+
+    QTest::qWait(80); // 已挂起；此时新增里只有回显那一次，不够 min_new=2
+    m_lineCount = 205;
+    m_freshText += QStringLiteral("\n[  12.3] FAIL: timeout"); // 真实输出第 2 次
+    const QJsonObject resp = waitReply(&sock);
+    QCOMPARE(resp.value(QStringLiteral("id")).toInt(), 6);
+    QVERIFY(resp.value(QStringLiteral("ok")).toBool());
+    QVERIFY(resp.value(QStringLiteral("result")).toObject()
+                .value(QStringLiteral("matched")).toBool());
+    sock.disconnectFromServer();
+}
+
+// 非法正则当场拒绝（不挂起），错误里带 pattern 供 AI 自查
+void AgentBridgeTest::waitForPatternRejectsInvalidRegex()
+{
+    QLocalSocket sock;
+    sock.connectToServer(m_pipe);
+    QVERIFY(sock.waitForConnected(2000));
+
+    QJsonObject params;
+    params.insert(QStringLiteral("pattern"), QStringLiteral("([unclosed"));
+    sendRequest(&sock, 7, QStringLiteral("xterm.screen.waitForPattern"), params);
+
+    const QJsonObject resp = waitReply(&sock);
+    QCOMPARE(resp.value(QStringLiteral("id")).toInt(), 7);
+    QVERIFY(!resp.value(QStringLiteral("ok")).toBool());
+    QVERIFY(resp.value(QStringLiteral("error")).toString()
+                .contains(QStringLiteral("正则无效")));
     sock.disconnectFromServer();
 }
 

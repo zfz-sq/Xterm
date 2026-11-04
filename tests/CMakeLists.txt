@@ -169,6 +169,38 @@ set_target_properties(test_agentbridge_host PROPERTIES
 
 add_test(NAME test_agentbridge_host COMMAND test_agentbridge_host)
 
+# ScreenBridge + xterm.screen.snapshot/find（M2.d）：静态 snapshot 直接喂
+# TermScreen（真 VT 序列，连带 termscreen.cpp），工具级走独立管道的 fake
+# 后端；waitForPattern（AgentBridge 内置）在 test_agentbridge 里覆盖
+add_executable(test_agentbridge_screen
+    test_agentbridge_screen.cpp
+    "${CMAKE_SOURCE_DIR}/screenbridge.cpp"
+    "${CMAKE_SOURCE_DIR}/screenbridge.h"
+    "${CMAKE_SOURCE_DIR}/termscreen.cpp"
+    "${CMAKE_SOURCE_DIR}/termscreen.h"
+    "${CMAKE_SOURCE_DIR}/agentbridge.cpp"
+    "${CMAKE_SOURCE_DIR}/agentbridge.h"
+    "${CMAKE_SOURCE_DIR}/commandstore.cpp"
+)
+
+target_include_directories(test_agentbridge_screen
+    PRIVATE
+        "${CMAKE_SOURCE_DIR}"
+)
+
+target_link_libraries(test_agentbridge_screen
+    PRIVATE
+        Qt6::Test
+        Qt6::Network
+        Qt6::Gui
+)
+
+set_target_properties(test_agentbridge_screen PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)
+
+add_test(NAME test_agentbridge_screen COMMAND test_agentbridge_screen)
+
 # 主题协作类（M1.a）：不碰主窗口，只验状态翻转/信号/QSS；qrc 链入供 :/style-*.qss
 add_executable(test_thememanager
     test_thememanager.cpp

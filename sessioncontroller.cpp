@@ -548,6 +548,12 @@ void SessionController::promptAuthAnswers(SshRequestId requestId,
 
 // ---------------------------------------------------------------- MCP 适配器
 
+const TermScreen *SessionController::agentActiveScreen() const
+{
+    const ScreenView *view = activeView();
+    return view ? &view->screenModel() : nullptr;
+}
+
 QJsonObject SessionController::agentStatus() const
 {
     Transport *t = activeTransport();

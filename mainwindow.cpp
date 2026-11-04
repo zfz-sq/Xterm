@@ -118,6 +118,16 @@ MainWindow::MainWindow(QWidget *parent)
     auto *agentHostExec = new SftpClient(m_session->ssh(), this);
     m_host.setBackend(HostBridge::hooksForStats(m_session->hostStats(), agentHostExec));
     m_host.registerTools(&hooks);
+    // ---- M2.d：xterm.screen 扩展工具。snapshot 直读当前活动终端的
+    // 屏幕模型，find 复用 wait 同源的绝对行号文本源 ----
+    m_screen.setBackend({
+        [this] { return m_session->agentActiveScreen(); },
+        [this] { return m_session->agentRecentLineCount(); },
+        [this](qint64 fromLine, int maxLines) {
+            return m_session->agentRecentTextFrom(fromLine, maxLines);
+        },
+    });
+    m_screen.registerTools(&hooks);
     m_mcp->start(hooks, m_store->mcpAllowWrite());
 }
 

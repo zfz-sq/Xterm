@@ -5,6 +5,7 @@
 
 #include "fsbridge.h"       // FsBridge 值成员（M2.b：xterm.fs.* 工具后端）
 #include "hostbridge.h"     // HostBridge 值成员（M2.c：xterm.host.* 工具后端）
+#include "screenbridge.h"   // ScreenBridge 值成员（M2.d：snapshot/find 工具后端）
 #include "sessioncontroller.h" // Mode（别名保留）与会话协作类
 
 class CommandStore;
@@ -56,5 +57,6 @@ private:
     UiBuilder *m_uiBuilder = nullptr;       // UI 编排与状态刷新协作类（M1.d）
     FsBridge m_fs;                          // xterm.fs.* 工具后端（M2.b，非 QObject）
     HostBridge m_host;                      // xterm.host.* 工具后端（M2.c，非 QObject）
+    ScreenBridge m_screen;                  // xterm.screen 扩展工具后端（M2.d，非 QObject）
 };
 #endif // MAINWINDOW_H
