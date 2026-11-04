@@ -879,14 +879,17 @@ void FileBrowserDialog::fetchRemoteFile(const QString &remotePath)
 
 void FileBrowserDialog::openLocal()
 {
+    // selectionModel 拿到的是排序代理的索引，必须先映射回源模型，
+    // 否则 QFileSystemModel 会把代理内部指针当 QFileSystemNode 解引用而崩溃
     const QModelIndexList rows = m_localView->selectionModel()->selectedRows(0);
-    if (rows.size() == 1 && m_fsModel->isDir(rows.first())) {
-        setLocalPath(m_fsModel->filePath(rows.first()));
+    if (rows.size() == 1 && m_fsModel->isDir(mapToSource(rows.first()))) {
+        setLocalPath(m_fsModel->filePath(mapToSource(rows.first())));
         return;
     }
     for (const QModelIndex &idx : rows) {
-        if (!m_fsModel->isDir(idx))
-            QDesktopServices::openUrl(QUrl::fromLocalFile(m_fsModel->filePath(idx)));
+        const QModelIndex src = mapToSource(idx);
+        if (!m_fsModel->isDir(src))
+            QDesktopServices::openUrl(QUrl::fromLocalFile(m_fsModel->filePath(src)));
     }
 }
 
