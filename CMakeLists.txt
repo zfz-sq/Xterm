@@ -81,6 +81,8 @@ qt_add_executable(Xterm
     hostbridge.h
     screenbridge.cpp
     screenbridge.h
+    sessionbridge.cpp
+    sessionbridge.h
     mcpmainhook.cpp
     mcpmainhook.h
     sessioncontroller.cpp

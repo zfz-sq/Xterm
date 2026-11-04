@@ -47,6 +47,11 @@ private slots:
     void sshStatusTextPlaceholders();
     void kmsgToggleGuardsDisconnectedClick();
     void kmsgVisibleOnlyInSerialMode();
+    void agentSessionListShape();
+    void agentSwitchSessionValidatesKind();
+    void agentOpenSshEmptyHostRejected();
+    void agentOpenSerialUnknownPortRejected();
+    void agentCloseSessionValidatesKind();
 
 private:
     Ui::MainWindow *m_ui = nullptr;
@@ -220,6 +225,78 @@ void TestSessionController::kmsgVisibleOnlyInSerialMode()
     QVERIFY(m_uiBuilder->kmsgButton()->isHidden());
     m_session->setMode(SessionController::Mode::Serial, false);
     QVERIFY(!m_uiBuilder->kmsgButton()->isHidden());
+}
+
+// —— M2.f 会话适配器：list/switch/open/close 的本地可验路径（不真发起
+// 连接：openSsh 验空 host 拒绝，openSerial 验不存在端口拒绝）——
+
+void TestSessionController::agentSessionListShape()
+{
+    const QJsonArray sessions = m_session->agentSessionList();
+    QCOMPARE(sessions.size(), 2);
+    const QJsonObject s0 = sessions.at(0).toObject();
+    QCOMPARE(s0.value(QStringLiteral("kind")).toString(), QStringLiteral("serial"));
+    QCOMPARE(s0.value(QStringLiteral("active")).toBool(), true);
+    QCOMPARE(s0.value(QStringLiteral("state")).toString(), QStringLiteral("disconnected"));
+    QVERIFY(s0.contains(QStringLiteral("summary")));
+    const QJsonObject s1 = sessions.at(1).toObject();
+    QCOMPARE(s1.value(QStringLiteral("kind")).toString(), QStringLiteral("ssh"));
+    QCOMPARE(s1.value(QStringLiteral("active")).toBool(), false);
+    QVERIFY(s1.contains(QStringLiteral("summary")));
+}
+
+void TestSessionController::agentSwitchSessionValidatesKind()
+{
+    QJsonObject out;
+    QVERIFY(!m_session->agentSwitchSession(QStringLiteral("telnet"), &out).isEmpty());
+    QCOMPARE(m_session->mode(), SessionController::Mode::Serial); // 拒绝不改状态
+
+    QVERIFY(m_session->agentSwitchSession(QStringLiteral("ssh"), &out).isEmpty());
+    QCOMPARE(m_session->mode(), SessionController::Mode::Ssh);
+    QCOMPARE(out.value(QStringLiteral("mode")).toString(), QStringLiteral("ssh"));
+    QVERIFY(out.contains(QStringLiteral("sessions")));
+
+    // current 详情：mode + 两条链路
+    const QJsonObject cur = m_session->agentSessionCurrent();
+    QCOMPARE(cur.value(QStringLiteral("mode")).toString(), QStringLiteral("ssh"));
+    QCOMPARE(cur.value(QStringLiteral("sessions")).toArray().size(), 2);
+}
+
+void TestSessionController::agentOpenSshEmptyHostRejected()
+{
+    m_ui->hostEdit->clear();
+    m_ui->userEdit->clear();
+    QJsonObject out;
+    const QString err = m_session->agentOpenSsh({}, &out);
+    // 未配置 host：直接拒绝（若 ssh 栈不可用则报 availability，同样非空）
+    QVERIFY(!err.isEmpty());
+    QCOMPARE(m_ui->hostEdit->text(), QString()); // 未污染参数栏
+    QCOMPARE(m_session->mode(), SessionController::Mode::Serial);
+}
+
+void TestSessionController::agentOpenSerialUnknownPortRejected()
+{
+    QJsonObject out;
+    const QString err = m_session->agentOpenSerial(
+        QJsonObject{{QStringLiteral("port"), QStringLiteral("NOPE_XYZ")}}, &out);
+    QVERIFY(err.contains(QStringLiteral("不存在")));
+    QVERIFY(err.contains(QStringLiteral("NOPE_XYZ")));
+    // 可用端口清单里一定找不到它，选择保持未变（未选中任何项）
+    QCOMPARE(m_session->mode(), SessionController::Mode::Serial);
+}
+
+void TestSessionController::agentCloseSessionValidatesKind()
+{
+    QJsonObject out;
+    QVERIFY(!m_session->agentCloseSession(QStringLiteral("telnet"), &out).isEmpty());
+
+    // 未连接时 close 是无害空操作（不报错，closed=false）
+    QVERIFY(m_session->agentCloseSession(QString(), &out).isEmpty());
+    QCOMPARE(out.value(QStringLiteral("closed")).toBool(), false);
+    QVERIFY(out.contains(QStringLiteral("sessions")));
+
+    QVERIFY(m_session->agentCloseSession(QStringLiteral("serial"), &out).isEmpty());
+    QCOMPARE(out.value(QStringLiteral("closed")).toBool(), false);
 }
 
 QTEST_MAIN(TestSessionController) // 组装 QMainWindow 及全套部件，需 QApplication

@@ -119,6 +119,17 @@ public:
     QString agentSendBytes(const QByteArray &bytes); // sendControl 用: 裸字节直达
     char agentLineEnding() const;                    // 打字机行尾（串口 \n / SSH \r）
 
+    // —— MCP 会话适配器（M2.f：xterm.session.list/current/switch/open/close）。
+    // 动作类返回 err（空串 = 成功），out 填给工具的 data；open 幂等：
+    // 已连接直接回当前状态，不重连（参数变化时 AI 先 close 再 open）——
+    // close 是异步的，立即重开会在 Disconnecting 上撞车
+    QJsonArray agentSessionList() const;
+    QJsonObject agentSessionCurrent() const;
+    QString agentSwitchSession(const QString &kind, QJsonObject *out);
+    QString agentOpenSsh(const QJsonObject &params, QJsonObject *out);
+    QString agentOpenSerial(const QJsonObject &params, QJsonObject *out);
+    QString agentCloseSession(const QString &kind, QJsonObject *out);
+
     // —— 关闭编排（closeEvent 调用）：同步配置、落盘、拆链路 ——
     void shutdownForClose();
 
@@ -136,6 +147,10 @@ private slots:
 
 private:
     void wireSessions(); // 两条链路的信号 → 系统消息/统计启停/回抛刷新
+    // 按参数栏当前值发起连接（toggleConnect 与 agent open 共用；
+    // 返回空串 = 已受理，错误文案给状态栏/工具错误）
+    QString openSerialFromUi();
+    QString openSshFromUi();
     SshTarget sshTargetFromUi() const;
     Profile currentProfileFromUi() const;
     bool confirmHostKeyChange(const QString &host, const QString &stored,

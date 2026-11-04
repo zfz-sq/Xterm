@@ -6,6 +6,7 @@
 #include "fsbridge.h"       // FsBridge 值成员（M2.b：xterm.fs.* 工具后端）
 #include "hostbridge.h"     // HostBridge 值成员（M2.c：xterm.host.* 工具后端）
 #include "screenbridge.h"   // ScreenBridge 值成员（M2.d：snapshot/find 工具后端）
+#include "sessionbridge.h" // SessionBridge 值成员（M2.f：会话开关/切换工具后端）
 #include "sessioncontroller.h" // Mode（别名保留）与会话协作类
 
 class CommandStore;
@@ -58,5 +59,6 @@ private:
     FsBridge m_fs;                          // xterm.fs.* 工具后端（M2.b，非 QObject）
     HostBridge m_host;                      // xterm.host.* 工具后端（M2.c，非 QObject）
     ScreenBridge m_screen;                  // xterm.screen 扩展工具后端（M2.d，非 QObject）
+    SessionBridge m_sessionTools;         // xterm.session 扩展工具后端（M2.f，非 QObject）
 };
 #endif // MAINWINDOW_H

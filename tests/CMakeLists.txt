@@ -235,6 +235,40 @@ set_target_properties(test_agentbridge_screen PROPERTIES
 
 add_test(NAME test_agentbridge_screen COMMAND test_agentbridge_screen)
 
+# SessionBridge + xterm.session 扩展件（M2.f）：内存 fake 后端验证工具壳
+# （list/current/switch/open/close 的参数透传与错误回传）；
+# 真实动作落在 SessionController 的 agent* 适配器，
+# 由 test_sessioncontroller 补用例覆盖
+add_executable(test_agentbridge_session
+    test_agentbridge_session.cpp
+    "${CMAKE_SOURCE_DIR}/sessionbridge.cpp"
+    "${CMAKE_SOURCE_DIR}/sessionbridge.h"
+    "${CMAKE_SOURCE_DIR}/agentbridge.cpp"
+    "${CMAKE_SOURCE_DIR}/agentbridge.h"
+    # agentbridge 引 AuditLog（M2.e 审计），连带
+    "${CMAKE_SOURCE_DIR}/auditlog.cpp"
+    "${CMAKE_SOURCE_DIR}/auditlog.h"
+    "${CMAKE_SOURCE_DIR}/commandstore.cpp"
+)
+
+target_include_directories(test_agentbridge_session
+    PRIVATE
+        "${CMAKE_SOURCE_DIR}"
+)
+
+target_link_libraries(test_agentbridge_session
+    PRIVATE
+        Qt6::Test
+        Qt6::Network
+        Qt6::Gui
+)
+
+set_target_properties(test_agentbridge_session PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)
+
+add_test(NAME test_agentbridge_session COMMAND test_agentbridge_session)
+
 # 主题协作类（M1.a）：不碰主窗口，只验状态翻转/信号/QSS；qrc 链入供 :/style-*.qss
 add_executable(test_thememanager
     test_thememanager.cpp

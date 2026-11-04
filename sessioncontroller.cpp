@@ -31,6 +31,23 @@
 #include "ui_mainwindow.h"
 
 namespace {
+
+// 链路状态 → agent 工具文本（M2.f：session.list/current 与 status 共用）
+QString sessionStateText(const Transport *t)
+{
+    switch (t->state()) {
+    case Transport::Connected:
+        return QStringLiteral("connected");
+    case Transport::Connecting:
+        return QStringLiteral("connecting");
+    case Transport::Disconnecting:
+        return QStringLiteral("disconnecting");
+    case Transport::Disconnected:
+        break;
+    }
+    return QStringLiteral("disconnected");
+}
+
 // 设备管理器里是「通信端口 (COM1)」「USB-SERIAL CH340 (COM17)」，
 // 下拉框改成「COM1: 通信端口」「COM17: USB-SERIAL CH340」。
 QString formatPortLabel(const QString &portName, QString description)
@@ -177,32 +194,9 @@ void SessionController::toggleConnect()
             m_serial->close();
             return;
         }
-        const QString port = selectedPortName();
-        if (port.isEmpty()) {
-            m_ui->statusbar->showMessage(tr("请先选择串口端口"), 5000);
-            return;
-        }
-        const qint32 baud = m_ui->baudCombo->currentText().toInt();
-        const auto dataBits = static_cast<QSerialPort::DataBits>(
-            m_ui->dataBitsCombo->currentData().toInt());
-        const QString parityStr = m_ui->parityCombo->currentData().toString();
-        const QSerialPort::Parity parity =
-            (parityStr == QStringLiteral("even")) ? QSerialPort::EvenParity
-            : (parityStr == QStringLiteral("odd"))  ? QSerialPort::OddParity
-                                                    : QSerialPort::NoParity;
-        const double sb = m_ui->stopBitsCombo->currentData().toDouble();
-        const QSerialPort::StopBits stopBits = (sb > 1.9)   ? QSerialPort::TwoStop
-                                               : (sb > 1.4) ? QSerialPort::OneAndHalfStop
-                                                            : QSerialPort::OneStop;
-        const QSerialPort::FlowControl flow =
-            (m_ui->flowCombo->currentData().toString() == QStringLiteral("hardware"))
-                ? QSerialPort::HardwareControl
-                : QSerialPort::NoFlowControl;
-
-        // 失败原因由 errorOccurred 统一上报（状态栏 + 终端），这里不再重复提示
-        m_serial->open(port, baud, dataBits, parity, stopBits, flow,
-                       m_ui->dtrCheck->isChecked(), m_ui->rtsCheck->isChecked());
-        emit connectionStateChanged();
+        const QString err = openSerialFromUi();
+        if (!err.isEmpty())
+            m_ui->statusbar->showMessage(err, 5000);
         return;
     }
 
@@ -213,15 +207,56 @@ void SessionController::toggleConnect()
         emit connectionStateChanged();
         return;
     }
-    if (const QString err = SshSession::availabilityError(); !err.isEmpty()) {
+    const QString err = openSshFromUi();
+    if (!err.isEmpty())
         m_ui->statusbar->showMessage(err, 8000);
+}
+
+// 按串口参数栏当前值发起连接。错误文案同时给状态栏与 agent open 工具
+QString SessionController::openSerialFromUi()
+{
+    const QString port = selectedPortName();
+    if (port.isEmpty())
+        return tr("请先选择串口端口");
+    const qint32 baud = m_ui->baudCombo->currentText().toInt();
+    const auto dataBits = static_cast<QSerialPort::DataBits>(
+        m_ui->dataBitsCombo->currentData().toInt());
+    const QString parityStr = m_ui->parityCombo->currentData().toString();
+    const QSerialPort::Parity parity =
+        (parityStr == QStringLiteral("even")) ? QSerialPort::EvenParity
+        : (parityStr == QStringLiteral("odd"))  ? QSerialPort::OddParity
+                                                : QSerialPort::NoParity;
+    const double sb = m_ui->stopBitsCombo->currentData().toDouble();
+    const QSerialPort::StopBits stopBits = (sb > 1.9)   ? QSerialPort::TwoStop
+                                           : (sb > 1.4) ? QSerialPort::OneAndHalfStop
+                                                        : QSerialPort::OneStop;
+    const QSerialPort::FlowControl flow =
+        (m_ui->flowCombo->currentData().toString() == QStringLiteral("hardware"))
+            ? QSerialPort::HardwareControl
+            : QSerialPort::NoFlowControl;
+
+    // 失败原因由 errorOccurred 统一上报（状态栏 + 终端），这里不再重复提示
+    m_serial->open(port, baud, dataBits, parity, stopBits, flow,
+                   m_ui->dtrCheck->isChecked(), m_ui->rtsCheck->isChecked());
+    emit connectionStateChanged();
+    return QString();
+}
+
+// 按 SSH 参数栏当前值发起连接（凭据用界面已配置的密钥/密码，不从 AI 来）
+QString SessionController::openSshFromUi()
+{
+    if (const QString err = SshSession::availabilityError(); !err.isEmpty()) {
         m_sshView->appendSystemMessage(tr("── %1 ──").arg(err));
-        return;
+        return err;
     }
     const SshTarget target = sshTargetFromUi();
-    if (m_ssh->open(target).isEmpty())
+    if (target.host.isEmpty())
+        return tr("host 为空，请先在界面填写或传 host 参数");
+    const QString err = m_ssh->open(target);
+    if (err.isEmpty())
         m_sshView->appendSystemMessage(tr("── 正在连接 %1 ──").arg(m_ssh->summary()));
     emit connectionStateChanged();
+    return err;
 }
 
 void SessionController::refreshPorts()
@@ -554,29 +589,160 @@ const TermScreen *SessionController::agentActiveScreen() const
     return view ? &view->screenModel() : nullptr;
 }
 
+// —— M2.f 会话适配器：list/current/switch/open/close ——
+
+QJsonArray SessionController::agentSessionList() const
+{
+    auto entry = [](const QString &kind, bool active, const Transport *t,
+                    const QString &summary) {
+        QJsonObject o;
+        o.insert(QStringLiteral("kind"), kind);
+        o.insert(QStringLiteral("active"), active);
+        o.insert(QStringLiteral("state"), sessionStateText(t));
+        o.insert(QStringLiteral("summary"), summary);
+        return o;
+    };
+    // 串口摘要：连接中含波特率，未连接只回显当前选择（和参数栏一致）
+    QString serialSummary = selectedPortName();
+    if (!serialSummary.isEmpty()
+        && (m_serial->isOpen() || m_serial->state() == Transport::Connecting))
+        serialSummary += QStringLiteral(" @ %1").arg(m_ui->baudCombo->currentText());
+    // SSH 摘要：有会话用实际参数，断开时回显参数栏填的（connectionSummary 同款）
+    QString sshSummary;
+    if (m_ssh->state() == Transport::Disconnected) {
+        const SshTarget t = sshTargetFromUi();
+        if (!t.user.isEmpty())
+            sshSummary = t.user + QLatin1Char('@');
+        sshSummary += t.host;
+        if (t.port != 22)
+            sshSummary += QStringLiteral(":%1").arg(t.port);
+    } else {
+        sshSummary = m_ssh->summary();
+    }
+    QJsonArray arr;
+    arr.append(entry(QStringLiteral("serial"), m_mode == Mode::Serial, m_serial, serialSummary));
+    arr.append(entry(QStringLiteral("ssh"), m_mode == Mode::Ssh, m_ssh, sshSummary));
+    return arr;
+}
+
+QJsonObject SessionController::agentSessionCurrent() const
+{
+    QJsonObject o = agentStatus();
+    o.insert(QStringLiteral("sessions"), agentSessionList());
+    return o;
+}
+
+QString SessionController::agentSwitchSession(const QString &kind, QJsonObject *out)
+{
+    if (kind == QLatin1String("serial"))
+        setMode(Mode::Serial);
+    else if (kind == QLatin1String("ssh"))
+        setMode(Mode::Ssh);
+    else
+        return QStringLiteral("kind 必须是 serial 或 ssh");
+    *out = agentSessionCurrent();
+    return QString();
+}
+
+QString SessionController::agentOpenSsh(const QJsonObject &params, QJsonObject *out)
+{
+    // 幂等：已连接/进行中直接回状态。重连 = 先 close 再 open（close 异步，
+    // 立即重开会在 Disconnecting 上撞车，不在这里代劳）
+    if (m_ssh->isOpen() || m_ssh->state() == Transport::Connecting
+        || m_ssh->state() == Transport::Disconnecting) {
+        *out = agentSessionCurrent();
+        out->insert(QStringLiteral("note"),
+                    QStringLiteral("SSH 已连接或正在连接，未重复发起；换参数请先 close"));
+        return QString();
+    }
+    // 参数写回参数栏（UI 是唯一真相源；写入触发 Profile 同步，用户可见可回溯）。
+    // 凭据（密码/密钥）不从 AI 来，保持界面已配置的
+    const QString host = params.value(QStringLiteral("host")).toString().trimmed();
+    // 先验参数再切模式/写 UI：失败时不留下已切换的半套状态
+    if (host.isEmpty() && m_ui->hostEdit->text().trimmed().isEmpty())
+        return QStringLiteral("host 为空，请先在界面填写或传 host 参数");
+    if (!host.isEmpty())
+        m_ui->hostEdit->setText(host);
+    const QJsonValue portv = params.value(QStringLiteral("port"));
+    if (portv.isDouble())
+        m_ui->sshPortCombo->setCurrentText(QString::number(portv.toInt()));
+    const QString user = params.value(QStringLiteral("user")).toString().trimmed();
+    if (!user.isEmpty())
+        m_ui->userEdit->setText(user);
+    if (m_mode != Mode::Ssh)
+        setMode(Mode::Ssh);
+    const QString err = openSshFromUi();
+    *out = agentSessionCurrent();
+    return err;
+}
+
+QString SessionController::agentOpenSerial(const QJsonObject &params, QJsonObject *out)
+{
+    if (m_serial->isOpen() || m_serial->state() == Transport::Connecting) {
+        *out = agentSessionCurrent();
+        out->insert(QStringLiteral("note"),
+                    QStringLiteral("串口已连接或正在连接，未重复发起；换参数请先 close"));
+        return QString();
+    }
+    const QString port = params.value(QStringLiteral("port")).toString().trimmed();
+    if (!port.isEmpty()) {
+        refreshPorts(); // 枚举最新列表再找（AI 拿到的端口名可能来自热插拔后）
+        const int idx = m_ui->portCombo->findData(port);
+        if (idx < 0) {
+            QStringList names;
+            for (int i = 0; i < m_ui->portCombo->count(); ++i)
+                names << m_ui->portCombo->itemData(i).toString();
+            return QStringLiteral("端口 %1 不存在，可用端口: %2")
+                .arg(port, names.isEmpty() ? QStringLiteral("(无)")
+                                           : names.join(QStringLiteral(", ")));
+        }
+        m_ui->portCombo->setCurrentIndex(idx);
+    }
+    const QJsonValue baudv = params.value(QStringLiteral("baud"));
+    if (baudv.isDouble())
+        m_ui->baudCombo->setCurrentText(QString::number(baudv.toInt()));
+    if (m_mode != Mode::Serial)
+        setMode(Mode::Serial);
+    const QString err = openSerialFromUi();
+    *out = agentSessionCurrent();
+    return err;
+}
+
+QString SessionController::agentCloseSession(const QString &kind, QJsonObject *out)
+{
+    Transport *t = nullptr;
+    if (kind.isEmpty() || kind == QLatin1String("active"))
+        t = activeTransport();
+    else if (kind == QLatin1String("serial"))
+        t = m_serial;
+    else if (kind == QLatin1String("ssh"))
+        t = m_ssh;
+    else
+        return QStringLiteral("kind 必须是 serial、ssh 或留空（当前活动链路）");
+
+    bool closed = false;
+    if (t && (t->isOpen() || t->state() == Transport::Connecting
+              || t->state() == Transport::Disconnecting)) {
+        t->close();
+        emit connectionStateChanged();
+        closed = true;
+    }
+    QJsonObject o;
+    o.insert(QStringLiteral("closed"), closed);
+    o.insert(QStringLiteral("sessions"), agentSessionList());
+    *out = o;
+    return QString();
+}
+
 QJsonObject SessionController::agentStatus() const
 {
     Transport *t = activeTransport();
     const ScreenView *view = activeView();
-    QString state = QStringLiteral("disconnected");
-    switch (t->state()) {
-    case Transport::Connected:
-        state = QStringLiteral("connected");
-        break;
-    case Transport::Connecting:
-        state = QStringLiteral("connecting");
-        break;
-    case Transport::Disconnecting:
-        state = QStringLiteral("disconnecting");
-        break;
-    case Transport::Disconnected:
-        break;
-    }
     QJsonObject obj;
     obj.insert(QStringLiteral("mode"),
                m_mode == Mode::Serial ? QStringLiteral("serial") : QStringLiteral("ssh"));
     obj.insert(QStringLiteral("connected"), t->state() == Transport::Connected);
-    obj.insert(QStringLiteral("state"), state);
+    obj.insert(QStringLiteral("state"), sessionStateText(t));
     obj.insert(QStringLiteral("summary"), connectionSummary());
     obj.insert(QStringLiteral("alt_screen"), view && view->usingAltScreen());
     return obj;

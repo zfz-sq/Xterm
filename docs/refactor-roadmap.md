@@ -295,5 +295,24 @@ FS 安全边界：
       拼接型相邻字符串要小心。新增 test_auditlog 3 用例（追加/轮转/
       坏路径静默）+ test_agentbridge 补 3 用例（jsonl 字段 + QSignalSpy
       信号、失败审计、容量 2 连发第 3 个被拒），全套 18/18 绿）
-- [ ] M2.f Session 工具
+- [x] M2.f Session 工具
+      （验收「AI 可开关/切换会话」达成。六件：list/current/switch/openSsh/
+      openSerial/close，SessionBridge 新协作类（纯函数 SessionHooks，
+      动作类返回 err + out），真实动作在 SessionController 的 agent* 适配器：
+      ①连接发起从 toggleConnect 抽出 openSshFromUi/openSerialFromUi 共用，
+      UI 参数栏仍是唯一真相源（AI 传的 host/port/user/baud 写回参数栏再
+      连接，写入自动触发 Profile 同步，用户可见可回溯；凭据只认界面配置
+      不从 AI 来）；②open 幂等——已连接直接回当前状态不重发（close 异步，
+      立即重开会在 Disconnecting 撞车，重连语义 = AI 先 close 再 open）；
+      ③openSerial 先 refreshPorts 再 findData，找不到列出可用端口；
+      ④switch 即 setMode（切显示与发送目标，不断另一条链路）；close 空 kind
+      断当前活动链路，未连接时空操作 closed=false；⑤agentStatus 的 state
+      switch 重构为 sessionStateText 共用。坑两个：toolMeta 约定是
+      {name, description, params:{参数名:{type,description}}}——漏 name 则
+      tools.list 全是空串名（能排查到「六个空串」即此因）；错误应答
+      ok=false 时 error 在顶层、无 result 字段，断言别往 result 里找。
+      新增 test_agentbridge_session 12 用例（管道级 fake 后端验透传/错误
+      冒泡/缺后端整套不注册 + probeRegistration 阳性对照）+
+      test_sessioncontroller 补 5 用例（list 形状/switch 校验/open 空 host
+      拒且不污染参数栏/openSerial 未知端口拒/close 校验），全套 19/19 绿）
 - [ ] M2.g HTTP/SSE 端点（可选）

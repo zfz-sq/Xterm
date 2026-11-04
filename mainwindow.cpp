@@ -128,6 +128,25 @@ MainWindow::MainWindow(QWidget *parent)
         },
     });
     m_screen.registerTools(&hooks);
+    // ---- M2.f：xterm.session 扩展工具。动作直接落在 SessionController
+    // 的 agent* 适配器上（参数写回参数栏，UI 是唯一真相源）----
+    m_sessionTools.setBackend({
+        [this] { return m_session->agentSessionList(); },
+        [this] { return m_session->agentSessionCurrent(); },
+        [this](const QString &kind, QJsonObject *out) {
+            return m_session->agentSwitchSession(kind, out);
+        },
+        [this](const QJsonObject &params, QJsonObject *out) {
+            return m_session->agentOpenSsh(params, out);
+        },
+        [this](const QJsonObject &params, QJsonObject *out) {
+            return m_session->agentOpenSerial(params, out);
+        },
+        [this](const QString &kind, QJsonObject *out) {
+            return m_session->agentCloseSession(kind, out);
+        },
+    });
+    m_sessionTools.registerTools(&hooks);
     m_mcp->start(hooks, m_store->mcpAllowWrite());
 }
 
