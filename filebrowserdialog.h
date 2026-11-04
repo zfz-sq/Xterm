@@ -89,8 +89,6 @@ private:
     void renameRemote();
     void editLocal();
     void editRemote();
-    void openLocal();
-    void openRemote();
     void copyRemoteSelected();
     void moveRemoteSelected();
     void propsLocal();

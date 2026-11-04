@@ -616,16 +616,7 @@ void FileBrowserDialog::onLocalContextMenu(const QPoint &pos)
     m_shellMenuPos = m_localView->viewport()->mapToGlobal(pos);
     const QStringList paths = selectedLocalPaths();
     const int n = paths.size();
-    int files = 0;
-    for (const QString &path : paths) {
-        if (!QFileInfo(path).isDir())
-            ++files;
-    }
     QMenu menu(this);
-    menu.addAction(themedIcon(QStringLiteral("open.png")), tr("打开"), this, &FileBrowserDialog::openLocal)
-        ->setEnabled(n > 0);
-    menu.addAction(themedIcon(QStringLiteral("edit.png")), tr("编辑"), this, &FileBrowserDialog::editLocal)
-        ->setEnabled(n == 1 && files == 1);
     menu.addAction(themedIcon(QStringLiteral("upload.png")), tr("上传"), this, &FileBrowserDialog::uploadSelected)
         ->setEnabled(m_connected && n > 0);
     menu.addAction(themedIcon(QStringLiteral("trash.png")), tr("删除"), this, &FileBrowserDialog::deleteLocal)
@@ -659,16 +650,7 @@ void FileBrowserDialog::onRemoteContextMenu(const QPoint &pos)
     }
     const QVector<RemoteItem> items = selectedRemote();
     const int n = items.size();
-    int files = 0;
-    for (const RemoteItem &it : items) {
-        if (!it.isDir)
-            ++files;
-    }
     QMenu menu(this);
-    menu.addAction(themedIcon(QStringLiteral("open.png")), tr("打开"), this, &FileBrowserDialog::openRemote)
-        ->setEnabled(n > 0);
-    menu.addAction(themedIcon(QStringLiteral("edit.png")), tr("编辑"), this, &FileBrowserDialog::editRemote)
-        ->setEnabled(m_connected && n == 1 && files == 1);
     menu.addAction(themedIcon(QStringLiteral("download.png")), tr("下载"), this, &FileBrowserDialog::downloadSelected)
         ->setEnabled(m_connected && n > 0);
     menu.addSeparator();
@@ -875,35 +857,6 @@ void FileBrowserDialog::fetchRemoteFile(const QString &remotePath)
     if (!m_connected)
         return;
     m_queue->fetch(false, remotePath, -1);
-}
-
-void FileBrowserDialog::openLocal()
-{
-    // selectionModel 拿到的是排序代理的索引，必须先映射回源模型，
-    // 否则 QFileSystemModel 会把代理内部指针当 QFileSystemNode 解引用而崩溃
-    const QModelIndexList rows = m_localView->selectionModel()->selectedRows(0);
-    if (rows.size() == 1 && m_fsModel->isDir(mapToSource(rows.first()))) {
-        setLocalPath(m_fsModel->filePath(mapToSource(rows.first())));
-        return;
-    }
-    for (const QModelIndex &idx : rows) {
-        const QModelIndex src = mapToSource(idx);
-        if (!m_fsModel->isDir(src))
-            QDesktopServices::openUrl(QUrl::fromLocalFile(m_fsModel->filePath(src)));
-    }
-}
-
-void FileBrowserDialog::openRemote()
-{
-    const QVector<RemoteItem> items = selectedRemote();
-    if (items.size() == 1 && items.first().isDir) {
-        setRemotePath(remoteJoin(m_remotePath, items.first().name));
-        return;
-    }
-    for (const RemoteItem &item : items) {
-        if (!item.isDir)
-            m_queue->fetch(false, remoteJoin(m_remotePath, item.name), qint64(item.size));
-    }
 }
 
 void FileBrowserDialog::copyRemoteSelected()
