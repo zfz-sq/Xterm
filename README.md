@@ -10,9 +10,17 @@
 
 ## 界面预览
 
-| 主界面（串口终端） | SSH 连接参数 | SFTP 文件管理 |
-|---|---|---|
-| ![主界面](docs/screenshots/main.png) | ![SSH 页](docs/screenshots/ssh.png) | ![SFTP 文件管理](docs/screenshots/sftp.png) |
+**主界面（串口终端）**
+
+![主界面](docs/screenshots/main.png)
+
+**SSH 连接参数**
+
+![SSH 页](docs/screenshots/ssh.png)
+
+**SFTP 文件管理**
+
+![SFTP 文件管理](docs/screenshots/sftp.png)
 
 ## 功能亮点
 
