@@ -11,6 +11,7 @@
 #include <QString>
 
 #include <functional>
+#include <memory>
 
 class QLocalServer;
 class QLocalSocket;
@@ -34,8 +35,10 @@ public:
         QJsonObject params;
         QLocalSocket *sock = nullptr;
         QJsonValue id;
+        // 返回 deferred 之后用它完成应答。同步完成不要调用，bridge 按 ToolResult 回。
+        std::function<void(bool ok, const QJsonObject &data, const QString &error)> reply;
     };
-    // deferred = 处理器已接管应答（sendLine 的打字机、wait 的轮询之后回），
+    // deferred = 处理器已接管应答（打字机、wait、以及尚未完成的文件/主机查询），
     // bridge 不再回复；否则 bridge 按 ok/data/error 应答
     struct ToolResult
     {
@@ -45,6 +48,58 @@ public:
         QString error;
     };
     using ToolHandler = std::function<ToolResult(const ToolCall &)>;
+
+    // 后端既可能当场回调（测试 fake、离线失败），也可能等信号（真实 SFTP）。
+    // 当场完成时把结果留在 ToolResult 里；晚到的完成走 ToolCall::reply。
+    class ToolCompletion
+    {
+    public:
+        ToolCompletion() = default;
+        explicit ToolCompletion(const ToolCall &call)
+            : m_state(std::make_shared<State>())
+        {
+            m_state->reply = call.reply;
+        }
+
+        void finish(bool ok, const QJsonObject &data, const QString &error) const
+        {
+            if (!m_state || m_state->settled)
+                return;
+            m_state->settled = true;
+            if (m_state->armed) {
+                if (m_state->reply)
+                    m_state->reply(ok, data, error);
+                return;
+            }
+            m_state->sync = true;
+            m_state->ok = ok;
+            m_state->data = data;
+            m_state->error = error;
+        }
+
+        ToolResult resultOrDefer() const
+        {
+            if (!m_state)
+                return ToolResult{false, false, {}, QStringLiteral("内部错误")};
+            m_state->armed = true;
+            if (m_state->sync)
+                return ToolResult{m_state->ok, false, m_state->data, m_state->error};
+            return ToolResult{true, true, {}, {}};
+        }
+
+    private:
+        struct State
+        {
+            bool settled = false;
+            bool armed = false;
+            bool sync = false;
+            bool ok = false;
+            QJsonObject data;
+            QString error;
+            std::function<void(bool, const QJsonObject &, const QString &)> reply;
+        };
+        std::shared_ptr<State> m_state;
+    };
 
     struct Hooks
     {

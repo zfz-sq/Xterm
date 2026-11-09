@@ -9,6 +9,8 @@
 #include <QTemporaryDir>
 #include <QTemporaryFile>
 
+#include <functional>
+
 #include "agentbridge.h"
 #include "fsbridge.h"
 
@@ -26,46 +28,96 @@ struct FakeFs
     QString root = QStringLiteral("/home/dev");
     QHash<QString, QVector<SftpEntry>> dirs;
     QHash<QString, QByteArray> files;
+    QHash<QString, QString> links; // 词法路径 → realpath（可指向沙箱外）
     QStringList uploads; // 成功 upload 的远端路径记录
+    int listCalls = 0;
+    bool holdList = false;
+    std::function<void(const QVector<SftpEntry> &, const QString &)> heldListDone;
+    QString heldListPath;
+
+    void deliverList(const QString &path,
+                     const std::function<void(const QVector<SftpEntry> &, const QString &)> &done)
+    {
+        ++listCalls;
+        const auto it = dirs.constFind(path);
+        if (it == dirs.constEnd()) {
+            done({}, QStringLiteral("无法打开目录: %1").arg(path));
+            return;
+        }
+        done(it.value(), {});
+    }
+
+    void releaseList()
+    {
+        holdList = false;
+        if (!heldListDone)
+            return;
+        const auto done = heldListDone;
+        const QString path = heldListPath;
+        heldListDone = nullptr;
+        deliverList(path, done);
+    }
 
     FsBridge::FsHooks hooks()
     {
         FsBridge::FsHooks h;
-        h.realPath = [this](const QString &path, QString *err) {
-            Q_UNUSED(err);
-            return path == QLatin1String(".") ? root : path;
-        };
-        h.list = [this](const QString &path, QString *err) {
-            const auto it = dirs.constFind(path);
-            if (it == dirs.constEnd()) {
-                *err = QStringLiteral("无法打开目录: %1").arg(path);
-                return QVector<SftpEntry>();
+        h.realPath = [this](const QString &path,
+                            const std::function<void(const QString &, const QString &)> &done) {
+            if (path == QLatin1String(".")) {
+                done(root, {});
+                return;
             }
-            return it.value();
+            const auto link = links.constFind(path);
+            if (link != links.constEnd()) {
+                done(link.value(), {});
+                return;
+            }
+            if (!dirs.contains(path) && !files.contains(path)) {
+                done({}, QStringLiteral("不存在"));
+                return;
+            }
+            done(path, {});
         };
-        h.download = [this](const QString &remote, const QString &local, QString *err) {
+        h.list = [this](const QString &path,
+                        const std::function<void(const QVector<SftpEntry> &, const QString &)> &done) {
+            if (holdList) {
+                heldListPath = path;
+                heldListDone = done;
+                return;
+            }
+            deliverList(path, done);
+        };
+        h.download = [this](const QString &remote, const QString &local,
+                            const std::function<void(bool, const QString &)> &done) {
             const auto it = files.constFind(remote);
             if (it == files.constEnd()) {
-                *err = QStringLiteral("文件不存在: %1").arg(remote);
-                return false;
+                done(false, QStringLiteral("文件不存在: %1").arg(remote));
+                return;
             }
-            QFile f(local);
-            if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-                *err = QStringLiteral("本地写入失败: %1").arg(local);
-                return false;
-            }
-            f.write(it.value());
-            return true;
+            {
+                QFile f(local);
+                if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                    done(false, QStringLiteral("本地写入失败: %1").arg(local));
+                    return;
+                }
+                f.write(it.value());
+            } // 先关掉再回调，否则读端会看到还没落盘的空文件
+            done(true, {});
         };
-        h.upload = [this](const QString &local, const QString &remote, QString *err) {
-            QFile f(local);
-            if (!f.open(QIODevice::ReadOnly)) {
-                *err = QStringLiteral("本地读取失败: %1").arg(local);
-                return false;
+        h.upload = [this](const QString &local, const QString &remote,
+                          const std::function<void(bool, const QString &)> &done) {
+            QByteArray bytes;
+            {
+                QFile f(local);
+                if (!f.open(QIODevice::ReadOnly)) {
+                    done(false, QStringLiteral("本地读取失败: %1").arg(local));
+                    return;
+                }
+                bytes = f.readAll();
             }
-            files[remote] = f.readAll();
+            files[remote] = bytes;
             uploads << remote;
-            return true;
+            done(true, {});
         };
         return h;
     }
@@ -83,6 +135,8 @@ private slots:
     void readReturnsText();
     void readRejectsOversize();
     void sandboxRejectsOutside();
+    void symlinkOutsideRejected();
+    void inFlightFsCallRejectsAnother();
     void writeRejectedWithoutAllowWrite();
     void writeUploadsWhenAllowed();
     void downloadWorksByDefault();
@@ -288,6 +342,90 @@ void AgentBridgeFsTest::sandboxRejectsOutside()
                      .contains(QStringLiteral("越界")),
                  qPrintable(resp.value(QStringLiteral("error")).toString()));
     }
+    sock.disconnectFromServer();
+}
+
+// 会话根里的符号链接指向沙箱外：词法路径仍在根下，realpath 之后必须拒绝，
+// 且不能去列/写链接另一头。
+void AgentBridgeFsTest::symlinkOutsideRejected()
+{
+    m_fake.links.insert(QStringLiteral("/home/dev/link"), QStringLiteral("/etc/passwd"));
+    m_fake.dirs.insert(QStringLiteral("/home/dev/link"),
+                       { SftpEntry{ QStringLiteral("secret"), 4, 1, 0644, false, false } });
+    const int listsBefore = m_fake.listCalls;
+
+    QLocalSocket sock;
+    sock.connectToServer(m_pipe);
+    QVERIFY(sock.waitForConnected(2000));
+
+    QJsonObject params;
+    params.insert(QStringLiteral("path"), QStringLiteral("link"));
+    sendRequest(&sock, 30, QStringLiteral("xterm.fs.list"), params);
+    const QJsonObject listed = waitReply(&sock);
+    QVERIFY(!listed.value(QStringLiteral("ok")).toBool());
+    QVERIFY(listed.value(QStringLiteral("error")).toString().contains(QStringLiteral("越界")));
+    QCOMPARE(m_fake.listCalls, listsBefore);
+
+    m_fs.setAllowWrite(true);
+    m_fake.uploads.clear();
+    QJsonObject write;
+    write.insert(QStringLiteral("path"), QStringLiteral("link"));
+    write.insert(QStringLiteral("content"), QStringLiteral("pwned"));
+    sendRequest(&sock, 31, QStringLiteral("xterm.fs.write"), write);
+    const QJsonObject wrote = waitReply(&sock);
+    m_fs.setAllowWrite(false);
+    QVERIFY(!wrote.value(QStringLiteral("ok")).toBool());
+    QVERIFY(wrote.value(QStringLiteral("error")).toString().contains(QStringLiteral("越界")));
+    QVERIFY(m_fake.uploads.isEmpty());
+
+    m_fake.links.insert(QStringLiteral("/home/dev/out"), QStringLiteral("/tmp"));
+    m_fake.uploads.clear();
+    m_fs.setAllowWrite(true);
+    QJsonObject nested;
+    nested.insert(QStringLiteral("path"), QStringLiteral("out/new.txt"));
+    nested.insert(QStringLiteral("content"), QStringLiteral("nope"));
+    sendRequest(&sock, 32, QStringLiteral("xterm.fs.write"), nested);
+    const QJsonObject nestedReply = waitReply(&sock);
+    m_fs.setAllowWrite(false);
+    QVERIFY(!nestedReply.value(QStringLiteral("ok")).toBool());
+    QVERIFY(nestedReply.value(QStringLiteral("error")).toString().contains(QStringLiteral("越界")));
+    QVERIFY(m_fake.uploads.isEmpty());
+
+    m_fake.links.clear();
+    m_fake.dirs.remove(QStringLiteral("/home/dev/link"));
+    sock.disconnectFromServer();
+}
+
+// 文件操作未完成时，第二个调用直接拒绝；放行后第一个才应答。
+void AgentBridgeFsTest::inFlightFsCallRejectsAnother()
+{
+    struct Release
+    {
+        FakeFs *fs;
+        ~Release() { fs->releaseList(); }
+    } release{&m_fake};
+
+    m_fake.holdList = true;
+    QLocalSocket sock;
+    sock.connectToServer(m_pipe);
+    QVERIFY(sock.waitForConnected(2000));
+
+    QJsonObject params;
+    params.insert(QStringLiteral("path"), QStringLiteral("."));
+    sendRequest(&sock, 40, QStringLiteral("xterm.fs.list"), params);
+    QTest::qWait(100);
+    QVERIFY(!sock.canReadLine());
+
+    sendRequest(&sock, 41, QStringLiteral("xterm.fs.list"), params);
+    const QJsonObject busy = waitReply(&sock);
+    QCOMPARE(busy.value(QStringLiteral("id")).toInt(), 41);
+    QVERIFY(!busy.value(QStringLiteral("ok")).toBool());
+    QVERIFY(busy.value(QStringLiteral("error")).toString().contains(QStringLiteral("进行中")));
+
+    m_fake.releaseList();
+    const QJsonObject first = waitReply(&sock);
+    QCOMPARE(first.value(QStringLiteral("id")).toInt(), 40);
+    QVERIFY(first.value(QStringLiteral("ok")).toBool());
     sock.disconnectFromServer();
 }
 

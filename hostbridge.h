@@ -21,20 +21,22 @@ class SftpClient;
  * - disk / uptime / top：按需在远端跑一条只读命令（df / /proc / ps），
  *   输出解析成结构化 JSON 后返回，只对 SSH 会话可用（串口无主机概念）
  *
- * 后端注入：HostHooks 是纯函数集——真实实现 hooksForStats()（见
- * sftpclient.cpp）由主窗口挂上；测试注入内存 fake。远端命令都是固定
- * 字符串（top 条数经 qBound 成整数后拼接），无注入面。
+ * 后端注入：HostHooks 是回调集。exec 的真实实现等 SftpClient 信号，
+ * 不在界面线程上空等；同一时刻只跑一条远端命令，进行中的第二次直接拒绝。
+ * cpu / mem 只读缓存，不受这把锁影响。
  */
 class HostBridge
 {
 public:
-    // Host 后端能力，全部同步语义。exec 的 *err 非空 = 命令失败。
     struct HostHooks
     {
-        // stats 通道最新缓存帧（未连接/无样本时各 ok=false）
         std::function<HostSnapshot()> snapshot;
-        // 按需远端命令，返回 stdout；失败置 *err 并返回空串
-        std::function<QString(const QString &command, QString *err)> exec;
+        // 按需远端命令。done 可能当场触发（离线失败、测试 fake），也可能稍后。
+        // err 非空 = 命令失败，out 无效。
+        std::function<void(const QString &command,
+                           const std::function<void(const QString &out,
+                                                    const QString &err)> &done)>
+            exec;
     };
 
     HostBridge() = default;
@@ -45,7 +47,7 @@ public:
     void registerTools(AgentBridge::Hooks *hooks);
 
     // 真实后端：stats 缓存 + SftpClient 按需 exec（实现见 sftpclient.cpp，
-    // 避免本文件拖进 SSH 依赖链；client 须是独立实例，挂同一 SshSession 即可）
+    // 不进入嵌套事件循环；client 须是独立实例，挂同一 SshSession 即可）
     static HostHooks hooksForStats(HostStats *stats, SftpClient *client);
 
     // 远端命令输出的结构化解析（公开静态，单测直接喂文本）：
@@ -55,6 +57,7 @@ public:
 
 private:
     HostHooks m_hooks;
+    bool m_execBusy = false;
 };
 
 #endif // HOSTBRIDGE_H

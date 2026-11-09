@@ -8,6 +8,8 @@
 #include <QLocalSocket>
 #include <QTemporaryDir>
 
+#include <functional>
+
 #include "agentbridge.h"
 #include "hostbridge.h"
 
@@ -32,20 +34,26 @@ struct FakeHost
     {
         HostBridge::HostHooks h;
         h.snapshot = [this] { return snap; };
-        h.exec = [this](const QString &command, QString *err) {
+        h.exec = [this](const QString &command,
+                        const std::function<void(const QString &, const QString &)> &done) {
             commands << command;
             if (!failError.isEmpty()) {
-                *err = failError;
-                return QString();
+                done({}, failError);
+                return;
             }
-            if (command.contains(QLatin1String("df ")))
-                return dfText;
-            if (command.contains(QLatin1String("/proc/uptime")))
-                return uptimeText;
-            if (command.contains(QLatin1String("ps ")))
-                return psText;
-            *err = QStringLiteral("未知命令: %1").arg(command);
-            return QString();
+            if (command.contains(QLatin1String("df "))) {
+                done(dfText, {});
+                return;
+            }
+            if (command.contains(QLatin1String("/proc/uptime"))) {
+                done(uptimeText, {});
+                return;
+            }
+            if (command.contains(QLatin1String("ps "))) {
+                done(psText, {});
+                return;
+            }
+            done({}, QStringLiteral("未知命令: %1").arg(command));
         };
         return h;
     }

@@ -82,7 +82,9 @@ QString AgentBridge::instructions()
         "不要用这些工具操作 top、vim 等全屏程序。\n"
         "\n"
         "若 tools.list 里有 xterm.fs.*，可读写远端文件：仅限会话根目录及子路径"
-        "（沙箱）；写类默认关闭，被拒时说明用户未开启 allow_write。\n"
+        "（沙箱；符号链接按真实路径复核，指向根外会被拒绝）。"
+        "同一时刻只处理一个文件操作，收到「进行中」就等它结束再重试。"
+        "写类默认关闭，被拒时说明用户未开启 allow_write。\n"
         "\n"
         "若 tools.list 里有 xterm.host.*，可读远端主机状态：cpu/mem 来自采样通道"
         "（SSH 连接后约 6 秒就绪，ok=false 时稍后重试），disk/uptime/top 按需"
@@ -357,9 +359,16 @@ void AgentBridge::handleLine(QLocalSocket *sock, const QByteArray &line)
               QStringLiteral("未知工具: %1（tools.list 可查全部工具）").arg(method));
         return;
     }
-    const ToolResult r = it.value()(ToolCall{params, sock, id});
+    ToolCall call;
+    call.params = params;
+    call.sock = sock;
+    call.id = id;
+    call.reply = [this, sock, id](bool ok, const QJsonObject &data, const QString &error) {
+        reply(sock, id, ok, data, error);
+    };
+    const ToolResult r = it.value()(call);
     if (r.deferred)
-        return; // 挂起类工具（sendLine 打字机 / wait 轮询）接管了应答
+        return; // 挂起类工具（打字机 / wait / 异步文件与主机查询）接管了应答
     reply(sock, id, r.ok, r.data, r.error);
 }
 

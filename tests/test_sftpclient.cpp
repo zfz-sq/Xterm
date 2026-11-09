@@ -5,10 +5,13 @@
 #include "ssh/knownhostsstore.h"
 #include "sshsession.h"
 
+#include <QElapsedTimer>
 #include <QFile>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest>
+
+#include <functional>
 
 namespace {
 
@@ -60,7 +63,7 @@ private slots:
     void cancelTransferCancelsActiveDownload();
     void destructionCancelsOwnRequestsAndKeepsSession();
     void ignoresResultsFromOtherAdapters();
-    void synchronousHooksBridgeSignals();
+    void hooksDoNotNestTheEventLoop();
     void hooksForStatsBridgesExec();
 
 private:
@@ -289,9 +292,9 @@ void TestSftpClient::ignoresResultsFromOtherAdapters()
     QCOMPARE(otherOps.count(), 0);
 }
 
-// FsBridge::hooksForSftp（M2.b）：异步信号桥接成同步 FsHooks——
-// 调用返回即有结果（QEventLoop 在实现内部转），错误经 *err 冒泡
-void TestSftpClient::synchronousHooksBridgeSignals()
+// 真实链路的回调必须发生在 hooks 调用返回之后（界面线程没有嵌套事件循环）。
+// 离线失败仍在调用内回调，避免空等 15 秒。
+void TestSftpClient::hooksDoNotNestTheEventLoop()
 {
     connectSession();
     m_api->directoryEntries[QStringLiteral("/home")] = {
@@ -302,17 +305,48 @@ void TestSftpClient::synchronousHooksBridgeSignals()
 
     const FsBridge::FsHooks hooks = FsBridge::hooksForSftp(m_client);
 
+    bool returned = false;
+    bool done = false;
+    bool callbackAfterReturn = false;
+    QString resolved;
     QString err;
-    QCOMPARE(hooks.realPath(QStringLiteral("."), &err), QStringLiteral("/home/tester"));
+    hooks.realPath(QStringLiteral("."), [&](const QString &path, const QString &error) {
+        callbackAfterReturn = returned;
+        resolved = path;
+        err = error;
+        done = true;
+    });
+    returned = true;
+    QTRY_VERIFY(done);
+    QVERIFY(callbackAfterReturn);
     QVERIFY(err.isEmpty());
+    QCOMPARE(resolved, QStringLiteral("/home/tester"));
 
-    const QVector<SftpEntry> entries = hooks.list(QStringLiteral("/home"), &err);
+    QVector<SftpEntry> entries;
+    done = false;
+    err.clear();
+    hooks.list(QStringLiteral("/home"), [&](const QVector<SftpEntry> &es, const QString &error) {
+        entries = es;
+        err = error;
+        done = true;
+    });
+    QTRY_VERIFY(done);
     QVERIFY(err.isEmpty());
     QCOMPARE(entries.size(), 1);
     QCOMPARE(entries.at(0).name, QStringLiteral("a"));
 
     const QString down = m_dir->filePath(QStringLiteral("note.txt"));
-    QVERIFY(hooks.download(QStringLiteral("/home/a/note.txt"), down, &err));
+    done = false;
+    bool ok = false;
+    err.clear();
+    hooks.download(QStringLiteral("/home/a/note.txt"), down,
+                   [&](bool succeeded, const QString &error) {
+                       ok = succeeded;
+                       err = error;
+                       done = true;
+                   });
+    QTRY_VERIFY(done);
+    QVERIFY(ok);
     QVERIFY(err.isEmpty());
     QFile f(down);
     QVERIFY(f.open(QIODevice::ReadOnly));
@@ -320,43 +354,85 @@ void TestSftpClient::synchronousHooksBridgeSignals()
 
     const QString up = writeTempFile(*m_dir, QStringLiteral("push.txt"),
                                      QByteArrayLiteral("yo"));
-    QVERIFY(hooks.upload(up, QStringLiteral("/home/push.txt"), &err));
+    done = false;
+    ok = false;
+    err.clear();
+    hooks.upload(up, QStringLiteral("/home/push.txt"),
+                 [&](bool succeeded, const QString &error) {
+                     ok = succeeded;
+                     err = error;
+                     done = true;
+                 });
+    QTRY_VERIFY(done);
+    QVERIFY(ok);
     QVERIFY(err.isEmpty());
     QCOMPARE(m_api->remoteContents.value(QStringLiteral("/home/push.txt")),
              QByteArrayLiteral("yo"));
 
-    err.clear();
     m_api->opendirResults << nullptr; // 下一次 opendir 失败 → 无法打开目录
-    const QVector<SftpEntry> none = hooks.list(QStringLiteral("/home"), &err);
-    QVERIFY(none.isEmpty());
-    QVERIFY(!err.isEmpty()); // 后端错误同步冒泡，不是静默空结果
+    done = false;
+    entries.clear();
+    err.clear();
+    hooks.list(QStringLiteral("/home"), [&](const QVector<SftpEntry> &es, const QString &error) {
+        entries = es;
+        err = error;
+        done = true;
+    });
+    QTRY_VERIFY(done);
+    QVERIFY(entries.isEmpty());
+    QVERIFY(!err.isEmpty());
 }
 
-// HostBridge::hooksForStats（M2.c）：snapshot 直读 + exec 同步桥接。
-// 离线时 submit() 同步回失败结果，桥接不进事件循环立即冒泡
-// （exec 前的 quit 会丢，这正是 hooksForSftp 同款保护要防的坑）。
+// HostBridge::hooksForStats：snapshot 直读。离线 exec 在调用内回调，不卡 15 秒。
 void TestSftpClient::hooksForStatsBridgesExec()
 {
     HostBridge::HostHooks off = HostBridge::hooksForStats(nullptr, m_client);
     QVERIFY(!off.snapshot().cpuOk); // stats 为空 → 全字段未就绪
     QString err;
-    QVERIFY(off.exec(QStringLiteral("true"), &err).isEmpty());
-    QCOMPARE(err, QStringLiteral("SSH 会话未连接")); // 同步失败，不卡 15s
+    QString out;
+    bool called = false;
+    QElapsedTimer timer;
+    timer.start();
+    off.exec(QStringLiteral("true"), [&](const QString &text, const QString &error) {
+        called = true;
+        out = text;
+        err = error;
+    });
+    QVERIFY(called);
+    QVERIFY(timer.elapsed() < 1000);
+    QVERIFY(out.isEmpty());
+    QCOMPARE(err, QStringLiteral("SSH 会话未连接"));
 
     connectSession();
     m_api->execStdout = QByteArrayLiteral("8615.93 33472.85\n0.52 0.58 0.59");
     m_api->execExitStatus = 0;
     HostBridge::HostHooks on = HostBridge::hooksForStats(nullptr, m_client);
+    called = false;
     err.clear();
-    const QString out = on.exec(QStringLiteral("cat /proc/uptime /proc/loadavg"), &err);
+    out.clear();
+    on.exec(QStringLiteral("cat /proc/uptime /proc/loadavg"),
+            [&](const QString &text, const QString &error) {
+                called = true;
+                out = text;
+                err = error;
+            });
+    QTRY_VERIFY(called);
     QVERIFY(err.isEmpty());
     QCOMPARE(out, QString::fromUtf8("8615.93 33472.85\n0.52 0.58 0.59"));
     QCOMPARE(m_api->execCommands.last(),
              QByteArrayLiteral("cat /proc/uptime /proc/loadavg"));
 
     m_api->execExitStatus = 2; // 退出码非零：输出空时错误是「退出码 2」
+    called = false;
     err.clear();
-    QVERIFY(on.exec(QStringLiteral("false"), &err).isEmpty());
+    out.clear();
+    on.exec(QStringLiteral("false"), [&](const QString &text, const QString &error) {
+        called = true;
+        out = text;
+        err = error;
+    });
+    QTRY_VERIFY(called);
+    QVERIFY(out.isEmpty());
     QVERIFY(!err.isEmpty());
 }
 

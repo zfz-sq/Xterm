@@ -1,10 +1,22 @@
 #include "hostbridge.h"
 
+#include <memory>
+
 namespace {
 
 // top 的默认/上限条数：head 在远端先截断，输出量恒小
 constexpr int kDefaultTopCount = 10;
 constexpr int kMaxTopCount = 50;
+
+struct BusyFlag
+{
+    bool *slot = nullptr;
+    ~BusyFlag()
+    {
+        if (slot)
+            *slot = false;
+    }
+};
 
 } // namespace
 
@@ -161,61 +173,73 @@ void HostBridge::registerTools(AgentBridge::Hooks *hooks)
          QJsonObject());
 
     // —— xterm.host.disk / xterm.host.uptime / xterm.host.top：按需远端命令 ——
+    // 一条命令进行中时拒绝下一条，回调可能当场或稍后到达，不空等界面线程。
+    auto runExec = [this](const AgentBridge::ToolCall &call, const QString &command,
+                          const std::function<AgentBridge::ToolResult(const QString &out)> &use)
+        -> AgentBridge::ToolResult {
+        if (!m_hooks.exec)
+            return {false, false, {}, QStringLiteral("Host 后端未挂载")};
+        if (m_execBusy)
+            return {false, false, {}, QStringLiteral("已有主机查询进行中，请稍后重试")};
+        m_execBusy = true;
+        auto busy = std::shared_ptr<BusyFlag>(new BusyFlag{&m_execBusy});
+        AgentBridge::ToolCompletion completion(call);
+        m_hooks.exec(command, [busy, completion, use](const QString &out, const QString &err) {
+            if (!err.isEmpty()) {
+                completion.finish(false, {}, err);
+                return;
+            }
+            const AgentBridge::ToolResult parsed = use(out);
+            completion.finish(parsed.ok, parsed.data, parsed.error);
+        });
+        return completion.resultOrDefer();
+    };
+
     hooks->tools.insert(QStringLiteral("xterm.host.disk"),
-                        [this](const AgentBridge::ToolCall &) -> AgentBridge::ToolResult {
-                            if (!m_hooks.exec)
-                                return {false, false, {}, QStringLiteral("Host 后端未挂载")};
-                            QString err;
-                            const QString out =
-                                m_hooks.exec(QStringLiteral("LC_ALL=C df -P -k"), &err);
-                            if (!err.isEmpty())
-                                return {false, false, {}, err};
-                            QJsonObject data;
-                            data.insert(QStringLiteral("mounts"), parseDf(out));
-                            return {true, false, data, QString()};
+                        [runExec](const AgentBridge::ToolCall &call) -> AgentBridge::ToolResult {
+                            return runExec(call, QStringLiteral("LC_ALL=C df -P -k"),
+                                           [](const QString &out) {
+                                               QJsonObject data;
+                                               data.insert(QStringLiteral("mounts"), parseDf(out));
+                                               return AgentBridge::ToolResult{true, false, data, {}};
+                                           });
                         });
     meta("xterm.host.disk",
          QStringLiteral("远端磁盘各挂载点用量（df，KiB 与百分比，仅 SSH）"),
          QJsonObject());
 
     hooks->tools.insert(QStringLiteral("xterm.host.uptime"),
-                        [this](const AgentBridge::ToolCall &) -> AgentBridge::ToolResult {
-                            if (!m_hooks.exec)
-                                return {false, false, {}, QStringLiteral("Host 后端未挂载")};
-                            QString err;
-                            const QString out = m_hooks.exec(
-                                QStringLiteral("cat /proc/uptime /proc/loadavg"), &err);
-                            if (!err.isEmpty())
-                                return {false, false, {}, err};
-                            const QJsonObject data = parseUptime(out);
-                            if (data.isEmpty())
-                                return {false, false, {},
-                                        QStringLiteral("无法解析 /proc/uptime 输出")};
-                            return {true, false, data, QString()};
+                        [runExec](const AgentBridge::ToolCall &call) -> AgentBridge::ToolResult {
+                            return runExec(call, QStringLiteral("cat /proc/uptime /proc/loadavg"),
+                                           [](const QString &out) {
+                                               const QJsonObject data = parseUptime(out);
+                                               if (data.isEmpty())
+                                                   return AgentBridge::ToolResult{
+                                                       false, false, {},
+                                                       QStringLiteral("无法解析 /proc/uptime 输出")};
+                                               return AgentBridge::ToolResult{true, false, data, {}};
+                                           });
                         });
     meta("xterm.host.uptime",
          QStringLiteral("远端开机时长与平均负载（/proc，仅 SSH）"),
          QJsonObject());
 
     hooks->tools.insert(QStringLiteral("xterm.host.top"),
-                        [this](const AgentBridge::ToolCall &call) -> AgentBridge::ToolResult {
-                            if (!m_hooks.exec)
-                                return {false, false, {}, QStringLiteral("Host 后端未挂载")};
+                        [runExec](const AgentBridge::ToolCall &call) -> AgentBridge::ToolResult {
                             const int count = qBound(
                                 1, call.params.value(QStringLiteral("count")).toInt(kDefaultTopCount),
                                 kMaxTopCount);
                             // head 多带一行表头；count 已是整数无注入面，
                             // 格式串里的 "%cpu" 不是 %N 占位符、arg 不会动它
-                            QString err;
-                            const QString out = m_hooks.exec(
-                                QStringLiteral("LC_ALL=C ps auxww --sort=-%cpu | head -n %1")
-                                    .arg(count + 1),
-                                &err);
-                            if (!err.isEmpty())
-                                return {false, false, {}, err};
-                            QJsonObject data;
-                            data.insert(QStringLiteral("processes"), parsePs(out, count));
-                            return {true, false, data, QString()};
+                            return runExec(call,
+                                           QStringLiteral("LC_ALL=C ps auxww --sort=-%cpu | head -n %1")
+                                               .arg(count + 1),
+                                           [count](const QString &out) {
+                                               QJsonObject data;
+                                               data.insert(QStringLiteral("processes"),
+                                                           parsePs(out, count));
+                                               return AgentBridge::ToolResult{true, false, data, {}};
+                                           });
                         });
     meta("xterm.host.top",
          QStringLiteral("远端 CPU 占用最高的进程列表（ps，按 CPU 降序，仅 SSH）"),

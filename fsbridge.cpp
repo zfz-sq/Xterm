@@ -6,6 +6,8 @@
 #include <QJsonArray>
 #include <QTemporaryFile>
 
+#include <memory>
+
 namespace {
 
 // read 的默认/上限：AI 读配置/日志够用；巨文件应走 download
@@ -37,6 +39,17 @@ QJsonObject entryToJson(const SftpEntry &e)
     return o;
 }
 
+// 操作结束（含同步回调）时清忙标志。由最外层和最内层回调共同持有。
+struct BusyFlag
+{
+    bool *slot = nullptr;
+    ~BusyFlag()
+    {
+        if (slot)
+            *slot = false;
+    }
+};
+
 } // namespace
 
 QString FsBridge::normalizePosix(const QString &absPath)
@@ -58,15 +71,36 @@ QString FsBridge::normalizePosix(const QString &absPath)
 
 bool FsBridge::refreshRoot()
 {
-    QString err;
-    const QString resolved = m_hooks.realPath
-                                 ? m_hooks.realPath(QStringLiteral("."), &err) : QString();
-    if (resolved.isEmpty() || !resolved.startsWith(QLatin1Char('/'))) {
-        m_root.clear();
-        return false; // 未连接 / 通道未就绪：FS 工具回到「不可用」态
-    }
-    m_root = normalizePosix(resolved);
-    return true;
+    m_root.clear();
+    if (!m_hooks.realPath)
+        return false;
+    const int gen = ++m_rootGen;
+    m_hooks.realPath(QStringLiteral("."), [this, gen](const QString &resolved, const QString &) {
+        if (gen != m_rootGen)
+            return;
+        if (resolved.isEmpty() || !resolved.startsWith(QLatin1Char('/')))
+            return;
+        m_root = normalizePosix(resolved);
+    });
+    return !m_root.isEmpty();
+}
+
+void FsBridge::clearRoot()
+{
+    m_root.clear();
+    ++m_rootGen; // 让尚未回来的 refresh realpath 作废
+}
+
+bool FsBridge::insideRoot(const QString &norm) const
+{
+    if (m_root == QLatin1String("/"))
+        return norm.startsWith(QLatin1Char('/'));
+    return norm == m_root || norm.startsWith(m_root + QLatin1Char('/'));
+}
+
+QString FsBridge::outsideError(const QString &norm) const
+{
+    return QStringLiteral("路径越界: %1 不在会话根目录 %2 内（沙箱限制）").arg(norm, m_root);
 }
 
 bool FsBridge::resolveInside(const QString &input, QString *abs, QString *err) const
@@ -79,40 +113,57 @@ bool FsBridge::resolveInside(const QString &input, QString *abs, QString *err) c
                                ? input
                                : m_root + QLatin1Char('/') + input;
     const QString norm = normalizePosix(joined);
-    if (norm != m_root && !norm.startsWith(m_root + QLatin1Char('/'))) {
-        *err = QStringLiteral("路径越界: %1 不在会话根目录 %2 内（沙箱限制）").arg(norm, m_root);
+    if (!insideRoot(norm)) {
+        *err = outsideError(norm);
         return false;
     }
     *abs = norm;
     return true;
 }
 
-QString FsBridge::readRemoteText(const QString &abs, qint64 maxBytes, QString *err,
-                                 qint64 *size) const
+void FsBridge::canonicalize(const QString &lexical, bool allowCreate,
+                            const std::function<void(const QString &path, const QString &err)> &done) const
 {
-    // download 到本地临时文件再读回：复用既有传输链路，天然带进度与错误语义
-    QTemporaryFile tmp(QDir::temp().filePath(QStringLiteral("xterm-fs-read-XXXXXX")));
-    tmp.setAutoRemove(true);
-    if (!tmp.open()) {
-        *err = QStringLiteral("本地临时文件创建失败");
-        return QString();
+    if (!m_hooks.realPath) {
+        done({}, QStringLiteral("FS 后端未挂载"));
+        return;
     }
-    tmp.close(); // 留出路径给 download 覆盖写
-    if (!m_hooks.download || !m_hooks.download(abs, tmp.fileName(), err))
-        return QString();
-    QFile f(tmp.fileName());
-    if (!f.open(QIODevice::ReadOnly)) {
-        *err = QStringLiteral("读取下载内容失败: %1").arg(abs);
-        return QString();
-    }
-    const QByteArray bytes = f.read(maxBytes + 1); // 多读 1 字节用于判超限
-    if (bytes.size() > maxBytes) {
-        *err = QStringLiteral("文件超过 max_bytes（%1 字节），请改用 xterm.fs.download")
-                   .arg(QString::number(maxBytes));
-        return QString();
-    }
-    *size = bytes.size();
-    return QString::fromUtf8(bytes); // 二进制按 UTF-8 容错解码（无效字节替换）
+    m_hooks.realPath(lexical, [this, lexical, allowCreate, done](const QString &resolved,
+                                                                 const QString &err) {
+        if (!resolved.isEmpty()) {
+            const QString norm = normalizePosix(resolved);
+            if (!insideRoot(norm))
+                done({}, outsideError(norm));
+            else
+                done(norm, {});
+            return;
+        }
+        if (!allowCreate) {
+            done({}, err.isEmpty() ? QStringLiteral("路径不存在: %1").arg(lexical) : err);
+            return;
+        }
+        QString parent, base;
+        splitParentBase(lexical, &parent, &base);
+        if (base.isEmpty()) {
+            done({}, err.isEmpty() ? QStringLiteral("路径不存在: %1").arg(lexical) : err);
+            return;
+        }
+        m_hooks.realPath(parent, [this, parent, base, done](const QString &pres, const QString &perr) {
+            if (pres.isEmpty()) {
+                done({}, perr.isEmpty() ? QStringLiteral("父目录不存在: %1").arg(parent) : perr);
+                return;
+            }
+            const QString pnorm = normalizePosix(pres);
+            if (!insideRoot(pnorm)) {
+                done({}, outsideError(pnorm));
+                return;
+            }
+            const QString joined = (pnorm == QLatin1String("/"))
+                                       ? QStringLiteral("/") + base
+                                       : pnorm + QLatin1Char('/') + base;
+            done(normalizePosix(joined), {});
+        });
+    });
 }
 
 void FsBridge::registerTools(AgentBridge::Hooks *hooks)
@@ -126,15 +177,26 @@ void FsBridge::registerTools(AgentBridge::Hooks *hooks)
         hooks->toolMeta.insert(full, m);
     };
 
-    // —— xterm.fs.stat：存在性 + 元数据（探测不存在也算成功，exists=false）——
+    auto takeBusy = [this](const AgentBridge::ToolCall &call, QString *err,
+                           AgentBridge::ToolCompletion *completion,
+                           std::shared_ptr<BusyFlag> *busy) -> bool {
+        if (m_busy) {
+            *err = QStringLiteral("已有文件操作进行中，请稍后重试");
+            return false;
+        }
+        m_busy = true;
+        *busy = std::shared_ptr<BusyFlag>(new BusyFlag{&m_busy});
+        *completion = AgentBridge::ToolCompletion(call);
+        return true;
+    };
+
+    // —— xterm.fs.stat：存在性 + 元数据。列父目录，不跟随最后一级符号链接 ——
     hooks->tools.insert(QStringLiteral("xterm.fs.stat"),
-                        [this](const AgentBridge::ToolCall &call) -> AgentBridge::ToolResult {
+                        [this, takeBusy](const AgentBridge::ToolCall &call) -> AgentBridge::ToolResult {
                             QString abs, err;
                             if (!resolveInside(call.params.value(QStringLiteral("path")).toString(),
                                                &abs, &err))
                                 return {false, false, {}, err};
-                            if (!m_hooks.list)
-                                return {false, false, {}, QStringLiteral("FS 后端未挂载")};
                             QString parent, base;
                             splitParentBase(abs, &parent, &base);
                             if (base.isEmpty()) { // 会话根本身：目录必然存在
@@ -144,21 +206,43 @@ void FsBridge::registerTools(AgentBridge::Hooks *hooks)
                                 data.insert(QStringLiteral("is_dir"), true);
                                 return {true, false, data, QString()};
                             }
-                            const QVector<SftpEntry> entries = m_hooks.list(parent, &err);
-                            if (!err.isEmpty())
+                            if (!m_hooks.list)
+                                return {false, false, {}, QStringLiteral("FS 后端未挂载")};
+                            AgentBridge::ToolCompletion completion;
+                            std::shared_ptr<BusyFlag> busy;
+                            if (!takeBusy(call, &err, &completion, &busy))
                                 return {false, false, {}, err};
-                            QJsonObject data;
-                            data.insert(QStringLiteral("path"), abs);
-                            for (const SftpEntry &e : entries) {
-                                if (e.name != base)
-                                    continue;
-                                data = entryToJson(e);
-                                data.insert(QStringLiteral("path"), abs);
-                                data.insert(QStringLiteral("exists"), true);
-                                return {true, false, data, QString()};
-                            }
-                            data.insert(QStringLiteral("exists"), false);
-                            return {true, false, data, QString()};
+                            canonicalize(parent, false,
+                                         [this, busy, completion, base, abs](const QString &canonParent,
+                                                                             const QString &canonErr) {
+                                             if (!canonErr.isEmpty()) {
+                                                 completion.finish(false, {}, canonErr);
+                                                 return;
+                                             }
+                                             m_hooks.list(canonParent,
+                                                          [busy, completion, base, abs](
+                                                              const QVector<SftpEntry> &entries,
+                                                              const QString &listErr) {
+                                                              if (!listErr.isEmpty()) {
+                                                                  completion.finish(false, {}, listErr);
+                                                                  return;
+                                                              }
+                                                              QJsonObject data;
+                                                              data.insert(QStringLiteral("path"), abs);
+                                                              for (const SftpEntry &e : entries) {
+                                                                  if (e.name != base)
+                                                                      continue;
+                                                                  data = entryToJson(e);
+                                                                  data.insert(QStringLiteral("path"), abs);
+                                                                  data.insert(QStringLiteral("exists"), true);
+                                                                  completion.finish(true, data, {});
+                                                                  return;
+                                                              }
+                                                              data.insert(QStringLiteral("exists"), false);
+                                                              completion.finish(true, data, {});
+                                                          });
+                                         });
+                            return completion.resultOrDefer();
                         });
     meta("xterm.fs.stat",
          QStringLiteral("查远端文件/目录的元数据（大小/类型/权限/mtime）；不存在时 exists=false"),
@@ -172,25 +256,41 @@ void FsBridge::registerTools(AgentBridge::Hooks *hooks)
              return params;
          }());
 
-    // —— xterm.fs.list：列目录 ——
+    // —— xterm.fs.list：列目录（先 realpath，符号链接指向根外则拒绝）——
     hooks->tools.insert(QStringLiteral("xterm.fs.list"),
-                        [this](const AgentBridge::ToolCall &call) -> AgentBridge::ToolResult {
+                        [this, takeBusy](const AgentBridge::ToolCall &call) -> AgentBridge::ToolResult {
                             QString abs, err;
                             if (!resolveInside(call.params.value(QStringLiteral("path")).toString(),
                                                &abs, &err))
                                 return {false, false, {}, err};
                             if (!m_hooks.list)
                                 return {false, false, {}, QStringLiteral("FS 后端未挂载")};
-                            const QVector<SftpEntry> entries = m_hooks.list(abs, &err);
-                            if (!err.isEmpty())
+                            AgentBridge::ToolCompletion completion;
+                            std::shared_ptr<BusyFlag> busy;
+                            if (!takeBusy(call, &err, &completion, &busy))
                                 return {false, false, {}, err};
-                            QJsonArray arr;
-                            for (const SftpEntry &e : entries)
-                                arr.append(entryToJson(e));
-                            QJsonObject data;
-                            data.insert(QStringLiteral("path"), abs);
-                            data.insert(QStringLiteral("entries"), arr);
-                            return {true, false, data, QString()};
+                            canonicalize(abs, false, [this, busy, completion](const QString &canon,
+                                                                              const QString &canonErr) {
+                                if (!canonErr.isEmpty()) {
+                                    completion.finish(false, {}, canonErr);
+                                    return;
+                                }
+                                m_hooks.list(canon, [busy, completion, canon](const QVector<SftpEntry> &entries,
+                                                                              const QString &listErr) {
+                                    if (!listErr.isEmpty()) {
+                                        completion.finish(false, {}, listErr);
+                                        return;
+                                    }
+                                    QJsonArray arr;
+                                    for (const SftpEntry &e : entries)
+                                        arr.append(entryToJson(e));
+                                    QJsonObject data;
+                                    data.insert(QStringLiteral("path"), canon);
+                                    data.insert(QStringLiteral("entries"), arr);
+                                    completion.finish(true, data, {});
+                                });
+                            });
+                            return completion.resultOrDefer();
                         });
     meta("xterm.fs.list", QStringLiteral("列远端目录条目（name/is_dir/size/mtime/权限）"),
          [] {
@@ -203,25 +303,69 @@ void FsBridge::registerTools(AgentBridge::Hooks *hooks)
              return params;
          }());
 
-    // —— xterm.fs.read：读文本内容（download → 临时文件 → 限长读回）——
+    // —— xterm.fs.read：realpath 后 download → 临时文件 → 限长读回 ——
     hooks->tools.insert(QStringLiteral("xterm.fs.read"),
-                        [this](const AgentBridge::ToolCall &call) -> AgentBridge::ToolResult {
+                        [this, takeBusy](const AgentBridge::ToolCall &call) -> AgentBridge::ToolResult {
                             QString abs, err;
                             if (!resolveInside(call.params.value(QStringLiteral("path")).toString(),
                                                &abs, &err))
                                 return {false, false, {}, err};
+                            if (!m_hooks.download)
+                                return {false, false, {}, QStringLiteral("FS 后端未挂载")};
                             const qint64 maxBytes = qBound<qint64>(
                                 1, call.params.value(QStringLiteral("max_bytes")).toDouble(kDefaultReadBytes),
                                 kMaxReadBytes);
-                            qint64 size = 0;
-                            const QString text = readRemoteText(abs, maxBytes, &err, &size);
-                            if (!err.isEmpty())
+                            AgentBridge::ToolCompletion completion;
+                            std::shared_ptr<BusyFlag> busy;
+                            if (!takeBusy(call, &err, &completion, &busy))
                                 return {false, false, {}, err};
-                            QJsonObject data;
-                            data.insert(QStringLiteral("path"), abs);
-                            data.insert(QStringLiteral("size"), double(size));
-                            data.insert(QStringLiteral("text"), text);
-                            return {true, false, data, QString()};
+                            canonicalize(abs, false, [this, busy, completion, maxBytes](const QString &canon,
+                                                                                        const QString &canonErr) {
+                                if (!canonErr.isEmpty()) {
+                                    completion.finish(false, {}, canonErr);
+                                    return;
+                                }
+                                auto tmp = std::make_shared<QTemporaryFile>(
+                                    QDir::temp().filePath(QStringLiteral("xterm-fs-read-XXXXXX")));
+                                tmp->setAutoRemove(true);
+                                if (!tmp->open()) {
+                                    completion.finish(false, {}, QStringLiteral("本地临时文件创建失败"));
+                                    return;
+                                }
+                                tmp->close();
+                                const QString localName = tmp->fileName();
+                                m_hooks.download(canon, localName,
+                                                 [busy, completion, tmp, canon, maxBytes](bool ok,
+                                                                                          const QString &dlErr) {
+                                                     if (!ok) {
+                                                         completion.finish(false, {}, dlErr);
+                                                         return;
+                                                     }
+                                                     QFile f(tmp->fileName());
+                                                     if (!f.open(QIODevice::ReadOnly)) {
+                                                         completion.finish(false, {},
+                                                                           QStringLiteral("读取下载内容失败: %1")
+                                                                               .arg(canon));
+                                                         return;
+                                                     }
+                                                     const QByteArray bytes = f.read(maxBytes + 1);
+                                                     if (bytes.size() > maxBytes) {
+                                                         completion.finish(
+                                                             false, {},
+                                                             QStringLiteral("文件超过 max_bytes（%1 字节），"
+                                                                            "请改用 xterm.fs.download")
+                                                                 .arg(QString::number(maxBytes)));
+                                                         return;
+                                                     }
+                                                     QJsonObject data;
+                                                     data.insert(QStringLiteral("path"), canon);
+                                                     data.insert(QStringLiteral("size"), double(bytes.size()));
+                                                     data.insert(QStringLiteral("text"),
+                                                                 QString::fromUtf8(bytes));
+                                                     completion.finish(true, data, {});
+                                                 });
+                            });
+                            return completion.resultOrDefer();
                         });
     meta("xterm.fs.read",
          QStringLiteral("读远端文本文件内容（默认尾 64KB，上限 1MB；更大用 download）"),
@@ -239,7 +383,6 @@ void FsBridge::registerTools(AgentBridge::Hooks *hooks)
              return params;
          }());
 
-    // —— 写类（write / upload）：allow_write 显式开启才放行 ——
     auto writeDenied = [] {
         return AgentBridge::ToolResult{false, false, {},
                                        QStringLiteral("写操作被拒绝：allow_write 未开启"
@@ -248,7 +391,7 @@ void FsBridge::registerTools(AgentBridge::Hooks *hooks)
     };
 
     hooks->tools.insert(QStringLiteral("xterm.fs.write"),
-                        [this, writeDenied](const AgentBridge::ToolCall &call)
+                        [this, takeBusy, writeDenied](const AgentBridge::ToolCall &call)
                             -> AgentBridge::ToolResult {
                             if (!m_allowWrite)
                                 return writeDenied();
@@ -256,24 +399,43 @@ void FsBridge::registerTools(AgentBridge::Hooks *hooks)
                             if (!resolveInside(call.params.value(QStringLiteral("path")).toString(),
                                                &abs, &err))
                                 return {false, false, {}, err};
-                            const QByteArray content =
-                                call.params.value(QStringLiteral("content")).toString().toUtf8();
                             if (!m_hooks.upload)
                                 return {false, false, {}, QStringLiteral("FS 后端未挂载")};
-                            // 写本地临时文件再 upload：复用传输链路，覆盖写远端
-                            QTemporaryFile tmp(
+                            const QByteArray content =
+                                call.params.value(QStringLiteral("content")).toString().toUtf8();
+                            auto tmp = std::make_shared<QTemporaryFile>(
                                 QDir::temp().filePath(QStringLiteral("xterm-fs-write-XXXXXX")));
-                            tmp.setAutoRemove(true);
-                            if (!tmp.open())
+                            tmp->setAutoRemove(true);
+                            if (!tmp->open())
                                 return {false, false, {}, QStringLiteral("本地临时文件创建失败")};
-                            tmp.write(content);
-                            tmp.close();
-                            if (!m_hooks.upload(tmp.fileName(), abs, &err))
+                            tmp->write(content);
+                            tmp->close();
+                            AgentBridge::ToolCompletion completion;
+                            std::shared_ptr<BusyFlag> busy;
+                            if (!takeBusy(call, &err, &completion, &busy))
                                 return {false, false, {}, err};
-                            QJsonObject data;
-                            data.insert(QStringLiteral("path"), abs);
-                            data.insert(QStringLiteral("size"), double(content.size()));
-                            return {true, false, data, QString()};
+                            const QString localName = tmp->fileName();
+                            canonicalize(abs, true, [this, busy, completion, tmp, localName, content](
+                                                       const QString &canon, const QString &canonErr) {
+                                if (!canonErr.isEmpty()) {
+                                    completion.finish(false, {}, canonErr);
+                                    return;
+                                }
+                                m_hooks.upload(localName, canon,
+                                               [busy, completion, tmp, canon, content](bool ok,
+                                                                                       const QString &upErr) {
+                                                   if (!ok) {
+                                                       completion.finish(false, {}, upErr);
+                                                       return;
+                                                   }
+                                                   QJsonObject data;
+                                                   data.insert(QStringLiteral("path"), canon);
+                                                   data.insert(QStringLiteral("size"),
+                                                               double(content.size()));
+                                                   completion.finish(true, data, {});
+                                               });
+                            });
+                            return completion.resultOrDefer();
                         });
     meta("xterm.fs.write", QStringLiteral("写远端文本文件（整体覆盖；需 allow_write）"),
          [] {
@@ -290,7 +452,7 @@ void FsBridge::registerTools(AgentBridge::Hooks *hooks)
          }());
 
     hooks->tools.insert(QStringLiteral("xterm.fs.download"),
-                        [this](const AgentBridge::ToolCall &call) -> AgentBridge::ToolResult {
+                        [this, takeBusy](const AgentBridge::ToolCall &call) -> AgentBridge::ToolResult {
                             QString abs, err;
                             if (!resolveInside(
                                     call.params.value(QStringLiteral("remote_path")).toString(),
@@ -303,12 +465,29 @@ void FsBridge::registerTools(AgentBridge::Hooks *hooks)
                                         QStringLiteral("local_path 需为本地绝对路径")};
                             if (!m_hooks.download)
                                 return {false, false, {}, QStringLiteral("FS 后端未挂载")};
-                            if (!m_hooks.download(abs, local, &err))
+                            AgentBridge::ToolCompletion completion;
+                            std::shared_ptr<BusyFlag> busy;
+                            if (!takeBusy(call, &err, &completion, &busy))
                                 return {false, false, {}, err};
-                            QJsonObject data;
-                            data.insert(QStringLiteral("remote"), abs);
-                            data.insert(QStringLiteral("local"), local);
-                            return {true, false, data, QString()};
+                            canonicalize(abs, false, [this, busy, completion, local](const QString &canon,
+                                                                                     const QString &canonErr) {
+                                if (!canonErr.isEmpty()) {
+                                    completion.finish(false, {}, canonErr);
+                                    return;
+                                }
+                                m_hooks.download(canon, local,
+                                                 [busy, completion, canon, local](bool ok, const QString &dlErr) {
+                                                     if (!ok) {
+                                                         completion.finish(false, {}, dlErr);
+                                                         return;
+                                                     }
+                                                     QJsonObject data;
+                                                     data.insert(QStringLiteral("remote"), canon);
+                                                     data.insert(QStringLiteral("local"), local);
+                                                     completion.finish(true, data, {});
+                                                 });
+                            });
+                            return completion.resultOrDefer();
                         });
     meta("xterm.fs.download", QStringLiteral("下载远端文件到本地（读类，默认可用）"),
          [] {
@@ -325,7 +504,7 @@ void FsBridge::registerTools(AgentBridge::Hooks *hooks)
          }());
 
     hooks->tools.insert(QStringLiteral("xterm.fs.upload"),
-                        [this, writeDenied](const AgentBridge::ToolCall &call)
+                        [this, takeBusy, writeDenied](const AgentBridge::ToolCall &call)
                             -> AgentBridge::ToolResult {
                             if (!m_allowWrite)
                                 return writeDenied();
@@ -342,12 +521,29 @@ void FsBridge::registerTools(AgentBridge::Hooks *hooks)
                                 return {false, false, {}, err};
                             if (!m_hooks.upload)
                                 return {false, false, {}, QStringLiteral("FS 后端未挂载")};
-                            if (!m_hooks.upload(local, abs, &err))
+                            AgentBridge::ToolCompletion completion;
+                            std::shared_ptr<BusyFlag> busy;
+                            if (!takeBusy(call, &err, &completion, &busy))
                                 return {false, false, {}, err};
-                            QJsonObject data;
-                            data.insert(QStringLiteral("remote"), abs);
-                            data.insert(QStringLiteral("local"), local);
-                            return {true, false, data, QString()};
+                            canonicalize(abs, true, [this, busy, completion, local](const QString &canon,
+                                                                                    const QString &canonErr) {
+                                if (!canonErr.isEmpty()) {
+                                    completion.finish(false, {}, canonErr);
+                                    return;
+                                }
+                                m_hooks.upload(local, canon,
+                                               [busy, completion, canon, local](bool ok, const QString &upErr) {
+                                                   if (!ok) {
+                                                       completion.finish(false, {}, upErr);
+                                                       return;
+                                                   }
+                                                   QJsonObject data;
+                                                   data.insert(QStringLiteral("remote"), canon);
+                                                   data.insert(QStringLiteral("local"), local);
+                                                   completion.finish(true, data, {});
+                                               });
+                            });
+                            return completion.resultOrDefer();
                         });
     meta("xterm.fs.upload", QStringLiteral("上传本地文件到远端（需 allow_write）"),
          [] {
