@@ -102,6 +102,7 @@ target_link_libraries(test_agentbridge
         Qt6::Test
         Qt6::Network
         Qt6::Gui
+        advapi32
 )
 
 set_target_properties(test_agentbridge PROPERTIES
@@ -158,6 +159,7 @@ target_link_libraries(test_agentbridge_fs
         Qt6::Test
         Qt6::Network
         Qt6::Gui
+        advapi32
 )
 
 set_target_properties(test_agentbridge_fs PROPERTIES
@@ -192,6 +194,7 @@ target_link_libraries(test_agentbridge_host
         Qt6::Test
         Qt6::Network
         Qt6::Gui
+        advapi32
 )
 
 set_target_properties(test_agentbridge_host PROPERTIES
@@ -227,6 +230,7 @@ target_link_libraries(test_agentbridge_screen
         Qt6::Test
         Qt6::Network
         Qt6::Gui
+        advapi32
 )
 
 set_target_properties(test_agentbridge_screen PROPERTIES
@@ -261,6 +265,7 @@ target_link_libraries(test_agentbridge_session
         Qt6::Test
         Qt6::Network
         Qt6::Gui
+        advapi32
 )
 
 set_target_properties(test_agentbridge_session PROPERTIES
@@ -295,6 +300,7 @@ target_link_libraries(test_thememanager
     PRIVATE
         Qt6::Test
         Qt6::Widgets
+        advapi32
 )
 
 set_target_properties(test_thememanager PROPERTIES
@@ -302,6 +308,32 @@ set_target_properties(test_thememanager PROPERTIES
 )
 
 add_test(NAME test_thememanager COMMAND test_thememanager)
+
+# 配置落盘：SSH 密码不进 config.json，私钥路径仍保留
+add_executable(test_commandstore
+    test_commandstore.cpp
+    "${CMAKE_SOURCE_DIR}/commandstore.cpp"
+    "${CMAKE_SOURCE_DIR}/commandstore.h"
+    "${CMAKE_SOURCE_DIR}/sshtarget.h"
+)
+
+target_include_directories(test_commandstore
+    PRIVATE
+        "${CMAKE_SOURCE_DIR}"
+)
+
+target_link_libraries(test_commandstore
+    PRIVATE
+        Qt6::Test
+        Qt6::Gui
+        advapi32
+)
+
+set_target_properties(test_commandstore PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)
+
+add_test(NAME test_commandstore COMMAND test_commandstore)
 
 # 全局快捷键协作类（M1.b）：只验 action 创建/快捷键/触发信号/文案，不依赖主窗口
 add_executable(test_hotkeymanager
@@ -361,6 +393,7 @@ target_link_libraries(test_mcpmainhook
         Qt6::Test
         Qt6::Widgets
         Qt6::Network
+        advapi32
 )
 
 set_target_properties(test_mcpmainhook PROPERTIES
@@ -657,6 +690,7 @@ target_link_libraries(test_sessioncontroller
         ole32
         shlwapi
         uuid
+        advapi32
 )
 
 xterm_deploy_ssh_runtime(test_sessioncontroller)

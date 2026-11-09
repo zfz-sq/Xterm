@@ -1,5 +1,7 @@
 #include "commandstore.h"
 
+#include <QCoreApplication>
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -9,6 +11,70 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QStandardPaths>
+
+#include <string>
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <wincred.h>
+
+namespace {
+
+// 凭据名带应用名：单测改了 applicationName 就不会碰到用户正在用的 Xterm 凭据。
+std::wstring sshPasswordTarget(const QString &profile)
+{
+    const QString key = QStringLiteral("Xterm/%1/ssh/%2")
+                            .arg(QCoreApplication::applicationName(), profile);
+    return std::wstring(reinterpret_cast<const wchar_t *>(key.utf16()), key.size());
+}
+
+void forgetSshPassword(const QString &profile)
+{
+    if (profile.isEmpty())
+        return;
+    const std::wstring target = sshPasswordTarget(profile);
+    CredDeleteW(target.c_str(), CRED_TYPE_GENERIC, 0);
+}
+
+bool storeSshPassword(const QString &profile, const QString &password)
+{
+    if (profile.isEmpty())
+        return false;
+    const std::wstring target = sshPasswordTarget(profile);
+    const QByteArray blob = password.toUtf8();
+    CREDENTIALW cred{};
+    cred.Type = CRED_TYPE_GENERIC;
+    cred.TargetName = const_cast<LPWSTR>(target.c_str());
+    cred.CredentialBlobSize = static_cast<DWORD>(blob.size());
+    cred.CredentialBlob = blob.isEmpty()
+                              ? nullptr
+                              : reinterpret_cast<LPBYTE>(const_cast<char *>(blob.constData()));
+    cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
+    if (!CredWriteW(&cred, 0)) {
+        qWarning().noquote()
+            << QStringLiteral("Xterm: 无法保存 SSH 密码，错误码 %1").arg(GetLastError());
+        return false;
+    }
+    return true;
+}
+
+QString loadSshPassword(const QString &profile)
+{
+    if (profile.isEmpty())
+        return {};
+    const std::wstring target = sshPasswordTarget(profile);
+    PCREDENTIALW cred = nullptr;
+    if (!CredReadW(target.c_str(), CRED_TYPE_GENERIC, 0, &cred) || cred == nullptr)
+        return {};
+    const QString password = QString::fromUtf8(
+        reinterpret_cast<const char *>(cred->CredentialBlob), int(cred->CredentialBlobSize));
+    CredFree(cred);
+    return password;
+}
+
+} // namespace
 
 CommandStore::CommandStore(QObject *parent)
     : QObject(parent)
@@ -77,6 +143,7 @@ bool CommandStore::removeProfile(const QString &name)
 {
     for (int i = 0; i < m_profiles.size(); ++i) {
         if (m_profiles[i].name == name) {
+            forgetSshPassword(name);
             m_profiles.removeAt(i);
             if (m_lastProfile == name)
                 m_lastProfile = m_profiles.isEmpty() ? QString() : m_profiles.first().name;
@@ -103,7 +170,7 @@ static QJsonObject profileToJson(const Profile &p)
     s[QStringLiteral("host")] = p.ssh.host;
     s[QStringLiteral("port")] = p.ssh.port;
     s[QStringLiteral("user")] = p.ssh.user;
-    s[QStringLiteral("password")] = p.ssh.password;
+    // 密码进 Windows 凭据库，不写进 config.json（和 agent.json 放在同一目录）。
     s[QStringLiteral("privateKey")] = p.ssh.privateKey;
     s[QStringLiteral("connectTimeoutSec")] = p.ssh.connectTimeoutSec;
     s[QStringLiteral("extraArgs")] = p.ssh.extraArgs;
@@ -142,7 +209,7 @@ static Profile profileFromJson(const QJsonObject &o)
     p.ssh.host = s.value(QStringLiteral("host")).toString();
     p.ssh.port = s.value(QStringLiteral("port")).toInt(22);
     p.ssh.user = s.value(QStringLiteral("user")).toString();
-    p.ssh.password = s.value(QStringLiteral("password")).toString();
+    // 旧文件里的 password 由 load() 迁进凭据库，这里不再读进内存。
     p.ssh.privateKey = s.value(QStringLiteral("privateKey")).toString();
     p.ssh.connectTimeoutSec = s.value(QStringLiteral("connectTimeoutSec")).toInt(10);
     p.ssh.extraArgs = s.value(QStringLiteral("extraArgs")).toString();
@@ -178,11 +245,25 @@ bool CommandStore::load()
 
     const QJsonObject root = doc.object();
     m_profiles.clear();
+    bool stripLegacyPasswords = false;
     const QJsonArray arr = root.value(QStringLiteral("profiles")).toArray();
     for (const QJsonValue &v : arr) {
-        Profile p = profileFromJson(v.toObject());
-        if (!p.name.isEmpty())
-            m_profiles.append(p);
+        const QJsonObject obj = v.toObject();
+        Profile p = profileFromJson(obj);
+        if (p.name.isEmpty())
+            continue;
+        const QString legacy = obj.value(QStringLiteral("ssh")).toObject()
+                                   .value(QStringLiteral("password")).toString();
+        const QString stored = loadSshPassword(p.name);
+        if (!stored.isEmpty())
+            p.ssh.password = stored;
+        else if (!legacy.isEmpty()) {
+            storeSshPassword(p.name, legacy);
+            p.ssh.password = legacy;
+        }
+        if (!legacy.isEmpty())
+            stripLegacyPasswords = true;
+        m_profiles.append(p);
     }
     if (m_profiles.isEmpty())
         m_profiles = { defaultProfile() };
@@ -219,6 +300,9 @@ bool CommandStore::load()
         if (!rule.text.isEmpty() && rule.color.isValid())
             m_keywords.append(rule);
     }
+    // 旧配置把密码明文写在 json 里：迁进凭据库后立刻重写，把字段删掉。
+    if (stripLegacyPasswords)
+        save();
     return true;
 }
 
@@ -255,6 +339,13 @@ QList<KeywordRule> CommandStore::defaultKeywords(bool dark)
 
 bool CommandStore::save() const
 {
+    for (const Profile &p : m_profiles) {
+        if (p.ssh.password.isEmpty())
+            forgetSshPassword(p.name);
+        else
+            storeSshPassword(p.name, p.ssh.password);
+    }
+
     const QString path = configPath();
     QDir().mkpath(QFileInfo(path).absolutePath());
 

@@ -155,6 +155,7 @@ target_link_libraries(Xterm
         ole32
         shlwapi
         uuid
+        advapi32
 )
 
 xterm_deploy_ssh_runtime(Xterm)
