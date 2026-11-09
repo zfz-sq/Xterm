@@ -96,6 +96,25 @@ def title_of(hwnd):
     return buf.value
 
 
+def ensure_fit(hwnd, max_w=1880, max_h=1000):
+    """Shrink/move the window fully inside the screen before PrintWindow.
+
+    PrintWindow copies the DWM texture, and regions that stick out of the
+    physical screen may never be composited there (black bands) — the 2x
+    window is 2080x1360 on a 1920x1080 display. Fitting inside keeps the
+    full texture live; rendering stays 2x (logical size shrinks instead).
+    """
+    r = RECT()
+    u.GetWindowRect(hwnd, ctypes.byref(r))
+    w, h = r.right - r.left, r.bottom - r.top
+    scale = min(1.0, max_w / w, max_h / h)
+    nw, nh = int(w * scale), int(h * scale)
+    if (nw, nh) == (w, h) and 0 <= r.left <= 30 and 0 <= r.top <= 30:
+        return
+    u.SetWindowPos(hwnd, 0, 10, 10, nw, nh, 0x4)  # SWP_NOZORDER
+    time.sleep(1.5)
+
+
 def find_window(pid, prefix):
     for h, t in windows_of_pid(pid):
         if t.startswith(prefix):
@@ -133,6 +152,8 @@ def main():
         if "串口" not in title_of(hwnd):     # start on the serial page
             key(VK["F9"])
             time.sleep(1.0)
+        ensure_fit(hwnd)
+        foreground(hwnd)
         capture_window(hwnd).save(OUT_DIR + r"\main.png")
         print("saved main.png")
 
@@ -151,6 +172,8 @@ def main():
             if sftp:
                 break
         if sftp:
+            ensure_fit(sftp)
+            foreground(sftp)
             capture_window(sftp).save(OUT_DIR + r"\sftp.png")
             print("saved sftp.png")
             u.PostMessageW(sftp, WM_CLOSE, 0, 0)
