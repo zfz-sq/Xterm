@@ -1,8 +1,22 @@
 # Xterm
 
+[![Release](https://img.shields.io/badge/release-v0.1.0-blue)](https://github.com/yyp-U/Xterm/releases) [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)](https://github.com/yyp-U/Xterm/releases)
+
 面向嵌入式开发的**串口 + SSH 双模终端**（Windows / Qt 6 / C++17）。
 
 一条串口链路 + 一条 SSH 链路同时存活、一键切换；SFTP 双栏文件管理复用 SSH 同一条连接；命令栏、关键词高亮、滚动历史查找，并内置 MCP 桥——本机 AI（Claude 等）可直接读屏、发命令。Win11 原生体验：无边框窗口、暗/亮主题、圆角弹窗。
+
+> **下载**：[Xterm-0.1.0-win64-portable.zip](https://github.com/yyp-U/Xterm/releases/download/v0.1.0/Xterm-0.1.0-win64-portable.zip)（免安装，解压后直接运行 `bin\Xterm.exe`，无需安装 Qt 或其他运行库）
+
+## 界面预览
+
+| 暗色主题 | 亮色主题 |
+|---|---|
+| ![暗色主题主界面](docs/screenshots/main-dark.png) | ![亮色主题主界面](docs/screenshots/main-light.png) |
+
+| SSH 连接参数 | 字体设置 | 关于 |
+|---|---|---|
+| ![SSH 页](docs/screenshots/ssh-dark.png) | ![字体设置](docs/screenshots/font-dialog.png) | ![关于](docs/screenshots/about.png) |
 
 ## 功能亮点
 
