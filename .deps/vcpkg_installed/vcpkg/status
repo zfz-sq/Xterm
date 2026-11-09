@@ -1,0 +1,42 @@
+Package: vcpkg-cmake-config
+Version: 2026-07-21
+Architecture: x64-mingw-dynamic
+Multi-Arch: same
+Abi: b5ed5df747c1b215c7d56abe256571075d35c6e2e30cee51507d44188417a7ab
+Status: install ok installed
+
+Package: vcpkg-cmake
+Version: 2025-08-07
+Architecture: x64-mingw-dynamic
+Multi-Arch: same
+Abi: 5baf6ddf4fe78c0cc65ef040aece1bd0c70bb43d3157ce98d52ce49441fa580e
+Status: install ok installed
+
+Package: vcpkg-cmake-get-vars
+Version: 2025-05-29
+Depends: vcpkg-cmake
+Architecture: x64-mingw-dynamic
+Multi-Arch: same
+Abi: af73df456f35693939d9f118e065935155bfb95026be974af51a4e72befcbc02
+Status: install ok installed
+
+Package: openssl
+Version: 3.6.5
+Port-Version: 1
+Depends: vcpkg-cmake, vcpkg-cmake-config, vcpkg-cmake-get-vars
+Architecture: x64-mingw-dynamic
+Multi-Arch: same
+Abi: d61db5d4e94d63229ee2e330f1b96769cd65ad367eb108df0349dc4873f6ceaa
+Description: OpenSSL is an open source project that provides a robust, commercial-grade, and full-featured toolkit for the Transport Layer Security (TLS) and Secure Sockets Layer (SSL) protocols. It is also a general-purpose cryptography library.
+Status: install ok installed
+
+Package: libssh
+Version: 0.12.2
+Depends: openssl, vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-mingw-dynamic
+Multi-Arch: same
+Abi: d783529198a05b91b1d4e5a5118e64c6ab2f1e871af1c4849c989d9c195cb490
+Description: libssh is a multiplatform C library implementing the SSHv2 protocol on client and server side
+Default-Features: pcap, server
+Status: install ok installed
+

@@ -2,7 +2,8 @@
 build/
 cmake-build-*/
 out/
-.deps/
+# vcpkg 工具本体（~1.5GB）不进仓库；预编译产物 vcpkg_installed/ 与 overlay-ports/ 入库供克隆即用
+.deps/vcpkg/
 
 # IDE local config
 .qtcreator/

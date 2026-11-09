@@ -53,13 +53,17 @@
 
 ## 获取与构建
 
-### 1) 安装第三方依赖（libssh + OpenSSL，需联网）
+### 1) 第三方依赖（libssh + OpenSSL）
+
+仓库已内置预编译依赖 `.deps/vcpkg_installed/x64-mingw-dynamic/`（约 34 MB），克隆后**无需联网安装，直接进入下一步**。
+
+需要升级或重建依赖时（可选）：
 
 ```powershell
 powershell -File scripts/bootstrap-ssh-deps.ps1
 ```
 
-脚本会用 vcpkg 以清单模式安装 libssh 0.12.2 与 OpenSSL 3.6.5 到 `.deps/vcpkg_installed/`（约 34 MB 产物；vcpkg 工具本体缓存约 1.5 GB，可随时删除重建）。
+脚本会用 vcpkg 以清单模式安装 libssh 0.12.2 与 OpenSSL 3.6.5 到 `.deps/vcpkg_installed/`（约 34 MB 产物；vcpkg 工具本体缓存约 1.5 GB，不入库，可随时删除重建）。
 
 ### 2) 配置与构建
 
