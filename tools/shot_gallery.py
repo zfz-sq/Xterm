@@ -114,26 +114,31 @@ def main():
         with open(CONFIG, encoding="utf-8") as f:
             backup = json.load(f)
     try:
-        # ---- dark theme session ----
-        proc, hwnd = launch("dark", backup)
+        # ---- light theme session (README gallery is light-only) ----
+        proc, hwnd = launch("light", backup)
         foreground(hwnd)
-        shot(hwnd, "main-dark.png")          # serial page, dark
-        key(VK["F9"]); time.sleep(0.8)       # switch to SSH page
-        shot(hwnd, "ssh-dark.png")
-        key(VK["F9"]); time.sleep(0.4)       # back to serial
+        shot(hwnd, "main.png")                  # serial page
+        key(VK["F9"]); time.sleep(0.8)           # switch to SSH page
+        shot(hwnd, "ssh.png")
+        key(VK["F9"]); time.sleep(0.4)           # back to serial
 
         # font dialog: title-bar "设置" menu, 3rd item = 字体
         r = rect_of(hwnd)
-        click(r.left + 60, r.top + 15); time.sleep(0.6)
-        for _ in range(3):
-            key(VK["DOWN"]); time.sleep(0.12)
-        key(VK["ENTER"]); time.sleep(1.0)
-        dlg = [w for w in windows_of_pid(proc.pid) if "字体" in w[1]]
+        dlg = []
+        for mx in (60, 68, 52):
+            click(r.left + mx, r.top + 15); time.sleep(0.6)
+            for _ in range(3):
+                key(VK["DOWN"]); time.sleep(0.12)
+            key(VK["ENTER"]); time.sleep(1.0)
+            dlg = [w for w in windows_of_pid(proc.pid) if "字体" in w[1]]
+            if dlg:
+                break
+            key(VK["ESC"]); time.sleep(0.3)
         if dlg:
             shot(dlg[0][0], "font-dialog.png")
             key(VK["ESC"]); time.sleep(0.4)
         else:
-            key(VK["ESC"]); print("font dialog NOT found (menu click missed?)")
+            print("font dialog NOT found (all menu offsets missed)")
 
         # about dialog: "帮助" menu, 3rd item = 关于 Xterm
         r = rect_of(hwnd)
@@ -153,21 +158,8 @@ def main():
         else:
             print("about dialog NOT found (all menu offsets missed)")
 
-        # F10 SFTP requires a live SSH session; try, skip silently if refused
-        key(VK["F10"]); time.sleep(1.0)
-        others = [w for w in windows_of_pid(proc.pid)
-                  if w[1] and "Xterm —" not in w[1]]
-        if others:
-            shot(others[0][0], "sftp.png")
-            key(VK["ESC"]); time.sleep(0.3)
-        else:
-            print("sftp skipped (no ssh session)")
-        proc.kill()
-
-        # ---- light theme session ----
-        proc, hwnd = launch("light", backup)
-        foreground(hwnd)
-        shot(hwnd, "main-light.png")
+        # F10 SFTP requires a live SSH session; tools/shot_sftp.py attaches to
+        # a connected instance for that shot - skipped here.
         proc.kill()
     finally:
         if had_config and backup is not None:

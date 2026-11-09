@@ -10,13 +10,13 @@
 
 ## 界面预览
 
-| 暗色主题 | 亮色主题 |
+| 主界面（串口终端） | SFTP 文件管理 |
 |---|---|
-| ![暗色主题主界面](docs/screenshots/main-dark.png) | ![亮色主题主界面](docs/screenshots/main-light.png) |
+| ![主界面](docs/screenshots/main.png) | ![SFTP 文件管理](docs/screenshots/sftp.png) |
 
 | SSH 连接参数 | 字体设置 | 关于 |
 |---|---|---|
-| ![SSH 页](docs/screenshots/ssh-dark.png) | ![字体设置](docs/screenshots/font-dialog.png) | ![关于](docs/screenshots/about.png) |
+| ![SSH 页](docs/screenshots/ssh.png) | ![字体设置](docs/screenshots/font-dialog.png) | ![关于](docs/screenshots/about.png) |
 
 ## 功能亮点
 
