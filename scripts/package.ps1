@@ -24,10 +24,10 @@ foreach ($dll in "legacy.dll", "libssh.dll", "libcrypto-3-x64.dll",
     }
 }
 
-# 2. Qt DLL 与 llvm-mingw 运行库
+# 2. Qt DLL 与 llvm-mingw 运行库（libunwind 是 libc++ 的 unwind 依赖，缺了弹“找不到 libunwind.dll”）
 Write-Host "== Qt DLLs =="
 foreach ($dll in "Qt6Core.dll", "Qt6Gui.dll", "Qt6Network.dll", "Qt6SerialPort.dll",
-                 "Qt6Widgets.dll", "libc++.dll") {
+                 "Qt6Widgets.dll", "libc++.dll", "libunwind.dll") {
     Copy-Item (Join-Path $QtBin $dll) -Destination $Bin -Force
 }
 
