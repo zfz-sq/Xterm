@@ -36,7 +36,8 @@ void CaptionButton::paintEvent(QPaintEvent *event)
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
     const qreal cx = rect().center().x();
-    const qreal cy = rect().center().y();
+    // 与菜单文字同幅下移 2px（对应 QSS 里 #TitleBar QToolButton 的 padding-top: 4px），保持视觉基线一致
+    const qreal cy = rect().center().y() + 2;
 
     QColor c = m_color;
     if (m_glyph == Close && (underMouse() || isDown()))
@@ -90,7 +91,7 @@ TitleBar::TitleBar(QWidget *parent)
     m_iconLabel = new QLabel(this);
     m_iconLabel->setObjectName(QStringLiteral("TitleIcon"));
     m_iconLabel->setPixmap(QPixmap(QStringLiteral(":/icons/app.png"))
-                               .scaled(18, 18, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                               .scaled(20, 20, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     layout->addWidget(m_iconLabel);
     layout->addSpacing(6);
 

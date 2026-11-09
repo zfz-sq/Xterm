@@ -322,7 +322,7 @@ void UiBuilder::setupTitleBar()
         // ---- 品牌区: 图标 / 名称 / 副标题，整体居中 ----
         auto *brand = new QWidget;
         auto *brandLay = new QVBoxLayout(brand);
-        brandLay->setContentsMargins(28, 24, 28, 0);
+        brandLay->setContentsMargins(28, 18, 28, 0);
         brandLay->setSpacing(4);
         auto *icon = new QLabel;
         icon->setPixmap(QPixmap(QStringLiteral(":/icons/app.png"))
@@ -344,13 +344,10 @@ void UiBuilder::setupTitleBar()
         // ---- 正文: 简介 + 信息卡片 ----
         auto *body = new QWidget;
         auto *bodyLay = new QVBoxLayout(body);
-        bodyLay->setContentsMargins(28, 18, 28, 20);
+        bodyLay->setContentsMargins(28, 12, 28, 12);
         bodyLay->setSpacing(14);
         auto *desc = new QLabel(
-            tr("面向嵌入式调试：串口与 SSH 两条链路独立存活、一键切换互不打断；"
-               "SFTP 双栏文件管理共享同一条 SSH 连接；终端支持 vim / htop 等"
-               "全屏程序、关键词高亮与滚动历史查找；内置 MCP 桥，"
-               "可让 AI 直接操作已连接的终端。"));
+            tr("面向嵌入式调试：SFTP 双栏文件管理、内置 MCP 桥，可让 AI 直接操作终端。"));
         desc->setWordWrap(true);
         bodyLay->addWidget(desc);
         lay->addWidget(body);
@@ -360,8 +357,8 @@ void UiBuilder::setupTitleBar()
         // ---- 页脚: 第三方组件 / 版权 / 按钮 ----
         auto *foot = new QWidget;
         auto *footLay = new QVBoxLayout(foot);
-        footLay->setContentsMargins(28, 14, 28, 16);
-        footLay->setSpacing(10);
+        footLay->setContentsMargins(28, 12, 28, 12);
+        footLay->setSpacing(8);
 
         // 组件名挂上游源码主页，点击走默认浏览器；QSS 管不到富文本 <a>，
         // 链接色用调色板 Link 角色按主题上色
@@ -996,7 +993,6 @@ void UiBuilder::openFontSettings()
 {
     FramelessDialog dlg(m_window);
     dlg.setDialogTitle(tr("字体"));
-    dlg.resize(480, 400);
 
     // 取消要回滚：记下打开前的字体族与字号
     const QString prevFamily = m_serialView->fontFamily();
@@ -1085,6 +1081,9 @@ void UiBuilder::openFontSettings()
     lay->addStretch(1);
     lay->addLayout(btnRow);
     dlg.setContentLayout(lay);
+    // 高度贴合内容自然高度，消除 stretch 吃掉的固定 400 带来的大片留白；
+    // 宽度仍固定 480 保证表单/预览排版稳定
+    dlg.resize(480, dlg.sizeHint().height());
 
     if (dlg.exec() == QDialog::Accepted) {
         // 显式写一次：用户没改动时也保证存储与当前显示一致。

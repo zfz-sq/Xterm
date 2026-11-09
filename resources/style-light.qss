@@ -527,9 +527,14 @@ QWidget#TitleBar {
     border: none;
 }
 
+QWidget#TitleBar QLabel#TitleIcon {
+    padding-top: 4px; /* 与菜单文字/系统按钮同幅下移，视觉对齐 */
+}
+
 QWidget#TitleBar QLabel#TitleLabel {
     color: #6A6A6E;
     padding-left: 8px;
+    padding-top: 4px; /* 与菜单按钮文字同幅下移，视觉基线对齐 */
     font-size: 12px;
 }
 
@@ -537,7 +542,7 @@ QWidget#TitleBar QToolButton {
     background: transparent;
     border: none;
     color: #24292E;
-    padding: 0 8px;
+    padding: 4px 8px 0; /* 顶部 padding 把文字/图标往下压一点，纠正垂直居中的视觉偏上 */
 }
 
 QWidget#TitleBar QToolButton:hover {
