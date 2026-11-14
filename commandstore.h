@@ -22,6 +22,11 @@ struct KeywordRule
     QString text;
     QColor color = QColor(0xE0, 0x6C, 0x75); // 默认暖红，报错类关键词常用
     bool enabled = true;
+    // -1 = 固定色（用户改过色或自定义词）；0-7 = 跟随主题终端调色板的
+    // normal 槽位（1红/2绿/3黄/6青）。内置默认规则带槽位：切主题时高亮
+    // 随终端调色板实时换色（如深底亮色规则换到浅色主题不再发淟）。
+    // color 字段始终存最近一次解析出的具体色（旧路径/落盘可读）
+    int themeSlot = -1;
 };
 
 struct ConnectionConfig
@@ -72,9 +77,11 @@ public:
     QString lastProfile() const { return m_lastProfile; }
     void setLastProfile(const QString &name) { m_lastProfile = name; }
 
-    // 主题: "dark" / "light"
-    bool isDarkTheme() const { return m_theme != QStringLiteral("light"); }
-    void setDarkTheme(bool dark) { m_theme = dark ? QStringLiteral("dark") : QStringLiteral("light"); }
+    // 主题 ID（如 "dark", "light", "dracula", "nord", "monokai", "solarized-dark", "solarized-light", "one-dark"）
+    QString theme() const { return m_theme; }
+    void setTheme(const QString &themeId) { m_theme = themeId; }
+    bool isDarkTheme() const;
+    void setDarkTheme(bool dark);
 
     // 终端字号（pt，0 = 未设置，用系统默认）。全局设置，两页共用
     int fontSize() const { return m_fontSize; }
@@ -85,9 +92,9 @@ public:
     QString terminalFont() const { return m_terminalFont; }
     void setTerminalFont(const QString &family) { m_terminalFont = family; }
 
-    // 命令栏收起状态（true = 整栏收起，只剩右侧竖排按钮组）
-    bool commandBarCollapsed() const { return m_commandBarCollapsed; }
-    void setCommandBarCollapsed(bool collapsed) { m_commandBarCollapsed = collapsed; }
+    // 多功能侧边栏（命令栏卡片）显隐：标题栏侧边栏按钮切换，启动恢复（true = 展开）
+    bool sidebarVisible() const { return m_sidebarVisible; }
+    void setSidebarVisible(bool visible) { m_sidebarVisible = visible; }
 
     // OSC 52（远端写剪贴板）策略：ask（默认，每次弹窗确认）/ allow（直接写）/
     // deny（拒绝并提示）。全局设置，两页一致；弹窗勾「以后自动允许」落库
@@ -108,6 +115,22 @@ public:
     int maxScrollback() const { return m_maxScrollback; }
     void setMaxScrollback(int lines) { m_maxScrollback = qBound(100, lines, 1000000); }
 
+    // 串口多行慢速粘贴（防缓冲区溢出丢失字节）
+    bool serialSlowPaste() const { return m_serialSlowPaste; }
+    void setSerialSlowPaste(bool enabled) { m_serialSlowPaste = enabled; }
+    int serialSlowPasteDelay() const { return m_serialSlowPasteDelay; }
+    void setSerialSlowPasteDelay(int ms) { m_serialSlowPasteDelay = qBound(10, ms, 2000); }
+
+    // 串口拔插热检测自动重连
+    bool serialAutoReconnect() const { return m_serialAutoReconnect; }
+    void setSerialAutoReconnect(bool enabled) { m_serialAutoReconnect = enabled; }
+
+    // 长时间静默后重新产生日志时的任务栏状态闪烁提醒
+    bool silenceAlert() const { return m_silenceAlert; }
+    void setSilenceAlert(bool enabled) { m_silenceAlert = enabled; }
+    int silenceAlertSeconds() const { return m_silenceAlertSeconds; }
+    void setSilenceAlertSeconds(int sec) { m_silenceAlertSeconds = qBound(1, sec, 3600); }
+
     // MCP 写类 FS 工具（xterm.fs.write / upload）总开关（M2.b 安全边界：
     // 默认拒绝，需显式开启；agent.json 里同步披露 allow_write）。读类不受控
     bool mcpAllowWrite() const { return m_mcpAllowWrite; }
@@ -120,6 +143,11 @@ public:
     // 信息青，true/false 沿用 PASS/FAIL 的绿红语义。首次使用（配置里还没有
     // keywords 键）时作为初始规则；之后就是普通规则，改删都不复活。
     static QList<KeywordRule> defaultKeywords(bool dark);
+
+    // 关键词槽位经典色（dark = One Dark 系 / light = kLight 系，与历史上
+    // defaultKeywords 的固定色同源）：内置 dark/light 主题下槽位规则按此解析，
+    // 保证零视觉变化；槽位语义 1红/2绿/3黄/6青，其余槽位返回无效色（回退固定色）
+    static QColor classicKeywordColor(int slot, bool dark);
 
     // 上次使用的工作模式: "serial" / "ssh"
     QString mode() const { return m_mode; }
@@ -138,11 +166,16 @@ private:
     QString m_mode = QStringLiteral("serial");
     int m_fontSize = 0;
     QString m_terminalFont;
-    bool m_commandBarCollapsed = false;
+    bool m_sidebarVisible = true;
     QString m_osc52Policy = QStringLiteral("ask");
     bool m_selectToCopy = false;
     int m_maxScrollback = 10000;
     bool m_mcpAllowWrite = false;
+    bool m_serialSlowPaste = true;
+    int m_serialSlowPasteDelay = 50;
+    bool m_serialAutoReconnect = true;
+    bool m_silenceAlert = true;
+    int m_silenceAlertSeconds = 5;
     QList<KeywordRule> m_keywords;
 };
 

@@ -1,16 +1,24 @@
 #include "mainwindow.h"
 
+#include <QApplication>
 #include <QCloseEvent>
+#include <QDateTime>
 #include <QEvent>
 #include <QIcon>
 #include <QKeyEvent>
 #include <QStatusBar>
+
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <dbt.h>
+#endif
 
 #include "agentbridge.h"
 #include "commandbar.h"
 #include "hotkeymanager.h"
 #include "mcpmainhook.h"
 #include "screenview.h"
+#include "serialsession.h"
 #include "sftpclient.h"
 #include "sshsession.h"
 #include "thememanager.h"
@@ -29,14 +37,14 @@ MainWindow::MainWindow(QWidget *parent)
     m_store = new CommandStore(this);
     m_theme = new ThemeManager(m_store, this);
     // MCP 挂钩协作类：拥有桥接、角标按钮、状态/锁定标签；
-    // 按钮稍后挂命令栏收起态的侧边按钮组（挂载点归主窗口）。
+    // MCP 状态标签等仍由主窗口挂状态栏；MCP 提示词内容现住侧边栏第三页（UiBuilder 注入），
+    // 原收起态侧边按钮组已废弃，不再挂载 MCP 按钮。
     m_mcp = new McpMainHook(ui->statusbar, this);
     // 全局快捷键协作类须在标题栏之前创建：标题栏「工具」菜单
     // 直接取用其 action（同 M1.a 的连接/创建顺序教训）
     m_hotkey = new HotkeyManager(this);
 
     m_uiBuilder = new UiBuilder(this, ui, m_store, m_theme, m_hotkey, m_mcp, this);
-    m_uiBuilder->commandBar()->addSideButton(m_mcp->button());
 
     m_session = new SessionController(this, ui, m_store, m_mcp, this);
     m_session->attachTerminal(m_uiBuilder->serialView(), m_uiBuilder->sshView(),
@@ -55,9 +63,9 @@ MainWindow::MainWindow(QWidget *parent)
     // 会出现外壳已切亮、终端仍旧黑的错位
     m_theme->applyNow();
     m_uiBuilder->onThemeToggled(m_theme->isDark());
-    // 恢复上次保存的命令栏收起状态（侧边按钮组形态）、终端字号/字体族、
+    // 恢复上次保存的侧边栏显隐（标题栏按钮勾态同步）、终端字号/字体族、
     // 关键词高亮规则（均为全局设置，两页一致）
-    m_uiBuilder->commandBar()->setCollapsed(m_store->commandBarCollapsed());
+    m_uiBuilder->applySidebarVisible(m_store->sidebarVisible());
     m_uiBuilder->restoreTerminalFontSettings();
     m_uiBuilder->applyKeywords(m_store->keywords());
     // OSC 52 策略（全局，两页一致）：ask / allow / deny
@@ -80,6 +88,9 @@ MainWindow::MainWindow(QWidget *parent)
     m_session->reloadProfiles(m_store->lastProfile());
     m_session->setMode(m_store->mode() == QStringLiteral("ssh") ? Mode::Ssh : Mode::Serial,
                        false);
+    m_uiBuilder->serialView()->setSlowPaste(m_store->serialSlowPaste());
+    m_uiBuilder->serialView()->setSlowPasteDelay(m_store->serialSlowPasteDelay());
+    m_session->setAutoReconnect(m_store->serialAutoReconnect());
 
     // ---- MCP 桥：数据适配器归 SessionController，组装成 Hooks 注入 ----
     AgentBridge::Hooks hooks;
@@ -191,6 +202,29 @@ void MainWindow::connectSignals()
             m_uiBuilder->sshView()->setSelectToCopy(on);
         });
     }
+
+    // 串口慢速粘贴进度与取消状态提示
+    connect(m_uiBuilder->serialView(), &ScreenView::slowPasteProgress, this,
+            [this](int current, int total) {
+                ui->statusbar->showMessage(
+                    tr("正在慢速粘贴：%1/%2 行（按 Esc 或 Ctrl+C 取消）").arg(current).arg(total));
+            });
+    connect(m_uiBuilder->serialView(), &ScreenView::slowPasteFinished, this, [this] {
+        ui->statusbar->showMessage(tr("慢速粘贴已完成"), 3000);
+    });
+    connect(m_uiBuilder->serialView(), &ScreenView::slowPasteCancelled, this, [this] {
+        ui->statusbar->showMessage(tr("慢速粘贴已取消"), 3000);
+    });
+
+    // 静默检测与任务栏闪烁提醒（串口与 SSH 均支持）
+    connect(m_session->serial(), &SerialSession::received, this, &MainWindow::onDataReceivedForAlert);
+    connect(m_session->ssh(), &SshSession::received, this, &MainWindow::onDataReceivedForAlert);
+    connect(m_session->serial(), &SerialSession::opened, this, [this] {
+        m_lastDataTimeMs = QDateTime::currentMSecsSinceEpoch();
+    });
+    connect(m_session->ssh(), &SshSession::opened, this, [this] {
+        m_lastDataTimeMs = QDateTime::currentMSecsSinceEpoch();
+    });
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
@@ -228,11 +262,34 @@ void MainWindow::closeEvent(QCloseEvent *event)
     event->accept();
 }
 
-void MainWindow::changeEvent(QEvent *event)
+void MainWindow::onDataReceivedForAlert(const QByteArray &data)
 {
-    if (event->type() == QEvent::WindowStateChange) {
-        // 窗口化 6px 留白 / 最大化贴满（外围与终端网格内边距一并处理）
-        m_uiBuilder->applyWindowMargins(isMaximized());
+    if (data.isEmpty())
+        return;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (m_store->silenceAlert() && m_lastDataTimeMs > 0) {
+        const qint64 elapsedSec = (now - m_lastDataTimeMs) / 1000;
+        if (elapsedSec >= m_store->silenceAlertSeconds()) {
+            if (!isActiveWindow() || isMinimized()) {
+                QApplication::alert(this, 0); // 持续闪烁直到用户切回窗口
+            }
+        }
     }
-    QMainWindow::changeEvent(event);
+    m_lastDataTimeMs = now;
+}
+
+bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)
+{
+#ifdef Q_OS_WIN
+    if (eventType == "windows_generic_MSG" || eventType == "windows_dispatcher_MSG") {
+        const auto *msg = static_cast<const MSG *>(message);
+        if (msg->message == WM_DEVICECHANGE) {
+            if (msg->wParam == DBT_DEVICEARRIVAL || msg->wParam == DBT_DEVICEREMOVECOMPLETE) {
+                if (m_session)
+                    m_session->onDeviceChanged();
+            }
+        }
+    }
+#endif
+    return QMainWindow::nativeEvent(eventType, message, result);
 }

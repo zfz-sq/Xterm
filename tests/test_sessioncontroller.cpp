@@ -52,6 +52,7 @@ private slots:
     void agentOpenSshEmptyHostRejected();
     void agentOpenSerialUnknownPortRejected();
     void agentCloseSessionValidatesKind();
+    void autoReconnectPendingStateAndCancel();
 
 private:
     Ui::MainWindow *m_ui = nullptr;
@@ -297,6 +298,28 @@ void TestSessionController::agentCloseSessionValidatesKind()
 
     QVERIFY(m_session->agentCloseSession(QStringLiteral("serial"), &out).isEmpty());
     QCOMPARE(out.value(QStringLiteral("closed")).toBool(), false);
+}
+
+void TestSessionController::autoReconnectPendingStateAndCancel()
+{
+    QVERIFY(m_session->autoReconnect());
+    QVERIFY(!m_session->isAutoReconnectPending());
+
+    // 模拟物理拔出信号
+    emit m_session->serial()->deviceRemoved(QStringLiteral("COM99"));
+    QVERIFY(m_session->isAutoReconnectPending());
+
+    // 主动取消
+    m_session->cancelAutoReconnect();
+    QVERIFY(!m_session->isAutoReconnectPending());
+
+    // 再次模拟拔出
+    emit m_session->serial()->deviceRemoved(QStringLiteral("COM99"));
+    QVERIFY(m_session->isAutoReconnectPending());
+
+    // 模拟用户点击连接/断开按钮
+    m_session->toggleConnect();
+    QVERIFY(!m_session->isAutoReconnectPending());
 }
 
 QTEST_MAIN(TestSessionController) // 组装 QMainWindow 及全套部件，需 QApplication

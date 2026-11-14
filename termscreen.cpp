@@ -177,6 +177,26 @@ void TermScreen::setDark(bool dark)
     m_dark = dark;
 }
 
+void TermScreen::setCustomPalette(const QColor normal[8], const QColor bright[8],
+                                  const QColor &fg, const QColor &bg,
+                                  const QColor &selection, const QColor &info)
+{
+    for (int i = 0; i < 8; ++i) {
+        m_customNormal[i] = normal[i];
+        m_customBright[i] = bright[i];
+    }
+    m_customFg = fg;
+    m_customBg = bg;
+    m_customSelection = selection;
+    m_customInfo = info;
+    m_hasCustomPalette = true;
+}
+
+void TermScreen::resetCustomPalette()
+{
+    m_hasCustomPalette = false;
+}
+
 void TermScreen::setReplyHandler(std::function<void(const QByteArray &)> reply)
 {
     m_reply = std::move(reply);
@@ -228,6 +248,22 @@ const TermLine *TermScreen::lineAbsolute(int absRow) const
 
 QColor TermScreen::resolve(const TermColor &color, bool foreground) const
 {
+    if (m_hasCustomPalette) {
+        switch (color.kind) {
+        case TermColor::Info:
+            return m_customInfo;
+        case TermColor::Rgb:
+            return QColor::fromRgb(color.rgb);
+        case TermColor::Indexed: {
+            const int idx = qBound(0, int(color.index), 15);
+            return idx < 8 ? m_customNormal[idx] : m_customBright[idx - 8];
+        }
+        case TermColor::Default:
+            break;
+        }
+        return foreground ? m_customFg : m_customBg;
+    }
+
     const Palette &pal = palette(m_dark);
     switch (color.kind) {
     case TermColor::Info:
@@ -261,17 +297,17 @@ QColor TermScreen::background(const TermCell &cell) const
 
 QColor TermScreen::defaultForeground() const
 {
-    return palette(m_dark).fg;
+    return m_hasCustomPalette ? m_customFg : palette(m_dark).fg;
 }
 
 QColor TermScreen::defaultBackground() const
 {
-    return palette(m_dark).bg;
+    return m_hasCustomPalette ? m_customBg : palette(m_dark).bg;
 }
 
 QColor TermScreen::selectionBackground() const
 {
-    return palette(m_dark).selection;
+    return m_hasCustomPalette ? m_customSelection : palette(m_dark).selection;
 }
 
 TermCell TermScreen::blankCell() const

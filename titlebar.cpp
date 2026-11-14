@@ -14,8 +14,9 @@
 #include <QWindow>
 
 namespace {
-constexpr int kBarHeight = 30;
-constexpr int kBtnSize = 40; // 系统按钮宽度（VSCode 同款横向矩形热区）
+constexpr int kBarHeight = 30;   // 标题栏高度保持原样（用户定稿 2026-11-14 四轮：不加高）
+constexpr int kBtnHeight = 28;   // 三类按钮统一 28×28 正方形（热区够大且栏内上下各留 1px）
+constexpr int kCaptionWidth = 28; // 系统按钮同尺寸正方形（用户定稿：最大化等也一样大）
 } // namespace
 
 // ---------- CaptionButton: 矢量画 Win11 风格系统按钮字形 ----------
@@ -24,7 +25,7 @@ CaptionButton::CaptionButton(Glyph glyph, QWidget *parent)
     : QToolButton(parent)
     , m_glyph(glyph)
 {
-    setFixedSize(kBtnSize, kBarHeight);
+    setFixedSize(kCaptionWidth, kBtnHeight);
     setFocusPolicy(Qt::NoFocus);
 }
 
@@ -108,9 +109,23 @@ TitleBar::TitleBar(QWidget *parent)
 
     m_themeBtn = new QToolButton(this);
     m_themeBtn->setObjectName(QStringLiteral("TitleThemeBtn"));
-    m_themeBtn->setFixedHeight(kBarHeight); // 热区撑满栏高，点击更好点
+    // 正方形居中不贴栏边（用户定稿 2026-11-14 四轮：28×28 统一尺寸）：hover 圆角块才是按钮形状
+    m_themeBtn->setFixedSize(kBtnHeight, kBtnHeight);
     connect(m_themeBtn, &QToolButton::clicked, this, &TitleBar::themeClicked);
     layout->addWidget(m_themeBtn);
+
+    // 侧边栏切换（Termius 同位：主题按钮右侧）：命令栏卡片已升级为多功能侧边栏
+    // （命令/主题/MCP 三页），此按钮控制其展开/收起，收起后终端铺满窗口；
+    // 不用 checked 态（用户定稿：侧边栏开着时按钮常亮不协调），状态只存在 m_sidebarShown
+    m_sidebarBtn = new QToolButton(this);
+    m_sidebarBtn->setObjectName(QStringLiteral("TitleSidebarBtn"));
+    m_sidebarBtn->setFixedSize(kBtnHeight, kBtnHeight);
+    m_sidebarBtn->setToolTip(tr("展开 / 收起侧边栏"));
+    connect(m_sidebarBtn, &QToolButton::clicked, this, [this] {
+        m_sidebarShown = !m_sidebarShown;
+        emit sidebarToggled(m_sidebarShown);
+    });
+    layout->addWidget(m_sidebarBtn);
 
     m_minBtn = new CaptionButton(CaptionButton::Minimize, this);
     m_minBtn->setObjectName(QStringLiteral("TitleMinBtn"));
@@ -147,7 +162,7 @@ QToolButton *TitleBar::addMenuButton(const QString &title)
     auto *btn = new QToolButton(this);
     btn->setObjectName(QStringLiteral("TitleMenuBtn"));
     btn->setText(title);
-    btn->setFixedHeight(kBarHeight); // 热区撑满栏高
+    btn->setFixedHeight(kBtnHeight); // 与图标/系统按钮同高，栏内居中不贴边（hover 圆角块统一）
     btn->setPopupMode(QToolButton::InstantPopup);
     // 插到标题文字之前：菜单项永远紧挨应用图标一排，标题始终居右弹性区前
     if (auto *box = qobject_cast<QHBoxLayout *>(layout()))
@@ -161,19 +176,48 @@ void TitleBar::setThemeIcon(const QIcon &icon, const QString &tooltip)
     m_themeBtn->setToolTip(tooltip);
 }
 
+void TitleBar::setSidebarShown(bool shown)
+{
+    m_sidebarShown = shown; // 只同步状态不发信号（启动恢复）；按钮无常亮选中态
+}
+
+// 侧边栏按钮字形色随主题（QPainter 画面板图标：外框+右侧面板列，Termius 同款）
 void TitleBar::applyCaptionTheme(bool dark)
 {
     const QColor c = CaptionButton::captionForeground(dark);
     m_minBtn->setGlyphColor(c);
     m_maxBtn->setGlyphColor(c);
     m_closeBtn->setGlyphColor(c);
+
+    QPixmap pm(20, 20);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    QPen pen(c, 1.4);
+    pen.setCapStyle(Qt::FlatCap);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+    p.drawRoundedRect(QRectF(2.0, 3.0, 16.0, 14.0), 3.0, 3.0); // 外框
+    p.drawLine(QLineF(12.7, 3.7, 12.7, 16.3));                  // 主区|侧列分隔线
+    p.setPen(Qt::NoPen);
+    p.setBrush(c);
+    p.drawRect(QRectF(14.3, 6.0, 2.0, 2.4)); // 侧列内容小块
+    p.drawRect(QRectF(14.3, 10.2, 2.0, 2.4));
+    p.end();
+    m_sidebarBtn->setIcon(QIcon(pm));
+}
+
+// 按钮字形/提示跟随最大化态：伪最大化路径（UiBuilder::toggleMaximized）不触发
+// WindowStateChange，eventFilter 拿不到通知，由 UiBuilder 手动调这里同步
+void TitleBar::setMaximizedShown(bool maximized)
+{
+    m_maxBtn->setGlyph(maximized ? CaptionButton::Restore : CaptionButton::Maximize);
+    m_maxBtn->setToolTip(maximized ? tr("向下还原") : tr("最大化"));
 }
 
 void TitleBar::updateMaxButtonGlyph()
 {
-    const bool max = window() && window()->isMaximized();
-    m_maxBtn->setGlyph(max ? CaptionButton::Restore : CaptionButton::Maximize);
-    m_maxBtn->setToolTip(max ? tr("向下还原") : tr("最大化"));
+    setMaximizedShown(window() && window()->isMaximized());
 }
 
 // ---- 拖动移动窗口（优先走系统拖动，保留手动路径兜底） ----

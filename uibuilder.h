@@ -2,6 +2,7 @@
 #define UIBUILDER_H
 
 #include <QObject>
+#include <QRect> // 伪最大化还原几何成员（m_restoreGeometry）
 
 #include "commandstore.h" // QList<KeywordRule>
 
@@ -30,7 +31,7 @@ class MainWindow;
  *   （连接状态、XOFF 提示、MCP 标签挂载、内核日志静音开关）
  * - 模式/连接状态的控件级刷新（updateModeUi / updateConnectionUi /
  *   updatePersistentStatus），由 SessionController 的信号驱动
- * - 主题级联刷新（onThemeToggled）、窗口留白（applyWindowMargins）
+ * - 主题级联刷新（onThemeToggled）
  * - 设置菜单对话框：关键词高亮、终端字体；关键词规则落到两页终端
  *
  * 边界：只做控件编排与刷新，会话决策一律经 SessionController；
@@ -63,9 +64,11 @@ public:
     void updateConnectionUi();
     void updatePersistentStatus();
     void onThemeToggled(bool dark);
-    void applyWindowMargins(bool maximized);
+    void applySidebarVisible(bool shown); // 侧边栏展开/收起统一入口（标题栏按钮与启动恢复共用）
+    void toggleMaximized();               // 最大化/还原切换（标题栏按钮与双击共用，自维护伪最大化状态）
 
     // —— 设置菜单与关键词 ——
+    void openThemeSettings();    // 主题设置对话框（卡片/色块预览/即时切换）
     void openKeywordSettings();  // 关键词高亮编辑（表格，改即预览）
     void openFontSettings();     // 终端字体族 + 字号（改即预览，两页同步）
     void applyKeywords(const QList<KeywordRule> &rules); // 落存储并同步两页
@@ -89,6 +92,7 @@ private:
     void setupTerminal();
     void setupStatusBar();
     void onHighlightRequested(const QString &word); // 终端选中词右键「高亮此词」
+    void relocateCommandBar(); // 命令栏浮层贴终端面板右缘，并同步两页终端的右缘让位
 
     QMainWindow *m_window = nullptr; // 仅窗口级操作，见类注释
     Ui::MainWindow *m_ui = nullptr;
@@ -105,6 +109,11 @@ private:
     QLabel *m_xoffLabel = nullptr; // XOFF 提示：发出 Ctrl+S 亮、Ctrl+Q 灭
     KmsgMuteToggle *m_kmsgBtn = nullptr;
     QString m_shellTitle; // SSH 视图标题（OSC 0/2），窗口标题跟随
+    // FramelessWindowHint 伪最大化状态：Qt 对无边框窗口 setWindowState(Maximized)
+    // 只做 setGeometry 不置 zoomed 位，isMaximized() 恒 false，切换/字形
+    // 全靠这两个成员自维护
+    bool m_fakeMaximized = false;
+    QRect m_restoreGeometry; // 进入伪最大化前的窗口几何（还原用）
 };
 
 #endif // UIBUILDER_H

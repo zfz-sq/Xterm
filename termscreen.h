@@ -57,6 +57,10 @@ public:
 
     void setDark(bool dark);
     bool isDark() const { return m_dark; }
+    void setCustomPalette(const QColor normal[8], const QColor bright[8],
+                          const QColor &fg, const QColor &bg,
+                          const QColor &selection, const QColor &info);
+    void resetCustomPalette();
 
     // 返回值：从滚动历史头部丢掉的行数；-1 表示历史被整段清掉。
     int feed(const QByteArray &data);
@@ -200,6 +204,13 @@ private:
     bool m_insertMode = false;
     bool m_bell = false;
     bool m_dark = true;
+    bool m_hasCustomPalette = false;
+    QColor m_customNormal[8];
+    QColor m_customBright[8];
+    QColor m_customFg;
+    QColor m_customBg;
+    QColor m_customSelection;
+    QColor m_customInfo;
     bool m_histCleared = false;
     bool m_clearRequested = false; // 本块里出现过清屏（ED），收尾时再丢一次历史
     int m_clearFollowups = 0;      // 清屏后紧接着的几块若把旧屏滚进历史，也丢掉

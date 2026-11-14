@@ -107,6 +107,8 @@ qt_add_executable(Xterm
     termscreen.h
     screenview.cpp
     screenview.h
+    scrollflash.cpp
+    scrollflash.h
     sftpclient.cpp
     sftpclient.h
     hoststats.cpp

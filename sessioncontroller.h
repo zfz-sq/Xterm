@@ -74,6 +74,12 @@ public:
     // —— 连接与断开（连接按钮 / F5 / 各输入框回车共用入口）——
     void toggleConnect();
     void refreshPorts();
+    void onDeviceChanged(); // Windows WM_DEVICECHANGE 热插拔事件通知
+    void setAutoReconnect(bool enabled) { m_autoReconnect = enabled; }
+    bool autoReconnect() const { return m_autoReconnect; }
+    bool isAutoReconnectPending() const { return m_autoReconnectPending; }
+    void cancelAutoReconnect();
+    void tryAutoReconnect();
     void browsePrivateKey();
     void openFileBrowser();          // 工具栏「文件」按钮 / F10
     void onSftpRequested();          // F10：未连接时终端内给提示
@@ -156,6 +162,7 @@ private:
     bool confirmHostKeyChange(const QString &host, const QString &stored,
                               const QString &current);
     ScreenView *activeView() const;
+    void handleDeviceChangeDebounced();
 
     Ui::MainWindow *m_ui = nullptr;
     QWidget *m_window = nullptr;      // 仅作弹窗 parent（居中于主窗口），不碰其它
@@ -166,6 +173,8 @@ private:
     HostStats *m_hostStats = nullptr;
     CompletionEngine *m_completion = nullptr; // 非 QObject，指针托管生命周期
     QTimer *m_saveTimer = nullptr;
+    QTimer *m_deviceChangeTimer = nullptr;
+    QTimer *m_reconnectTimer = nullptr;
     FileBrowserDialog *m_fileBrowser = nullptr; // SFTP 双栏窗口，挂在共享 SshSession 上
     ScreenView *m_serialView = nullptr;         // UiBuilder 创建（不拥有）
     ScreenView *m_sshView = nullptr;
@@ -174,6 +183,9 @@ private:
     Mode m_mode = Mode::Serial;
     QString m_currentProfile;
     bool m_loading = false; // 批量回填参数期间抑制 onConnectionParamChanged
+    bool m_autoReconnect = true;
+    bool m_autoReconnectPending = false;
+    QString m_reconnectPort;
 };
 
 #endif // SESSIONCONTROLLER_H

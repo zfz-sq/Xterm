@@ -1,5 +1,6 @@
 #include "transferdialog.h"
 
+#include "scrollflash.h"
 #include "sftpclient.h"
 
 #include <QDateTime>
@@ -40,7 +41,7 @@ TransferDialog::TransferDialog(SftpClient *client, QWidget *parent)
     m_bar = new QProgressBar(this);
     m_bar->setRange(0, 100);
     m_bar->setValue(0);
-    m_bar->setFormat(tr("空闲"));
+    m_bar->setTextVisible(false); // 窄条不嵌文字，进度/速率在表格行与汇总文案里
     m_summary = new QLabel(tr("队列为空"), this);
 
     m_cancelBtn = new QPushButton(tr("取消当前"), this);
@@ -67,6 +68,7 @@ TransferDialog::TransferDialog(SftpClient *client, QWidget *parent)
     connect(m_client, &SftpClient::transferProgress, this, &TransferDialog::onProgress);
     connect(m_client, &SftpClient::transferFinished, this, &TransferDialog::onFinished);
     connect(m_client, &SftpClient::opFinished, this, &TransferDialog::onOpFinished);
+    ScrollFlash::attachTree(this); // 任务表滚动条：滚动浮现/待机隐藏
 }
 
 int TransferDialog::enqueue(bool upload, const QString &localPath,
@@ -131,7 +133,6 @@ void TransferDialog::pump()
         return;
     }
     m_bar->setValue(0);
-    m_bar->setFormat(tr("空闲"));
     m_cancelBtn->setEnabled(false);
 }
 
@@ -160,7 +161,6 @@ void TransferDialog::onProgress(int id, qint64 done, qint64 total)
 
         const int pct = job.size > 0 ? int(done * 100 / job.size) : 0;
         m_bar->setValue(pct);
-        m_bar->setFormat(tr("%1% · %2").arg(pct).arg(humanRate(job.rateBps)));
         emitProgress();
         return;
     }

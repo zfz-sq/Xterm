@@ -29,10 +29,19 @@ add_executable(test_screenview
     test_screenview.cpp
     "${CMAKE_SOURCE_DIR}/screenview.cpp"
     "${CMAKE_SOURCE_DIR}/screenview.h"
+    # ScreenView 的终端滚动条显隐由 ScrollFlash 接管（attachTree 链入）
+    "${CMAKE_SOURCE_DIR}/scrollflash.cpp"
+    "${CMAKE_SOURCE_DIR}/scrollflash.h"
     "${CMAKE_SOURCE_DIR}/termscreen.cpp"
     "${CMAKE_SOURCE_DIR}/termscreen.h"
     "${CMAKE_SOURCE_DIR}/completionengine.cpp"
     "${CMAKE_SOURCE_DIR}/completionengine.h"
+    # applyTheme(bool) 经 ThemeManager::themeById 查内置主题库，
+    # 连带 commandstore（主题状态源 + wincred 需要 advapi32）
+    "${CMAKE_SOURCE_DIR}/thememanager.cpp"
+    "${CMAKE_SOURCE_DIR}/thememanager.h"
+    "${CMAKE_SOURCE_DIR}/commandstore.cpp"
+    "${CMAKE_SOURCE_DIR}/commandstore.h"
     # OSC 52 询问弹窗用 FramelessDialog（与主程序同款无边框风格，
     # 连带 titlebar/icons/qrc —— 与 test_mcpmainhook 同一套依赖组合）
     "${CMAKE_SOURCE_DIR}/framelessdialog.cpp"
@@ -53,6 +62,7 @@ target_link_libraries(test_screenview
     PRIVATE
         Qt6::Test
         Qt6::Widgets
+        advapi32
 )
 
 set_target_properties(test_screenview PROPERTIES
@@ -309,6 +319,31 @@ set_target_properties(test_thememanager PROPERTIES
 
 add_test(NAME test_thememanager COMMAND test_thememanager)
 
+# 滚动条显隐协作类（Termius 式）：验 attach 幂等、滚动闪光属性翻转、
+# 待机超时回落与鼠标穿透切换；纯 widget 逻辑，不依赖 QSS（属性驱动）
+add_executable(test_scrollflash
+    test_scrollflash.cpp
+    "${CMAKE_SOURCE_DIR}/scrollflash.cpp"
+    "${CMAKE_SOURCE_DIR}/scrollflash.h"
+)
+
+target_include_directories(test_scrollflash
+    PRIVATE
+        "${CMAKE_SOURCE_DIR}"
+)
+
+target_link_libraries(test_scrollflash
+    PRIVATE
+        Qt6::Test
+        Qt6::Widgets
+)
+
+set_target_properties(test_scrollflash PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)
+
+add_test(NAME test_scrollflash COMMAND test_scrollflash)
+
 # 配置落盘：SSH 密码不进 config.json，私钥路径仍保留
 add_executable(test_commandstore
     test_commandstore.cpp
@@ -334,6 +369,35 @@ set_target_properties(test_commandstore PROPERTIES
 )
 
 add_test(NAME test_commandstore COMMAND test_commandstore)
+
+# 命令栏浮层宽度自适应（Termius 式浮层化回归）：形态子件显隐时浮层宽度跟随
+# （按钮列 150 / 设置页 340 / 侧边组 28），补上脱离布局后没人替它 resize 的缺口；
+# themedIcon 从 :/icons/ 取图，连带 icons + qrc；CommandItem 是纯结构不链 commandstore.cpp
+add_executable(test_commandbar
+    test_commandbar.cpp
+    "${CMAKE_SOURCE_DIR}/commandbar.cpp"
+    "${CMAKE_SOURCE_DIR}/commandbar.h"
+    "${CMAKE_SOURCE_DIR}/icons.cpp"
+    "${CMAKE_SOURCE_DIR}/icons.h"
+    "${CMAKE_SOURCE_DIR}/resources/resources.qrc"
+)
+
+target_include_directories(test_commandbar
+    PRIVATE
+        "${CMAKE_SOURCE_DIR}"
+)
+
+target_link_libraries(test_commandbar
+    PRIVATE
+        Qt6::Test
+        Qt6::Widgets
+)
+
+set_target_properties(test_commandbar PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)
+
+add_test(NAME test_commandbar COMMAND test_commandbar)
 
 # 全局快捷键协作类（M1.b）：只验 action 创建/快捷键/触发信号/文案，不依赖主窗口
 add_executable(test_hotkeymanager
@@ -610,6 +674,10 @@ add_executable(test_sessioncontroller
     "${CMAKE_SOURCE_DIR}/sessioncontroller.h"
     "${CMAKE_SOURCE_DIR}/uibuilder.cpp"
     "${CMAKE_SOURCE_DIR}/uibuilder.h"
+    # UiBuilder 构造尾 attachTree / filebrowserdialog+transferdialog 构造尾同款，
+    # 连带 scrollflash（滚动条显隐）
+    "${CMAKE_SOURCE_DIR}/scrollflash.cpp"
+    "${CMAKE_SOURCE_DIR}/scrollflash.h"
     "${CMAKE_SOURCE_DIR}/kmsgmutetoggle.cpp"
     "${CMAKE_SOURCE_DIR}/kmsgmutetoggle.h"
     "${CMAKE_SOURCE_DIR}/thememanager.cpp"

@@ -45,10 +45,13 @@ public:
     void setTitle(const QString &title);
     QToolButton *addMenuButton(const QString &title); // 加一个菜单项（设置/工具/帮助…），对其 setMenu
     void setThemeIcon(const QIcon &icon, const QString &tooltip);
+    void setSidebarShown(bool shown);                // 程序化同步侧边栏状态（启动恢复，不发信号）
     void applyCaptionTheme(bool dark);                // 系统按钮字形颜色随主题切换
+    void setMaximizedShown(bool maximized);           // 手动驱动最大化字形/提示（伪最大化不触发 WindowStateChange）
 
 signals:
     void themeClicked();                 // 与参数栏 themeBtn 同一行为，由 MainWindow 接线
+    void sidebarToggled(bool shown);     // 侧边栏展开/收起（命令栏卡片显隐），由 UiBuilder 接线
     void minimizedRequested();
     void maximizedToggled();             // 最大化 <-> 还原
     void closedRequested();
@@ -66,11 +69,13 @@ private:
     QLabel *m_iconLabel = nullptr;
     QLabel *m_titleLabel = nullptr;
     QToolButton *m_themeBtn = nullptr;
+    QToolButton *m_sidebarBtn = nullptr; // 侧边栏展开/收起（主题按钮右侧，Termius 同位）
     CaptionButton *m_minBtn = nullptr;
     CaptionButton *m_maxBtn = nullptr;
     CaptionButton *m_closeBtn = nullptr;
     bool m_dragging = false;
     QPoint m_dragOrigin;
+    bool m_sidebarShown = true; // 侧边栏展开态（按钮不再用 checked 态，避免常亮高亮）
 };
 
 // Win11 系统级窗口圆角（DwmSetWindowAttribute DWMWA_WINDOW_CORNER_PREFERENCE=33,

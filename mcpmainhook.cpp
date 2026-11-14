@@ -28,8 +28,8 @@ McpMainHook::McpMainHook(QStatusBar *statusBar, QObject *parent)
     : QObject(parent)
     , m_statusBar(statusBar)
 {
-    // 侧边按钮：命令栏收起态挂在右侧竖排按钮组里，只显示图标。
-    // 位置由 MainWindow 决定（addSideButton），内容/图标刷新归本类。
+    // MCP 按钮：原挂命令栏收起态侧边按钮组；该形态已废弃（多功能侧边栏第三页
+    // 承接 MCP 提示词内容），按钮仍保留供在线角标刷新与状态联动，由主窗口决定挂载点。
     // 本类是 QObject 而非 QWidget，部件不以 this 为父；由主窗口挂载时重新设定父级。
     m_mcpBtn = new QToolButton;
     m_mcpBtn->setIcon(themedIcon(QStringLiteral("mcp.png")));

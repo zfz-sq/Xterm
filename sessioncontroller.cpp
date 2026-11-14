@@ -99,6 +99,9 @@ void SessionController::wireSessions()
 {
     // ---- 串口链路 ----
     connect(m_serial, &SerialSession::opened, this, [this] {
+        m_autoReconnectPending = false;
+        if (m_reconnectTimer)
+            m_reconnectTimer->stop();
         m_serialView->appendSystemMessage(tr("── 已连接 %1 ──").arg(connectionSummary()));
         // printk 回到设备默认级别：静音开关状态重置由 UiBuilder 连本信号完成
         emit connectionStateChanged();
@@ -108,6 +111,22 @@ void SessionController::wireSessions()
     connect(m_serial, &SerialSession::closed, this, [this] {
         m_serialView->appendSystemMessage(tr("── 连接已断开 ──"));
         emit connectionStateChanged(); // XOFF 提示熄灭由 UiBuilder 连本信号完成
+    });
+    connect(m_serial, &SerialSession::deviceRemoved, this, [this](const QString &port) {
+        if (m_autoReconnect) {
+            m_autoReconnectPending = true;
+            m_reconnectPort = port;
+            if (!m_reconnectTimer) {
+                m_reconnectTimer = new QTimer(this);
+                connect(m_reconnectTimer, &QTimer::timeout, this, &SessionController::tryAutoReconnect);
+            }
+            m_reconnectTimer->start(1000);
+            m_serialView->appendSystemMessage(
+                tr("── 串口 %1 已拔出，等待重新插入自动重连... ──").arg(port));
+            m_ui->statusbar->showMessage(
+                tr("串口 %1 已拔出，等待重新插入自动重连...").arg(port), 10000);
+            emit connectionStateChanged();
+        }
     });
     connect(m_serial, &SerialSession::errorOccurred, this, [this](const QString &msg) {
         m_ui->statusbar->showMessage(msg, 8000);
@@ -190,7 +209,12 @@ void SessionController::attachTerminal(ScreenView *serialView, ScreenView *sshVi
 void SessionController::toggleConnect()
 {
     if (m_mode == Mode::Serial) {
+        if (m_autoReconnectPending) {
+            cancelAutoReconnect();
+            return;
+        }
         if (m_serial->isOpen() || m_serial->state() == Transport::Connecting) {
+            cancelAutoReconnect();
             m_serial->close();
             return;
         }
@@ -289,6 +313,70 @@ void SessionController::refreshPorts()
 
     if (m_ui->portCombo->count() == 0)
         m_ui->statusbar->showMessage(tr("未检测到可用串口设备"), 5000);
+}
+
+void SessionController::tryAutoReconnect()
+{
+    if (!m_autoReconnectPending || m_reconnectPort.isEmpty())
+        return;
+
+    bool found = false;
+    const auto ports = QSerialPortInfo::availablePorts();
+    for (const QSerialPortInfo &info : ports) {
+        if (info.portName() == m_reconnectPort) {
+            found = true;
+            break;
+        }
+    }
+    if (!found)
+        return;
+
+    refreshPorts();
+    const int idx = m_ui->portCombo->findData(m_reconnectPort);
+    if (idx >= 0)
+        m_ui->portCombo->setCurrentIndex(idx);
+
+    const QString err = openSerialFromUi();
+    if (err.isEmpty()) {
+        m_autoReconnectPending = false;
+        if (m_reconnectTimer)
+            m_reconnectTimer->stop();
+        m_serialView->appendSystemMessage(
+            tr("── 串口 %1 已重新插入，自动重连成功 ──").arg(m_reconnectPort));
+        m_ui->statusbar->showMessage(tr("串口 %1 自动重连成功").arg(m_reconnectPort), 4000);
+        emit connectionStateChanged();
+    }
+}
+
+void SessionController::cancelAutoReconnect()
+{
+    if (m_autoReconnectPending) {
+        m_autoReconnectPending = false;
+        if (m_reconnectTimer)
+            m_reconnectTimer->stop();
+        m_serialView->appendSystemMessage(tr("── 已取消自动重连 ──"));
+        m_ui->statusbar->showMessage(tr("已取消自动重连"), 3000);
+        emit connectionStateChanged();
+    }
+}
+
+void SessionController::onDeviceChanged()
+{
+    if (!m_deviceChangeTimer) {
+        m_deviceChangeTimer = new QTimer(this);
+        m_deviceChangeTimer->setSingleShot(true);
+        connect(m_deviceChangeTimer, &QTimer::timeout, this,
+                &SessionController::handleDeviceChangeDebounced);
+    }
+    // Windows 驱动加载有延时，防抖 300ms
+    m_deviceChangeTimer->start(300);
+}
+
+void SessionController::handleDeviceChangeDebounced()
+{
+    refreshPorts();
+    if (m_autoReconnectPending)
+        tryAutoReconnect();
 }
 
 QString SessionController::selectedPortName() const

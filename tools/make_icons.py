@@ -301,6 +301,18 @@ def draw_toolbar(theme, c):
     rline(d, (186, 180), (186, 198), 12, neutral)
     save(img, theme, "props.png")
 
+    # palette: 颜料盘（主题标签，用户定稿 2026-11-14：主题图标用调色盘样式）
+    img, d = canvas()
+    r = 86
+    d.ellipse([CX - r, CY - r, CX + r, CY + r], outline=neutral, width=20)
+    cut = Image.new("L", (S, S), 0)
+    ImageDraw.Draw(cut).ellipse([150, 148, 210, 208], fill=255)  # 拇指孔：右下贴边缺口
+    alpha = ImageChops.subtract(img.getchannel("A"), cut)
+    img.putalpha(alpha)
+    for (x, y) in [(88, 100), (170, 96), (74, 152)]:
+        d.ellipse([x - 15, y - 15, x + 15, y + 15], fill=accent)
+    save(img, theme, "palette.png")
+
     def checkbox(draw, x, y, size, color, checked):
         draw.rounded_rectangle([x, y, x + size, y + size], radius=10, outline=color, width=14)
         if checked:

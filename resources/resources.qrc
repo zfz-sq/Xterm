@@ -36,6 +36,7 @@
         <file>icons/light/mcp.png</file>
         <file>icons/light/new.png</file>
         <file>icons/light/name.png</file>
+        <file>icons/light/palette.png</file>
         <file>icons/dark/refresh.png</file>
         <file>icons/dark/connect.png</file>
         <file>icons/dark/disconnect.png</file>
@@ -71,6 +72,7 @@
         <file>icons/dark/mcp.png</file>
         <file>icons/dark/new.png</file>
         <file>icons/dark/name.png</file>
+        <file>icons/dark/palette.png</file>
         <file>style-dark.qss</file>
         <file>style-light.qss</file>
     </qresource>

@@ -27,7 +27,7 @@ QT_END_NAMESPACE
  * 会话生命周期在 SessionController，UI 编排与刷新在 UiBuilder，主题在
  * ThemeManager，快捷键在 HotkeyManager，MCP 挂钩在 McpMainHook；本类只
  * 保留协作类创建顺序、跨协作类接线（终端输入的 AI 锁定守卫、PTY 尺寸
- * 同步、MCP Hooks 组装）、eventFilter/closeEvent/changeEvent 编排。
+ * 同步、MCP Hooks 组装）、eventFilter/closeEvent 编排。
  * 发送入口 sendRaw/sendLine 的实现移至 SessionController（行为不变）。
  */
 class MainWindow : public QMainWindow
@@ -43,11 +43,12 @@ public:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
-    void changeEvent(QEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
+    bool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;
 
 private:
     void connectSignals(); // 跨协作类胶水：终端输入守卫、PTY 尺寸同步
+    void onDataReceivedForAlert(const QByteArray &data);
 
     Ui::MainWindow *ui;
     CommandStore *m_store = nullptr;        // 配置状态源
@@ -60,5 +61,6 @@ private:
     HostBridge m_host;                      // xterm.host.* 工具后端（M2.c，非 QObject）
     ScreenBridge m_screen;                  // xterm.screen 扩展工具后端（M2.d，非 QObject）
     SessionBridge m_sessionTools;         // xterm.session 扩展工具后端（M2.f，非 QObject）
+    qint64 m_lastDataTimeMs = 0;
 };
 #endif // MAINWINDOW_H

@@ -2,8 +2,8 @@
 
 * {
     color: #CCCCCC;
-    selection-background-color: #264F78;
-    selection-color: #FFFFFF;
+    /* 选区色不硬编码：唯一由 ThemeManager override 的 selection-background-color: %9 注入，
+       9 套主题各自的 selectionBg 生效（硬编码只适配 dark/light，第三方主题会失效） */
 }
 
 QMainWindow, QWidget#centralwidget {
@@ -12,10 +12,18 @@ QMainWindow, QWidget#centralwidget {
 
 /* ---------------- 面板容器（连接栏 / 高级参数 / 终端） ---------------- */
 
-QFrame#connectionBar, QFrame#advancedBar, QFrame#terminalPanel {
+QFrame#connectionBar, QFrame#advancedBar {
     background-color: #242427;
     border: 1px solid #303034;
     border-radius: 6px;
+}
+
+/* 终端是窗口主体（Termius 式）：不再做独立卡片，底色即终端画布色，
+   命令栏等浮层直接盖在上面 */
+QFrame#terminalPanel {
+    background-color: #1E1E1E; /* = terminalBg（dark） */
+    border: none;
+    border-radius: 0;
 }
 
 QLabel {
@@ -122,8 +130,7 @@ QComboBox QAbstractItemView {
     background-color: #212124;
     color: #D4D4D4;
     border: 1px solid #38383E;
-    selection-background-color: #094771;
-    selection-color: #FFFFFF;
+    /* 选区色同上：交给 override 按主题注入 */
     outline: none;
 }
 QComboBox QLineEdit {
@@ -153,8 +160,6 @@ QPlainTextEdit, QTextEdit, QTextBrowser {
     color: #CCCCCC;
     border: 1px solid #303034;
     border-radius: 4px;
-    selection-background-color: #094771;
-    selection-color: #FFFFFF;
 }
 QPlainTextEdit:focus, QTextEdit:focus, QTextBrowser:focus {
     border-color: #007ACC;
@@ -435,16 +440,17 @@ QTableCornerButton::section {
     border: none;
 }
 
+/* Termius 式窄进度条：细条无边框，进度文字由表格行/底栏文字承担，条内不嵌文字 */
 QProgressBar {
     background-color: #2C2C30;
-    border: 1px solid #38383E;
-    border-radius: 4px;
-    color: #CCCCCC;
-    text-align: center;
+    border: none;
+    border-radius: 2px;
+    min-height: 5px;
+    max-height: 5px;
 }
 QProgressBar::chunk {
     background-color: #007ACC;
-    border-radius: 3px;
+    border-radius: 2px;
 }
 
 QSplitter::handle {
@@ -464,31 +470,41 @@ QScrollArea > QWidget > QWidget {
     background: transparent;
 }
 
+/* Termius 式滚动条：5px 细轨道（用户定稿：在 6px 基础上再减 1/10），滑块与轨道同宽
+   全幅（命中即整条）；flash 由 ScrollFlash 切换——待机滑块透明且鼠标穿透，仅滚轮/
+   鼠标移入时浮现完整竖条，停止 2s 后隐去；悬停滑块变亮色（主题注入，Termius
+   #285049→#21b568）即吸附提示 */
 QScrollBar:vertical {
     background: transparent;
-    width: 10px;
-    margin: 2px;
+    width: 5px;
+    margin: 0;
 }
 QScrollBar::handle:vertical {
-    background: #3E3E44;
-    border-radius: 4px;
-    min-height: 28px;
-}
-QScrollBar::handle:vertical:hover {
     background: #4A4A52;
+    min-height: 48px; /* 长度下限：内容再多也不无限压缩 */
+    max-height: 100px; /* 长度上限：内容略多时也不占满整条 */
 }
 QScrollBar:horizontal {
     background: transparent;
-    height: 10px;
-    margin: 2px;
+    height: 5px;
+    margin: 0;
 }
 QScrollBar::handle:horizontal {
-    background: #3E3E44;
-    border-radius: 4px;
-    min-width: 28px;
-}
-QScrollBar::handle:horizontal:hover {
     background: #4A4A52;
+    min-width: 48px;
+    max-width: 100px;
+}
+QScrollBar[flash="true"]:vertical,
+QScrollBar[flash="true"]:horizontal {
+    background: rgba(255, 255, 255, 13); /* 5% 白叠加（QSS rgba 整数 alpha，浮点丢规则）；Termius 由主题注入实色 */
+}
+QScrollBar[flash="false"]::handle:vertical,
+QScrollBar[flash="false"]::handle:horizontal {
+    background: transparent;
+}
+QScrollBar::handle:vertical:hover,
+QScrollBar::handle:horizontal:hover {
+    background: #5A5A62;
 }
 QScrollBar::add-line, QScrollBar::sub-line {
     width: 0;
@@ -541,8 +557,15 @@ QWidget#TitleBar QLabel#TitleLabel {
 QWidget#TitleBar QToolButton {
     background: transparent;
     border: none;
+    border-radius: 10px; /* hover/pressed 圆润圆角块（用户定稿 2026-11-14 五轮：28px 热区上再加大） */
     color: #CCCCCC;
     padding: 4px 8px 0; /* 顶部 padding 把文字/图标往下压一点，纠正垂直居中的视觉偏上 */
+}
+
+/* 图标按钮免 padding：26×26 正方形内 padding 会把 20px 图标挤裁；图标居中即可 */
+QWidget#TitleBar QToolButton#TitleThemeBtn,
+QWidget#TitleBar QToolButton#TitleSidebarBtn {
+    padding: 0;
 }
 
 QWidget#TitleBar QToolButton:hover {
@@ -551,11 +574,6 @@ QWidget#TitleBar QToolButton:hover {
 
 QWidget#TitleBar QToolButton:pressed {
     background-color: #35353A;
-}
-
-QWidget#TitleBar QToolButton:checked {
-    background-color: #322A18;
-    color: #D8B45A;
 }
 
 QWidget#TitleBar QToolButton#TitleCloseBtn:hover {

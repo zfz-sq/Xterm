@@ -1,9 +1,13 @@
 #include "screenview.h"
+#include "scrollflash.h"
+#include "thememanager.h"
 
 #include <QClipboard>
 #include <QApplication>
 #include <QCheckBox>
+#include <QCursor>
 #include <QDialogButtonBox>
+#include <QEnterEvent>
 #include <QFocusEvent>
 #include <QFontDatabase>
 #include <QFontMetrics>
@@ -112,6 +116,9 @@ ScreenView::ScreenView(QWidget *parent)
 
     m_bar = new QScrollBar(Qt::Vertical, this);
     m_bar->setFocusPolicy(Qt::NoFocus);
+    // 显式接管（不能依赖宿主 attachTree：UiBuilder 的全窗口接管发生在本视图创建
+    // 之前，错过的话 flash 属性缺失——轨道恒透明、滑块恒亮、浮现/隐藏机制全失效）
+    ScrollFlash::attach(m_bar);
     connect(m_bar, &QScrollBar::valueChanged, this, [this](int value) {
         if (m_barLock)
             return;
@@ -181,11 +188,23 @@ ScreenView::ScreenView(QWidget *parent)
 
 void ScreenView::applyTheme(bool dark)
 {
-    m_screen.setDark(dark);
+    applyTheme(ThemeManager::themeById(dark ? QStringLiteral("dark") : QStringLiteral("light")));
+}
+
+void ScreenView::applyTheme(const ThemeDefinition &theme)
+{
+    m_screen.setDark(theme.isDark);
+    m_screen.setCustomPalette(theme.normal, theme.bright, theme.terminalFg,
+                              theme.terminalBg, theme.selectionBg, theme.infoColor);
+    // 关键词槽位规则随主题重解析（见 keywordSlotColor）：缓存主题标识与
+    // 调色板，绘制时逐行取色，切主题后终端高亮立即换色
+    m_themeId = theme.id;
+    for (int i = 0; i < 8; ++i)
+        m_themeNormal[i] = theme.normal[i];
     if (m_find) {
-        const QString bg = dark ? QStringLiteral("#2C2C30") : QStringLiteral("#FFFFFF");
-        const QString fg = dark ? QStringLiteral("#D4D4D4") : QStringLiteral("#24292E");
-        const QString bd = dark ? QStringLiteral("#3B8EEA") : QStringLiteral("#2472C8");
+        const QString bg = theme.inputBg.name();
+        const QString fg = theme.terminalFg.name();
+        const QString bd = theme.accentColor.name();
         const QString sheet = QStringLiteral(
                                   "QLineEdit { background:%1; color:%2; border:1px solid %3;"
                                   " border-radius:3px; padding:2px 8px; }");
@@ -279,9 +298,11 @@ void ScreenView::updateGrid()
 {
     if (!m_bar || width() < m_cellW || height() < m_cellH)
         return;
-    const int barW = qMax(14, m_bar->sizeHint().width());
-    m_bar->setGeometry(width() - barW, 0, barW, height());
-    const int cols = qMax(20, (width() - barW - m_pad * 2) / m_cellW);
+    // Termius 式 overlay 滚动条：浮在内容右缘，显隐由 ScrollFlash 接管（用户滚动浮现/
+    // 待机隐藏），列数不再扣除条宽；固定几何宽度与 QSS 5px 轨道一致，不随 sizeHint 漂移
+    constexpr int kBarW = 5;
+    m_bar->setGeometry(width() - m_rightInset - kBarW, 0, kBarW, height());
+    const int cols = qMax(20, (width() - m_rightInset - m_pad * 2) / m_cellW);
     const int rows = qMax(4, (height() - m_pad * 2) / m_cellH);
     if (cols == m_screen.cols() && rows == m_screen.rows()) {
         if (m_sentCols != cols || m_sentRows != rows)
@@ -299,6 +320,15 @@ void ScreenView::setPad(int pad)
         return;
     m_pad = pad;
     updateGrid(); // 内边距变化会改变可用列数/行数，需重算并通知 pty
+    update();
+}
+
+void ScreenView::setRightInset(int px)
+{
+    if (m_rightInset == px)
+        return;
+    m_rightInset = qMax(0, px);
+    updateGrid(); // 让位变化会改变可用列数，需重算并通知 pty；滚动条同步避让
     update();
 }
 
@@ -390,6 +420,10 @@ void ScreenView::syncBar()
     m_bar->setSingleStep(1);
     m_bar->setValue(qBound(0, m_origin, max));
     m_barLock = false;
+    // 物理级保险（用户定稿：终端无文本/不足一屏不显示轨道滑块）：不足一屏时连滚动条
+    // 子件都隐藏，不依赖 QSS 待机透明与 flash 属性链；超过一屏才交给 ScrollFlash
+    // 管滚动浮现/2s 隐去。overlay 不在布局里，setVisible 无回流代价
+    m_bar->setVisible(max > 0);
 }
 
 void ScreenView::flushDirtyUpdate()
@@ -495,6 +529,11 @@ void ScreenView::collectKeywordHits(const TermLine *line, int cols,
     for (const KeywordRule &rule : m_keywords) {
         if (!rule.enabled || rule.text.isEmpty())
             continue;
+        QColor hitColor = rule.themeSlot >= 0
+                              ? keywordSlotColor(rule.themeSlot)
+                              : rule.color;
+        if (!hitColor.isValid()) // 主题不认这个槽位（非 1/2/3/6）：回退固定色
+            hitColor = rule.color;
         // 词边界：命中向两侧扩到完整单词（字母/数字/下划线）。子串只染
         // 半截很破碎：Successfully 只染前半的 Success、fully 留灰色。
         const auto isWordChar = [](const QChar &c) {
@@ -514,7 +553,7 @@ void ScreenView::collectKeywordHits(const TermLine *line, int cols,
             const int last = wordEnd - 1;
             const int start = colOf.at(wordStart);
             const int end = colOf.at(last) + qMax(spanOf.at(last), 1) - 1;
-            hits->append({ start, end, rule.color });
+            hits->append({ start, end, hitColor });
             from = wordEnd;
         }
     }
@@ -523,6 +562,94 @@ void ScreenView::collectKeywordHits(const TermLine *line, int cols,
 void ScreenView::zoom(int steps)
 {
     setFontSize(m_font.pointSize() + steps);
+}
+
+QColor ScreenView::keywordSlotColor(int slot) const
+{
+    // 内置 dark/light：经典高亮色（与 defaultKeywords 历史色同源，零视觉变化；
+    // 终端调色板槽位色与经典色不同源，不能直接取）。第三方主题：调色板
+    // normal 槽位，高亮随主题换色
+    if (m_themeId == QStringLiteral("dark")
+            || m_themeId == QStringLiteral("light"))
+        return CommandStore::classicKeywordColor(slot, m_themeId == QStringLiteral("dark"));
+    return m_themeNormal[qBound(0, slot, 7)];
+}
+
+bool ScreenView::isSlowPasting() const
+{
+    return m_slowPasteTimer && m_slowPasteTimer->isActive();
+}
+
+void ScreenView::cancelSlowPaste()
+{
+    if (isSlowPasting()) {
+        m_slowPasteTimer->stop();
+        m_slowPasteLines.clear();
+        m_slowPasteIndex = 0;
+        emit slowPasteCancelled();
+    }
+}
+
+void ScreenView::startSlowPaste(const QString &text)
+{
+    cancelSlowPaste();
+    m_slowPasteLines = text.split(QLatin1Char('\n'));
+    m_slowPasteIndex = 0;
+    if (m_slowPasteLines.isEmpty())
+        return;
+
+    if (!m_slowPasteTimer) {
+        m_slowPasteTimer = new QTimer(this);
+        connect(m_slowPasteTimer, &QTimer::timeout, this, &ScreenView::sendNextSlowPasteLine);
+    }
+
+    sendNextSlowPasteLine();
+    if (!m_slowPasteLines.isEmpty() && m_slowPasteIndex < m_slowPasteLines.size()) {
+        m_slowPasteTimer->start(m_slowPasteDelayMs);
+    }
+}
+
+void ScreenView::sendNextSlowPasteLine()
+{
+    if (m_slowPasteIndex >= m_slowPasteLines.size()) {
+        if (m_slowPasteTimer)
+            m_slowPasteTimer->stop();
+        m_slowPasteLines.clear();
+        m_slowPasteIndex = 0;
+        emit slowPasteFinished();
+        return;
+    }
+
+    const QString line = m_slowPasteLines.at(m_slowPasteIndex);
+    const bool isLastLine = (m_slowPasteIndex + 1 == m_slowPasteLines.size());
+
+    if (localLineMode()) {
+        if (!line.isEmpty())
+            localInsert(line);
+        if (!isLastLine)
+            commitLocalLine();
+    } else {
+        QByteArray bytes = line.toUtf8();
+        bytes.replace('\0', "");
+        if (!isLastLine)
+            bytes.append('\r');
+        if (!bytes.isEmpty()) {
+            if (m_screen.bracketedPaste())
+                bytes = QByteArray("\x1b[200~") + bytes + QByteArray("\x1b[201~");
+            emitInput(bytes);
+        }
+    }
+
+    m_slowPasteIndex++;
+    emit slowPasteProgress(m_slowPasteIndex, m_slowPasteLines.size());
+
+    if (m_slowPasteIndex >= m_slowPasteLines.size()) {
+        if (m_slowPasteTimer)
+            m_slowPasteTimer->stop();
+        m_slowPasteLines.clear();
+        m_slowPasteIndex = 0;
+        emit slowPasteFinished();
+    }
 }
 
 void ScreenView::pasteClipboard()
@@ -534,6 +661,12 @@ void ScreenView::pasteClipboard()
         text.truncate(1000000);
     text.replace(QLatin1String("\r\n"), QLatin1String("\n"));
     text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+
+    if (m_slowPaste && text.contains(QLatin1Char('\n'))) {
+        startSlowPaste(text);
+        return;
+    }
+
     if (localLineMode()) {
         const QStringList parts = text.split(QLatin1Char('\n'));
         for (int i = 0; i < parts.size(); ++i) {
@@ -1349,6 +1482,14 @@ void ScreenView::keyPressEvent(QKeyEvent *event)
     const bool alt = mods & Qt::AltModifier;
     const bool shift = mods & Qt::ShiftModifier;
 
+    if (isSlowPasting() && (key == Qt::Key_Escape || (ctrl && key == Qt::Key_C))) {
+        cancelSlowPaste();
+        if (ctrl && key == Qt::Key_C)
+            emitInput(QByteArray(1, '\x03'));
+        event->accept();
+        return;
+    }
+
     // Tab 之外任何键都打断补全 Cycle（继续打字、回车、方向键……）
     if (key != Qt::Key_Tab)
         resetCompletionCycle();
@@ -1962,6 +2103,9 @@ void ScreenView::wheelEvent(QWheelEvent *event)
         event->ignore();
         return;
     }
+    // 滚轮是唯一点亮滚动条的用户滚动源之一（用户定稿：日志流等程序滚动不浮现）：
+    // 打开用户滚动门，后续 syncBar 的 setValue 才会浮现并续期，2s 无操作隐去
+    ScrollFlash::noteUserActivity(m_bar);
     if (event->modifiers() & Qt::ControlModifier) {
         zoom(dy > 0 ? 1 : -1);
         event->accept();
@@ -1987,6 +2131,25 @@ void ScreenView::wheelEvent(QWheelEvent *event)
     }
     scrollLocal(dir * steps * 3);
     event->accept();
+}
+
+// 鼠标从窗口外移入视图：点亮滚动条（用户定稿的另一个浮现触发源），
+// 无滚轮操作 2s 后隐去——与滚轮共用同一「用户滚动门」
+void ScreenView::enterEvent(QEnterEvent *event)
+{
+    QWidget::enterEvent(event);
+    ScrollFlash::noteUserActivity(m_bar);
+}
+
+// 鼠标移出视图：仅当真正离开应用窗口（用户定稿）时立即隐去滚动条；
+// 移到悬浮命令栏等窗口内区域不算离开，交给 2s 待机超时处理
+void ScreenView::leaveEvent(QEvent *event)
+{
+    QWidget::leaveEvent(event);
+    const QWidget *win = window();
+    if (win && win->frameGeometry().contains(QCursor::pos()))
+        return;
+    ScrollFlash::noteMouseLeft(m_bar);
 }
 
 QRect ScreenView::cursorRect(int absRow, int col, int span) const

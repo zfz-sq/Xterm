@@ -2,6 +2,7 @@
 
 #include <QAbstractItemModel>
 #include <QAbstractItemView>
+#include <QActionGroup>
 #include <QApplication>
 #include <QComboBox>
 #include <QCoreApplication>
@@ -9,6 +10,9 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QFileInfo>
+#include <QScreen> // 伪最大化取屏幕工作区（toggleMaximized）
+#include <QTimer>
 #include <QEvent>
 #include <QFontComboBox>
 #include <QFontMetrics>
@@ -21,6 +25,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListView>
+#include <QListWidget>
 #include <QMenu>
 #include <QPalette>
 #include <QPixmap>
@@ -37,6 +42,7 @@
 #include <QWidget>
 
 #include "commandbar.h"
+#include "agentbridge.h"
 #include "framelessdialog.h"
 #include "hotkeymanager.h"
 #include "icons.h"
@@ -47,6 +53,7 @@
 #include "sessioncontroller.h"
 #include "sshsession.h"
 #include "thememanager.h"
+#include "scrollflash.h"
 #include "titlebar.h"
 #include "transport.h"
 #include "ui_mainwindow.h"
@@ -83,10 +90,10 @@ UiBuilder::UiBuilder(QMainWindow *window, Ui::MainWindow *ui, CommandStore *stor
     , m_hotkey(hotkey)
     , m_mcp(mcp)
 {
-    // 外围留白随窗口状态初始化（窗口化 6px / 最大化 0）
-    const int m = window->isMaximized() ? 0 : 6;
-    m_ui->mainLayout->setContentsMargins(m, m, m, m);
-    m_ui->terminalLayout->setContentsMargins(m, m, m, m);
+    // 外围恒定 6px 呼吸空间（窗口化/最大化一致）。最大化不再清零留白：
+    // 用户定稿 2026-11-14，最大化贴边有“剪切感”，两边间距要保持
+    m_ui->mainLayout->setContentsMargins(6, 6, 6, 6);
+    m_ui->terminalLayout->setContentsMargins(6, 6, 6, 6);
 
     setupTitleBar(); // 须在主窗口展示前：无边框 flags + menuWidget
     setupIcons();
@@ -94,15 +101,56 @@ UiBuilder::UiBuilder(QMainWindow *window, Ui::MainWindow *ui, CommandStore *stor
     setupSshInputs();
     setupTerminal();
 
-    m_commandBar = new CommandBar(m_window);
-    m_ui->commandBarLayout->addWidget(m_commandBar);
-    // 命令栏收起状态持久化: 下次启动直接恢复侧边按钮组形态
-    connect(m_commandBar, &CommandBar::collapsedChanged, this, [this](bool collapsed) {
-        m_store->setCommandBarCollapsed(collapsed);
+    m_commandBar = new CommandBar(m_ui->terminalPanel); // 浮层：父=终端面板，不进布局
+    m_commandBar->setObjectName(QStringLiteral("commandBar")); // QSS 浮层毛玻璃底色选择器
+    m_commandBar->show();
+    m_ui->terminalPanel->installEventFilter(this);
+    m_commandBar->installEventFilter(this); // 形态切换（展开/收起/设置页）改尺寸时重新贴右缘
+
+    // 侧边栏显隐（标题栏按钮切换，用户定稿 2026-11-14）：收起后终端铺满窗口，
+    // 展开恢复右缘让位；状态落库、启动由 MainWindow 恢复
+    connect(m_titleBar, &TitleBar::sidebarToggled, this, [this](bool shown) {
+        applySidebarVisible(shown);
+        m_store->setSidebarVisible(shown);
         m_store->save();
     });
 
+    // 主题页（Termius 式列表）：注入清单与当前高亮，点击项经 ThemeManager 切换落库；
+    // 外部切换（标题栏按钮/主题设置对话框）后同步列表高亮
+    m_commandBar->setThemes(ThemeManager::availableThemes());
+    m_commandBar->setCurrentTheme(m_theme->currentThemeId());
+    connect(m_commandBar, &CommandBar::themeRequested, this, [this](const QString &id) {
+        m_theme->setTheme(id);
+        m_store->save();
+    });
+    connect(m_theme, &ThemeManager::themeUpdated, this,
+            [this](const ThemeDefinition &t) { m_commandBar->setCurrentTheme(t.id); });
+
+    // MCP 页：原「MCP 提示词」弹窗内容搬进侧边栏（提示词全文 + 配置 JSON）
+    QString mcpScript = QDir(QCoreApplication::applicationDirPath())
+                            .absoluteFilePath(QStringLiteral("../../tools/xterm_mcp/server.py"));
+    mcpScript = QDir::cleanPath(mcpScript);
+    if (!QFileInfo::exists(mcpScript))
+        mcpScript = QStringLiteral("tools/xterm_mcp/server.py");
+    mcpScript = QDir::fromNativeSeparators(mcpScript);
+    const QString mcpConfig = QStringLiteral(
+                                  "{\n"
+                                  "  \"mcpServers\": {\n"
+                                  "    \"xterm\": {\n"
+                                  "      \"command\": \"python\",\n"
+                                  "      \"args\": [\"%1\"]\n"
+                                  "    }\n"
+                                  "  }\n"
+                                  "}")
+                                  .arg(mcpScript);
+    m_commandBar->setMcpContent(AgentBridge::instructions(), mcpConfig);
+
     setupStatusBar();
+
+    // 全窗口滚动条接管：Termius 式滚动浮现/待机隐藏（含终端、命令栏、浏览列表）。
+    // 必须在所有子件创建之后（曾在 setupTitleBar 尾部执行，早于 setupTerminal——
+    // 终端滚动条从未被接管：轨道恒透明、滑块恒亮、浮现/隐藏机制全失效）
+    ScrollFlash::attachTree(m_window);
 
     // 密码明文/密文切换（纯显示行为，不涉会话）
     connect(m_ui->pwToggleBtn, &QToolButton::clicked, this, [this] {
@@ -234,12 +282,120 @@ void UiBuilder::setupTitleBar()
 
     // VSCode 式菜单栏：设置 / 工具 / 帮助（复用已有按钮/快捷键行为，避免另起一套逻辑）
     auto *setMenu = new QMenu(m_titleBar);
-    setMenu->addAction(tr("切换主题"), this, [this] {
+
+    auto *themeSub = setMenu->addMenu(tr("主题"));
+    auto *themeGroup = new QActionGroup(themeSub);
+    const auto &allThemes = ThemeManager::availableThemes();
+    for (const auto &thm : allThemes) {
+        auto *thmAct = themeSub->addAction(thm.name);
+        thmAct->setCheckable(true);
+        thmAct->setChecked(m_theme->currentThemeId() == thm.id);
+        thmAct->setProperty("themeId", thm.id);
+        themeGroup->addAction(thmAct);
+        connect(thmAct, &QAction::triggered, this, [this, thm] {
+            m_theme->setTheme(thm.id);
+            m_store->save();
+        });
+    }
+    // 勾选态跟随真实状态：主题设置对话框/标题栏切换按钮也会改主题，
+    // 菜单 action 只在构建时 setChecked 会停在旧值，每次展开前重对齐
+    connect(themeSub, &QMenu::aboutToShow, this, [this, themeSub] {
+        const QString cur = m_theme->currentThemeId();
+        for (QAction *act : themeSub->actions()) {
+            const QString id = act->property("themeId").toString();
+            if (!id.isEmpty())
+                act->setChecked(id == cur);
+        }
+    });
+    themeSub->addSeparator();
+    themeSub->addAction(tr("切换深/浅模式"), this, [this] {
         m_theme->toggleTheme();
         m_store->save();
     });
+
+    setMenu->addAction(tr("主题设置..."), this, &UiBuilder::openThemeSettings);
     setMenu->addAction(tr("关键词高亮"), this, &UiBuilder::openKeywordSettings);
     setMenu->addAction(tr("字体"), this, &UiBuilder::openFontSettings);
+    setMenu->addSeparator();
+
+    auto *slowPasteAct = setMenu->addAction(tr("串口多行慢速粘贴"));
+    slowPasteAct->setCheckable(true);
+    slowPasteAct->setChecked(m_store->serialSlowPaste());
+    connect(slowPasteAct, &QAction::toggled, this, [this](bool on) {
+        m_store->setSerialSlowPaste(on);
+        m_store->save();
+        m_serialView->setSlowPaste(on);
+    });
+
+    // 延时档位子菜单：嵌入式场景不需要任意毫秒精调，常用档够用；
+    // 存量自定义值（手改 config.json）不在档位里时全部不勾，选档即覆盖
+    auto *slowDelayMenu = setMenu->addMenu(tr("慢速粘贴行延时"));
+    auto *slowDelayGroup = new QActionGroup(slowDelayMenu);
+    for (const int ms : { 10, 20, 50, 100, 200, 500 }) {
+        auto *dAct = slowDelayMenu->addAction(tr("%1 ms").arg(ms));
+        dAct->setCheckable(true);
+        dAct->setProperty("delayMs", ms);
+        slowDelayGroup->addAction(dAct);
+        connect(dAct, &QAction::triggered, this, [this, ms] {
+            m_store->setSerialSlowPasteDelay(ms);
+            m_store->save();
+            m_serialView->setSlowPasteDelay(ms);
+        });
+    }
+    connect(slowDelayMenu, &QMenu::aboutToShow, this, [this, slowDelayMenu] {
+        const int cur = m_store->serialSlowPasteDelay();
+        for (QAction *act : slowDelayMenu->actions()) {
+            const int ms = act->property("delayMs").toInt();
+            if (ms > 0)
+                act->setChecked(ms == cur);
+        }
+    });
+
+    auto *autoReconnAct = setMenu->addAction(tr("串口拔插自动重连"));
+    autoReconnAct->setCheckable(true);
+    autoReconnAct->setChecked(m_store->serialAutoReconnect());
+    connect(autoReconnAct, &QAction::toggled, this, [this](bool on) {
+        m_store->setSerialAutoReconnect(on);
+        m_store->save();
+        if (m_session)
+            m_session->setAutoReconnect(on);
+    });
+
+    auto *silenceAlertAct = setMenu->addAction(tr("静默后输出闪烁提醒"));
+    silenceAlertAct->setCheckable(true);
+    silenceAlertAct->setChecked(m_store->silenceAlert());
+    connect(silenceAlertAct, &QAction::toggled, this, [this](bool on) {
+        m_store->setSilenceAlert(on);
+        m_store->save();
+    });
+
+    // 静默阈值档位：等板子重启的典型时长从几秒到几分钟，档位够用；
+    // 与延时子菜单同模式，不在档位里的存量值全不勾，选档即覆盖
+    auto *silenceSecMenu = setMenu->addMenu(tr("静默阈值"));
+    auto *silenceSecGroup = new QActionGroup(silenceSecMenu);
+    const QList<QPair<int, QString>> silenceSteps = {
+        { 5, tr("5 秒") },   { 10, tr("10 秒") },  { 30, tr("30 秒") },
+        { 60, tr("1 分钟") }, { 300, tr("5 分钟") },
+    };
+    for (const auto &step : silenceSteps) {
+        auto *sAct = silenceSecMenu->addAction(step.second);
+        sAct->setCheckable(true);
+        sAct->setProperty("silenceSec", step.first);
+        silenceSecGroup->addAction(sAct);
+        connect(sAct, &QAction::triggered, this, [this, sec = step.first] {
+            m_store->setSilenceAlertSeconds(sec);
+            m_store->save();
+        });
+    }
+    connect(silenceSecMenu, &QMenu::aboutToShow, this, [this, silenceSecMenu] {
+        const int cur = m_store->silenceAlertSeconds();
+        for (QAction *act : silenceSecMenu->actions()) {
+            const int sec = act->property("silenceSec").toInt();
+            if (sec > 0)
+                act->setChecked(sec == cur);
+        }
+    });
+
     setMenu->addSeparator();
     auto *quitAction = setMenu->addAction(tr("退出"), m_window, &QMainWindow::close);
     quitAction->setShortcut(QKeySequence::Quit);
@@ -304,9 +460,11 @@ void UiBuilder::setupTitleBar()
         FramelessDialog dlg(m_window);
         dlg.setDialogTitle(tr("关于 Xterm"));
         dlg.setMinimumWidth(500);
-        const bool dark = m_theme->isDark();
-        const QString dim = dark ? QStringLiteral("#9A9A9A") : QStringLiteral("#6E6E6E");
-        const QString lineColor = dark ? QStringLiteral("#3B3B40") : QStringLiteral("#C9C9CD");
+        // 次级文字/分隔线跟当前主题取色（第三方主题下不再停在 dark/light 灰）
+        const ThemeDefinition theme = m_theme->currentTheme();
+        const QString dim = theme.statusBarFg.name();
+        const QString lineColor = theme.panelBorder.name();
+        const bool dark = theme.isDark; // 链接色与对话框标题按钮仍按暗/亮两系取
         auto hline = [&lineColor]() {
             auto *line = new QWidget;
             line->setFixedHeight(1);
@@ -412,11 +570,7 @@ void UiBuilder::setupTitleBar()
     connect(m_titleBar, &TitleBar::minimizedRequested, this, [this] {
         m_window->setWindowState(m_window->windowState() | Qt::WindowMinimized);
     });
-    connect(m_titleBar, &TitleBar::maximizedToggled, this, [this] {
-        m_window->setWindowState(m_window->isMaximized()
-                                     ? m_window->windowState() & ~Qt::WindowMaximized
-                                     : m_window->windowState() | Qt::WindowMaximized);
-    });
+    connect(m_titleBar, &TitleBar::maximizedToggled, this, [this] { toggleMaximized(); });
     connect(m_titleBar, &TitleBar::closedRequested, m_window, &QMainWindow::close);
 
     applyWin11RoundedCorners(m_window);
@@ -537,6 +691,40 @@ void UiBuilder::fitSshPortEdit()
         edit->setGeometry(next);
 }
 
+// 命令栏浮层化（Termius 式悬浮卡片）：终端铺满为窗口主体，命令栏是浮在其右缘的
+// 半透明圆角卡片——顶部留 kCardGap 间隙、向下延伸贴到底部（用户定稿），宽度由布局
+// 自动计算（CommandBar::sizeHint，随命令内容伸缩）；卡片宽度同时作为两页终端的
+// 右缘让位，行尾/光标/滚动条不伸进卡片下方。触发时机：面板 Resize 与命令栏自身
+// Resize（形态切换经 eventFilter 汇入）；结果一致时 setGeometry 无变化，不递归重入。
+void UiBuilder::relocateCommandBar()
+{
+    if (!m_commandBar)
+        return;
+    constexpr int kCardGap = 8;    // 卡片与终端区左右间隙，浮出主体之感
+    constexpr int kCardTopGap = 4; // 顶部间隙单独收窄（用户定稿 2026-11-14：与参数栏之间空隙太大）
+    const QRect area = m_ui->terminalPanel->rect();
+    const int w = qMin(m_commandBar->sizeHint().width(), qMax(0, area.width() - kCardGap * 2));
+    const int h = qMax(0, area.height() - kCardTopGap); // 顶部留隙，向下延伸贴到底部
+    m_commandBar->setGeometry(area.width() - w - kCardGap, kCardTopGap, w, h);
+    const int inset = m_commandBar->isVisible() && w > 0 ? w + kCardGap + 2 : 0;
+    if (m_serialView)
+        m_serialView->setRightInset(inset);
+    if (m_sshView)
+        m_sshView->setRightInset(inset);
+}
+
+// 侧边栏展开/收起统一入口：卡片显隐 + 标题栏状态同步 + 终端右缘让位。
+// 标题栏按钮与启动恢复都走这里，保证两处状态一致（按钮无常亮选中态）
+void UiBuilder::applySidebarVisible(bool shown)
+{
+    if (!m_commandBar)
+        return;
+    m_commandBar->setVisible(shown);
+    if (m_titleBar)
+        m_titleBar->setSidebarShown(shown);
+    relocateCommandBar(); // 显隐改变终端右缘让位（收起后终端铺满窗口）
+}
+
 bool UiBuilder::eventFilter(QObject *watched, QEvent *event)
 {
     if (watched == m_ui->sshPortCombo
@@ -544,6 +732,10 @@ bool UiBuilder::eventFilter(QObject *watched, QEvent *event)
             || event->type() == QEvent::StyleChange)) {
         // 下拉框自己的 resize 会把编辑框缩回去，等它排完再拉满到箭头前。
         QTimer::singleShot(0, this, [this] { fitSshPortEdit(); });
+    }
+    if ((watched == m_ui->terminalPanel || watched == m_commandBar)
+        && event->type() == QEvent::Resize) {
+        relocateCommandBar(); // 面板尺寸/命令栏形态变化都要重新贴右缘
     }
     return QObject::eventFilter(watched, event);
 }
@@ -561,11 +753,6 @@ void UiBuilder::setupTerminal()
     m_sshView = new ScreenView(m_window);
     m_ui->sshTerminalPageLayout->addWidget(m_sshView);
 
-    // 最大化启动时终端网格内边距同步为 0（窗口化默认 6px）
-    if (m_window->isMaximized()) {
-        m_serialView->setPad(0);
-        m_sshView->setPad(0);
-    }
     // 面板外观由全局主题 QSS（QFrame#terminalPanel）定义
 
     // SSH 视图标题（OSC 0/2）跟随进窗口标题
@@ -672,7 +859,10 @@ void UiBuilder::updateConnectionUi()
 
     QString text;
     QString tip;
-    if (st == Transport::Connecting) {
+    if (serial && m_session->isAutoReconnectPending()) {
+        text = tr("取消重连");
+        tip = tr("正在等待串口设备重新插入，点击取消自动重连");
+    } else if (st == Transport::Connecting) {
         text = tr("取消");
         tip = tr("中止本次连接");
     } else if (st == Transport::Disconnecting) {
@@ -717,8 +907,9 @@ void UiBuilder::updateConnectionUi()
 
 void UiBuilder::onThemeToggled(bool dark)
 {
-    m_serialView->applyTheme(dark);
-    m_sshView->applyTheme(dark);
+    const ThemeDefinition theme = m_theme->currentTheme();
+    m_serialView->applyTheme(theme);
+    m_sshView->applyTheme(theme);
     setupIcons();
     if (m_session)
         updateModeUi();
@@ -733,7 +924,7 @@ void UiBuilder::onThemeToggled(bool dark)
     }
     if (m_commandBar)
         m_commandBar->applyTheme();
-    // 侧边按钮组里的 MCP 按钮也要跟主题换图标（构造时首次调用已创建）
+    // MCP 按钮跟主题换图标（构造时首次调用已创建；MCP 内容现住侧边栏第三页）
     m_mcp->refreshIcon();
     fitSshPortEdit();
 }
@@ -759,7 +950,12 @@ void UiBuilder::updatePersistentStatus()
         tint = "#9A9A9A";
         break;
     case Transport::Disconnected:
-        text = tr("○ 未连接");
+        if (serial && m_session->isAutoReconnectPending()) {
+            text = tr("◐ 等待串口重新插入自动重连…");
+            tint = "#D89B2C";
+        } else {
+            text = tr("○ 未连接");
+        }
         break;
     }
 
@@ -780,15 +976,24 @@ void UiBuilder::updatePersistentStatus()
         : QString());
 }
 
-void UiBuilder::applyWindowMargins(bool maximized)
+// 最大化/还原切换（标题栏按钮与标题栏双击共用）。FramelessWindowHint 下
+// Qt 的 setWindowState(Maximized) 走"伪最大化"：把窗口 setGeometry 到屏幕
+// 工作区但不置系统 zoomed 位，isMaximized() 恒 false——切换判断永远走
+// “最大化”分支，按钮像没反应、字形联动也全失效（实测复现）。改由本函数
+// 自维护状态与还原几何，字形手动驱动；外围留白恒定 6px 不随窗口状态变
+//（用户定稿 2026-11-14：最大化清零留白有“剪切感”）；系统级状态路径
+//（Win+方向键/拖顶贴边）本就因无边框样式不可用，无双状态源冲突。
+void UiBuilder::toggleMaximized()
 {
-    // 窗口化时外围留 6px 呼吸空间（配合面板圆角）；
-    // 最大化时清零留白和终端网格内边距，让串口/SSH 终端贴满整个窗口。
-    const int m = maximized ? 0 : 6;
-    m_ui->mainLayout->setContentsMargins(m, m, m, m);
-    m_ui->terminalLayout->setContentsMargins(m, m, m, m);
-    m_serialView->setPad(m);
-    m_sshView->setPad(m);
+    if (m_fakeMaximized) {
+        m_fakeMaximized = false;
+        m_window->setGeometry(m_restoreGeometry);
+    } else {
+        m_fakeMaximized = true;
+        m_restoreGeometry = m_window->geometry();
+        m_window->setGeometry(m_window->screen()->availableGeometry());
+    }
+    m_titleBar->setMaximizedShown(m_fakeMaximized); // 字形 ▢/❐ 与提示（无 WindowStateChange 可过滤）
 }
 
 void UiBuilder::restoreTerminalFontSettings()
@@ -859,15 +1064,22 @@ void UiBuilder::openKeywordSettings()
     table->setSelectionBehavior(QAbstractItemView::SelectRows);
 
     // 颜色列 = 终端里的真实效果预览：关键词字样（跟随第 0 列的输入）用规则色
-    // 画在终端底色上（暗 #1E1E1E / 亮 #FFFFFF，与 TermScreen 调色板一致）
-    const bool dark = m_theme->isDark();
-    auto swatchStyle = [dark](const QColor &color) {
+    // 画在当前主题的终端底色上（与 TermScreen 调色板同源，切主题即同步）
+    const ThemeDefinition kwTheme = m_theme->currentTheme();
+    const bool dark = kwTheme.isDark; // 默认规则色板按暗/亮两系取
+    // 槽位规则在当前主题下的解析色（与 ScreenView::keywordSlotColor 同源）
+    auto slotColor = [&kwTheme](int slot) {
+        if (kwTheme.id == QStringLiteral("dark") || kwTheme.id == QStringLiteral("light"))
+            return CommandStore::classicKeywordColor(slot, kwTheme.id == QStringLiteral("dark"));
+        return kwTheme.normal[qBound(0, slot, 7)];
+    };
+    auto swatchStyle = [&kwTheme](const QColor &color) {
         return QStringLiteral(
                    "QPushButton { background-color: %1; color: %2; border: 1px solid %3;"
                    " border-radius: 3px; font-weight: 600; }")
-            .arg(dark ? QStringLiteral("#1E1E1E") : QStringLiteral("#FFFFFF"),
+            .arg(kwTheme.terminalBg.name(),
                  color.name(),
-                 dark ? QStringLiteral("#3B3B40") : QStringLiteral("#C9C9CD"));
+                 kwTheme.inputBorder.name());
     };
     // 表格 -> 规则列表 -> 立即预览（确定才落盘，取消回滚）
     auto applyFromTable = [&]() {
@@ -880,23 +1092,32 @@ void UiBuilder::openKeywordSettings()
             rule.text = textItem ? textItem->text().trimmed() : QString();
             rule.color = colorItem ? QColor(colorItem->text()) : KeywordRule().color;
             rule.enabled = !checkItem || checkItem->checkState() == Qt::Checked;
+            // 槽位规则且色块未被改过（仍是打开时的主题解析色）：保留槽位，
+            // 之后切主题仍随调色板换色；改过色则降为固定色
+            const QVariant slotVar = colorItem ? colorItem->data(Qt::UserRole) : QVariant();
+            const int slot = slotVar.isValid() ? slotVar.toInt() : -1;
+            if (slot >= 0 && rule.color == slotColor(slot))
+                rule.themeSlot = slot;
             if (!rule.text.isEmpty() && rule.color.isValid())
                 rules.append(rule);
         }
         applyKeywords(rules);
     };
-    auto addRow = [&](const QString &text, const QColor &color, bool enabled) {
+    auto addRow = [&](const QString &text, const QColor &color, bool enabled, int slot = -1) {
         const int row = table->rowCount();
         table->insertRow(row);
         auto *textItem = new QTableWidgetItem(text);
         table->setItem(row, 0, textItem);
-        // 颜色存在 item 文本里（applyFromTable 读它），显示交给覆盖在上面的色块按钮
-        auto *colorItem = new QTableWidgetItem(color.name());
+        // 颜色存在 item 文本里（applyFromTable 读它），显示交给覆盖在上面的色块按钮；
+        // 槽位规则显示当前主题解析色，槽位号存在 UserRole 里供回读保留
+        const QColor shown = slot >= 0 ? slotColor(slot) : color;
+        auto *colorItem = new QTableWidgetItem(shown.isValid() ? shown.name() : color.name());
+        colorItem->setData(Qt::UserRole, slot);
         colorItem->setFlags(colorItem->flags() & ~Qt::ItemIsEditable);
         table->setItem(row, 1, colorItem);
         auto *swatch = new QPushButton(text);
         swatch->setCursor(Qt::PointingHandCursor);
-        swatch->setStyleSheet(swatchStyle(color));
+        swatch->setStyleSheet(swatchStyle(shown.isValid() ? shown : color));
         // cellWidget 会吃掉表格的双击事件，取色器直接挂在按钮上，单击即改。
         // swatch 必须按值捕获：它是 addRow 的局部变量，按引用捕获在
         // addRow 返回后即悬垂（栈槽被下一次 addRow 复用，样式会刷错行）
@@ -916,7 +1137,7 @@ void UiBuilder::openKeywordSettings()
         table->setItem(row, 2, checkItem);
     };
     for (const KeywordRule &rule : original)
-        addRow(rule.text, rule.color, rule.enabled);
+        addRow(rule.text, rule.color, rule.enabled, rule.themeSlot);
 
     auto *addBtn = new QPushButton(tr("添加"));
     auto *delBtn = new QPushButton(tr("删除"));
@@ -950,7 +1171,7 @@ void UiBuilder::openKeywordSettings()
                 }
             }
             if (!exists)
-                addRow(rule.text, rule.color, rule.enabled);
+                addRow(rule.text, rule.color, rule.enabled, rule.themeSlot);
         }
         applyFromTable();
     });
@@ -1003,8 +1224,8 @@ void UiBuilder::openFontSettings()
     lay->setContentsMargins(18, 14, 18, 14);
     lay->setSpacing(12);
 
-    // 预览：与终端同底色，改字体/字号立刻看到真实效果
-    const bool dark = m_theme->isDark();
+    // 预览：与当前主题的终端同底色，改字体/字号立刻看到真实效果
+    const ThemeDefinition fontTheme = m_theme->currentTheme();
     auto *preview = new QLabel;
     preview->setMinimumHeight(100);
     preview->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
@@ -1014,9 +1235,9 @@ void UiBuilder::openFontSettings()
     preview->setStyleSheet(QStringLiteral(
                                "QLabel { background-color: %1; color: %2; border: 1px solid %3;"
                                " border-radius: 6px; padding: 10px 12px; }")
-                               .arg(dark ? QStringLiteral("#1E1E1E") : QStringLiteral("#FFFFFF"),
-                                    dark ? QStringLiteral("#D4D4D4") : QStringLiteral("#1F1F1F"),
-                                    dark ? QStringLiteral("#3B3B40") : QStringLiteral("#C9C9CD")));
+                               .arg(fontTheme.terminalBg.name(),
+                                    fontTheme.terminalFg.name(),
+                                    fontTheme.inputBorder.name()));
 
     // 只列等宽字体：比例字体在格子里画终端会错位
     auto *fontCombo = new QFontComboBox;
@@ -1097,5 +1318,148 @@ void UiBuilder::openFontSettings()
         m_sshView->setFontFamily(prevFamily);
         m_serialView->setFontSize(prevSize);
         m_sshView->setFontSize(prevSize);
+    }
+}
+
+void UiBuilder::openThemeSettings()
+{
+    FramelessDialog dlg(m_window);
+    dlg.setDialogTitle(tr("主题设置"));
+
+    const QString initialThemeId = m_theme->currentThemeId();
+
+    auto *content = new QWidget;
+    auto *lay = new QVBoxLayout(content);
+    lay->setContentsMargins(18, 14, 18, 14);
+    lay->setSpacing(12);
+
+    auto *hint = new QLabel(tr("选择终端与界面的整体配色方案（即时预览）："));
+    lay->addWidget(hint);
+
+    // 主题选择列表
+    auto *listWidget = new QListWidget;
+    listWidget->setSelectionMode(QAbstractItemView::SingleSelection);
+    listWidget->setMinimumHeight(180);
+
+    const auto &allThemes = ThemeManager::availableThemes();
+    int initialIndex = 0;
+    for (int i = 0; i < allThemes.size(); ++i) {
+        const auto &thm = allThemes.at(i);
+        if (thm.id == initialThemeId)
+            initialIndex = i;
+
+        auto *item = new QListWidgetItem;
+        item->setData(Qt::UserRole, thm.id);
+
+        auto *itemWidget = new QWidget;
+        auto *itemLay = new QHBoxLayout(itemWidget);
+        itemLay->setContentsMargins(8, 4, 8, 4);
+        itemLay->setSpacing(8);
+
+        auto *nameLabel = new QLabel(thm.name);
+        nameLabel->setStyleSheet(QStringLiteral("font-weight: 500; font-size: 13px;"));
+        itemLay->addWidget(nameLabel);
+        itemLay->addStretch(1);
+
+        auto *tagLabel = new QLabel(thm.isDark ? tr("深色") : tr("浅色"));
+        tagLabel->setStyleSheet(QStringLiteral(
+            "color: #888888; font-size: 11px; padding: 2px 6px; "
+            "border: 1px solid #555555; border-radius: 3px;"));
+        itemLay->addWidget(tagLabel);
+
+        // 6 个代表性色块条预览
+        auto *swatchBox = new QWidget;
+        auto *swatchLay = new QHBoxLayout(swatchBox);
+        swatchLay->setContentsMargins(0, 0, 0, 0);
+        swatchLay->setSpacing(3);
+
+        const QList<QColor> swatches = {
+            thm.terminalBg, thm.terminalFg, thm.accentColor,
+            thm.normal[2], thm.normal[1], thm.selectionBg
+        };
+        for (const auto &c : swatches) {
+            auto *sw = new QLabel;
+            sw->setFixedSize(14, 14);
+            sw->setStyleSheet(QStringLiteral(
+                "background-color: %1; border: 1px solid #777777; border-radius: 2px;").arg(c.name()));
+            swatchLay->addWidget(sw);
+        }
+        itemLay->addWidget(swatchBox);
+
+        item->setSizeHint(itemWidget->sizeHint());
+        listWidget->addItem(item);
+        listWidget->setItemWidget(item, itemWidget);
+    }
+    lay->addWidget(listWidget);
+
+    // 终端实时色彩预览框
+    auto *preview = new QLabel;
+    preview->setMinimumHeight(130);
+    preview->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    preview->setTextFormat(Qt::RichText);
+    QFont f(m_serialView->fontFamily(), qBound(9, m_serialView->fontSize(), 12));
+    f.setStyleHint(QFont::Monospace);
+    f.setFixedPitch(true);
+    preview->setFont(f);
+    lay->addWidget(preview);
+
+    auto updatePreview = [&](const ThemeDefinition &thm) {
+        const QString bg = thm.terminalBg.name();
+        const QString fg = thm.terminalFg.name();
+        const QString green = thm.normal[2].name();
+        const QString red = thm.normal[1].name();
+        const QString yellow = thm.normal[3].name();
+        const QString cyan = thm.normal[6].name();
+
+        preview->setStyleSheet(QStringLiteral(
+            "QLabel { background-color: %1; border: 1px solid %2; border-radius: 6px; padding: 10px 12px; }")
+            .arg(bg, thm.panelBorder.name()));
+
+        const QString rich = QStringLiteral(
+            "<span style='color:%1;'>root@xterm:~# uname -r</span><br>"
+            "<span style='color:%2;'>Linux 6.8.0-embed aarch64</span><br>"
+            "<span style='color:%3;'>[  OK  ]</span> <span style='color:%2;'>System started in 1.42s</span><br>"
+            "<span style='color:%4;'>[ WARN ]</span> <span style='color:%2;'>Serial port COM3 buffer 75% full</span><br>"
+            "<span style='color:%5;'>[ FAIL ]</span> <span style='color:%2;'>Ethernet link down (eth0)</span><br>"
+            "<span style='color:%6;'>[ INFO ]</span> <span style='color:%2;'>MCP Agent bridge listening</span>"
+        ).arg(cyan, fg, green, yellow, red, cyan);
+
+        preview->setText(rich);
+    };
+
+    connect(listWidget, &QListWidget::currentRowChanged, this, [&](int row) {
+        if (row >= 0 && row < allThemes.size()) {
+            const auto &thm = allThemes.at(row);
+            updatePreview(thm);
+            m_theme->setTheme(thm.id);
+        }
+    });
+
+    listWidget->setCurrentRow(initialIndex);
+    updatePreview(allThemes.at(initialIndex));
+
+    auto *okBtn = new QPushButton(tr("确定"));
+    okBtn->setDefault(true);
+    auto *cancelBtn = new QPushButton(tr("取消"));
+    connect(okBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
+    connect(cancelBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
+
+    auto *btnRow = new QHBoxLayout;
+    btnRow->addStretch(1);
+    btnRow->addWidget(okBtn);
+    btnRow->addWidget(cancelBtn);
+    lay->addLayout(btnRow);
+
+    dlg.setContentLayout(lay);
+    dlg.resize(520, 480);
+
+    if (dlg.exec() == QDialog::Accepted) {
+        const int curRow = listWidget->currentRow();
+        if (curRow >= 0 && curRow < allThemes.size()) {
+            m_theme->setTheme(allThemes.at(curRow).id);
+            m_store->save();
+        }
+    } else {
+        m_theme->setTheme(initialThemeId);
     }
 }

@@ -8,8 +8,8 @@ import time
 
 from PIL import ImageGrab
 
-EXE = r"D:\Qt\QtProject\Xterm\build\ci-build\Xterm.exe"
-ENV = r"D:\Qt6\6.8.3\llvm-mingw_64\bin;D:\Qt6\Tools\llvm-mingw1706_64\bin"
+EXE = r"D:\Qt\QtProject\Xterm\build\Desktop_Qt_6_8_3_llvm_mingw_64_bit-Debug\Xterm.exe"
+ENV = r"D:\Qt6\6.8.3\llvm-mingw_64\bin"
 
 u = ctypes.windll.user32
 

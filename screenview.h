@@ -29,6 +29,8 @@ class QToolButton;
  * 这类只发光标定位不切备用屏的），行编辑自动让路变直通；输出回落到
  * 提示符样的纯文本（行中有字、停在行中）时再自动恢复行编辑。
  */
+struct ThemeDefinition;
+
 class ScreenView : public QWidget
 {
     Q_OBJECT
@@ -37,6 +39,7 @@ public:
     explicit ScreenView(QWidget *parent = nullptr);
 
     void applyTheme(bool dark);
+    void applyTheme(const ThemeDefinition &theme);
     void receiveData(const QByteArray &data);
     void appendSystemMessage(const QString &text);
     void setCompletionEngine(CompletionEngine *engine);
@@ -79,8 +82,16 @@ public:
     // 关键词高亮：命中的文本按规则颜色绘制（不区分大小写，含滚动历史），
     // 选中 / Ctrl+F 查找高亮优先级更高。空列表即关闭。
     void setKeywords(const QList<KeywordRule> &rules);
-    // 绘制内边距（默认 6px）。最大化时主窗口会置 0，让终端网格贴满控件边缘
+    // 槽位规则在当前主题下的解析色：内置 dark/light 用经典高亮色（零视觉
+    // 变化），第三方主题用终端调色板 normal 槽位；无效色由调用方回退固定色。
+    // 公开给关键词设置对话框与测试用（与绘制同源）
+    QColor keywordSlotColor(int slot) const;
+    // 绘制内边距（默认 6px，恒定——最大化不再清零留白，用户定稿 2026-11-14）
     void setPad(int pad);
+
+    // 右缘让位宽度（默认 0）：命令栏浮层盖在终端主体上时，文本网格与滚动条
+    // 避开浮层所在宽度，行尾与光标不会被盖住；控件本身仍铺满全宽（底色一体）
+    void setRightInset(int px);
 
     // OSC 52（远端写剪贴板）策略：Ask 每次弹窗确认（默认，可勾选「以后自动
     // 允许」→ osc52AlwaysAllowRequested 落配置）；Allow 直接写；Deny 拒绝并
@@ -103,6 +114,18 @@ public:
     // 当前选区文本（空 = 无选区）。测试断言与 M2.d snapshot 共用
     QString selectedText() const;
 
+    // 慢速粘贴控制（按行延时发送，防嵌入式端 RX 缓冲区溢出）
+    void setSlowPaste(bool enabled) { m_slowPaste = enabled; }
+    bool slowPaste() const { return m_slowPaste; }
+    void setSlowPasteDelay(int ms) { m_slowPasteDelayMs = qBound(10, ms, 2000); }
+    int slowPasteDelay() const { return m_slowPasteDelayMs; }
+    bool isSlowPasting() const;
+    void cancelSlowPaste();
+
+    void pasteClipboard();
+    void copySelection();
+    void clearSelection();
+
 signals:
     void sendData(const QByteArray &data);
     void terminalSizeChanged(int cols, int rows);
@@ -122,6 +145,10 @@ signals:
     void osc52AlwaysAllowRequested();
     // 右键菜单切了「选区即复制」：外层落配置并同步两页
     void selectToCopyToggled(bool enabled);
+    // 慢速粘贴进度与状态通知
+    void slowPasteProgress(int current, int total);
+    void slowPasteFinished();
+    void slowPasteCancelled();
 
 protected:
     bool event(QEvent *event) override;
@@ -134,6 +161,8 @@ protected:
     void mouseReleaseEvent(QMouseEvent *event) override;
     void mouseDoubleClickEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
+    void enterEvent(QEnterEvent *event) override;
+    void leaveEvent(QEvent *event) override;
     void focusInEvent(QFocusEvent *event) override;
     void focusOutEvent(QFocusEvent *event) override;
     void inputMethodEvent(QInputMethodEvent *event) override;
@@ -175,9 +204,6 @@ private:
     struct FindHit { int abs; int col; int end; };
     void rebuildFindMatches();
     void selectLine(int absRow);
-    void pasteClipboard();
-    void copySelection();
-    void clearSelection();
     void nudgeSelection(int deltaAbs);
     bool selectionBounds(int &r0, int &c0, int &r1, int &c1) const;
     bool cellSelected(int abs, int col) const;
@@ -261,6 +287,7 @@ private:
     int m_cellH = 16;
     int m_ascent = 12;
     int m_pad = 6;
+    int m_rightInset = 0; // 右缘让位宽度：命令栏浮层可见宽度 + 间距
     int m_origin = 0;
     int m_sentCols = -1;
     int m_sentRows = -1;
@@ -286,6 +313,21 @@ private:
     int m_lastMotionCol = -1;
     Osc52Policy m_osc52Policy = Osc52Policy::Ask; // OSC 52 写剪贴板策略
     QList<KeywordRule> m_keywords; // 关键词高亮规则（全局设置同步而来）
+    
+    // 关键词槽位解析用：当前主题 id 与调色板（applyTheme 时缓存）。
+    // 默认 dark 与 TermScreen 未设调色板时的兑底一致
+    QString m_themeId = QStringLiteral("dark");
+    QColor m_themeNormal[8];
+
+    // 慢速粘贴私有状态
+    void startSlowPaste(const QString &text);
+    void sendNextSlowPasteLine();
+
+    bool m_slowPaste = false;
+    int m_slowPasteDelayMs = 50;
+    QTimer *m_slowPasteTimer = nullptr;
+    QStringList m_slowPasteLines;
+    int m_slowPasteIndex = 0;
 
     // ---- 客户端 Tab 补全（主屏 + 串口/SSH shell 行编辑场景）----
     CompletionEngine *m_completion = nullptr;

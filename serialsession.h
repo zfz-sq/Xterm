@@ -31,6 +31,10 @@ public:
 
     QString send(const QByteArray &data) override;
 
+signals:
+    // 设备被物理拔出导致的断开（供自动重连与拔插感知）
+    void deviceRemoved(const QString &portName);
+
 private:
     void onReadyRead();
     void onSerialError(QSerialPort::SerialPortError error);

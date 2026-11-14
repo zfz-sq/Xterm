@@ -19,6 +19,7 @@
 #include <QtTest>
 
 #include "screenview.h"
+#include "thememanager.h"
 
 namespace {
 
@@ -125,6 +126,8 @@ class ScreenViewTest : public QObject
     Q_OBJECT
 
 private slots:
+    void themePaletteFollowsThemeDefinition();
+    void keywordSlotRulesPaintWithThemePalette();
     void topSuspendsLineEditUntilPrompt();
     void viAltScreenPassthrough();
     void busyBoxViInsertTypingKeepsPassthrough();
@@ -149,6 +152,9 @@ private slots:
     void waitAnchorUsesAbsoluteLines();
     void paintCoalescesBurstIntoFewFrames();
     void partialRepaintLimitsToTouchedRows();
+    void slowPasteSendsLinesWithDelay();
+    void slowPasteCancelledByEscapeOrCtrlC();
+    void rightInsetShrinksGrid();
 
 private:
     void feed(ScreenView &view, const QByteArray &bytes)
@@ -167,6 +173,63 @@ static QByteArray topFrame()
     f += "  123 root     1.2  0.5 top\r\n";
     f += "\x1b[7mMem: 100M used\r\n\x1b[m";
     return f;
+}
+
+void ScreenViewTest::themePaletteFollowsThemeDefinition()
+{
+    // 主题 → 终端调色板链路：applyTheme(ThemeDefinition) 必须把默认前/背景、
+    // 选区色与 SGR 索引色全部落到 TermScreen；任何一环断掉，切主题后
+    // 终端文本/背景仍停在旧主题（用户反馈“终端文本颜色没跟主题”）
+    ScreenView view;
+    const ThemeDefinition dracula =
+        ThemeManager::themeById(QStringLiteral("dracula"));
+    view.applyTheme(dracula);
+
+    const TermScreen &ts = view.screenModel();
+    QCOMPARE(ts.defaultForeground(), dracula.terminalFg);
+    QCOMPARE(ts.defaultBackground(), dracula.terminalBg);
+    QCOMPARE(ts.selectionBackground(), dracula.selectionBg);
+
+    // SGR 索引色：红字（31）应解析为 dracula 的红，而不是内置 dark 的红
+    view.receiveData(QByteArrayLiteral("\x1b[31mR\x1b[0m"));
+    QTRY_VERIFY(ts.lineAbsolute(0) != nullptr);
+    const TermCell &cell = ts.lineAbsolute(0)->cells.at(0);
+    QCOMPARE(ts.foreground(cell), dracula.normal[1]);
+
+    // 旧接口 applyTheme(bool) 是 dark/light 委托，不得破坏自定义调色板语义
+    view.applyTheme(false);
+    QCOMPARE(view.screenModel().defaultBackground(),
+             ThemeManager::themeById(QStringLiteral("light")).terminalBg);
+}
+
+void ScreenViewTest::keywordSlotRulesPaintWithThemePalette()
+{
+    // 槽位规则随主题换色：第三方主题下槽位解析为调色板色；内置
+    // dark/light 用经典高亮色兑底（历史上与终端调色板不同源，保证零视觉
+    // 变化）；非法槽位回退无效色（调用方再用规则固定色）
+    ScreenView view;
+    const ThemeDefinition dracula =
+        ThemeManager::themeById(QStringLiteral("dracula"));
+    view.applyTheme(dracula);
+    QCOMPARE(view.keywordSlotColor(1), dracula.normal[1]);
+    QCOMPARE(view.keywordSlotColor(2), dracula.normal[2]);
+    QCOMPARE(view.keywordSlotColor(6), dracula.normal[6]);
+
+    // 内置主题零变化红线：dark 经典红（One Dark）而非终端调色板红（VSCode 系）
+    const ThemeDefinition dark = ThemeManager::themeById(QStringLiteral("dark"));
+    view.applyTheme(dark);
+    QCOMPARE(view.keywordSlotColor(1), QColor(0xE0, 0x6C, 0x75));
+    QVERIFY(view.keywordSlotColor(1) != dark.normal[1]);
+
+    const ThemeDefinition light = ThemeManager::themeById(QStringLiteral("light"));
+    view.applyTheme(light);
+    QCOMPARE(view.keywordSlotColor(3), QColor(0xB5, 0x89, 0x00));
+
+    // 未 applyTheme 的初始状态与 dark 兑底一致；非法槽位无效色
+    ScreenView fresh;
+    QCOMPARE(fresh.keywordSlotColor(1), QColor(0xE0, 0x6C, 0x75));
+    QVERIFY(!fresh.keywordSlotColor(0).isValid());
+    QVERIFY(!fresh.keywordSlotColor(7).isValid());
 }
 
 void ScreenViewTest::topSuspendsLineEditUntilPrompt()
@@ -989,6 +1052,83 @@ void ScreenViewTest::partialRepaintLimitsToTouchedRows()
     QVERIFY(probe.count >= 1);
     QVERIFY(probe.lastRect.height() * 8 < view.height()); // 远小于全屏高
     QVERIFY(view.screenText().contains(QStringLiteral("X"))); // 内容真画上去了
+}
+
+void ScreenViewTest::slowPasteSendsLinesWithDelay()
+{
+    ScreenView view;
+    view.setSlowPaste(true);
+    view.setSlowPasteDelay(30);
+
+    QList<QByteArray> sent;
+    QObject::connect(&view, &ScreenView::sendData, [&](const QByteArray &b) { sent.append(b); });
+
+    QSignalSpy finishSpy(&view, &ScreenView::slowPasteFinished);
+
+    QGuiApplication::clipboard()->setText(QStringLiteral("first_line\nsecond_line"));
+    view.pasteClipboard();
+
+    // 第一行立即发出
+    QVERIFY(view.isSlowPasting());
+    QCOMPARE(sent.size(), 1);
+    QCOMPARE(sent.first(), QByteArray("first_line\r"));
+
+    // 等待行延迟到来发送第二行
+    QTRY_COMPARE_WITH_TIMEOUT(sent.size(), 2, 200);
+    QCOMPARE(sent.at(1), QByteArray("second_line"));
+    QTRY_COMPARE_WITH_TIMEOUT(finishSpy.count(), 1, 200);
+    QVERIFY(!view.isSlowPasting());
+}
+
+void ScreenViewTest::slowPasteCancelledByEscapeOrCtrlC()
+{
+    ScreenView view;
+    view.setSlowPaste(true);
+    view.setSlowPasteDelay(100);
+
+    QList<QByteArray> sent;
+    QObject::connect(&view, &ScreenView::sendData, [&](const QByteArray &b) { sent.append(b); });
+
+    QSignalSpy cancelSpy(&view, &ScreenView::slowPasteCancelled);
+
+    QGuiApplication::clipboard()->setText(QStringLiteral("cmd1\ncmd2\ncmd3"));
+    view.pasteClipboard();
+
+    QVERIFY(view.isSlowPasting());
+    QCOMPARE(sent.size(), 1);
+
+    // 发送 Escape 取消
+    key(view, Qt::Key_Escape);
+
+    QVERIFY(!view.isSlowPasting());
+    QCOMPARE(cancelSpy.count(), 1);
+
+    // 后续不会再发送 cmd2 和 cmd3
+    QTest::qWait(150);
+    QCOMPARE(sent.size(), 1);
+}
+
+void ScreenViewTest::rightInsetShrinksGrid()
+{
+    // 命令栏浮层盖在终端主体上时（Termius 式结构），文本网格要避开浮层宽度，
+    // 行尾与光标不被盖住；控件本身仍铺满全宽（底色一体）
+    ScreenView view;
+    view.resize(600, 200);
+    view.show();
+    QTest::qWait(60); // 首次布局与网格计算
+    const int colsBefore = view.screenModel().cols();
+    QVERIFY(colsBefore > 20);
+
+    QSignalSpy sizeSpy(&view, &ScreenView::terminalSizeChanged);
+    view.setRightInset(150);
+    QTest::qWait(100); // updateGrid → 40ms 节流定时器 → emitPtySize
+    QVERIFY(view.screenModel().cols() < colsBefore);
+    QVERIFY(!sizeSpy.isEmpty()); // 让位改变了可用列数，要通知 pty
+
+    // 回到无让位：列数恢复
+    view.setRightInset(0);
+    QTest::qWait(100);
+    QCOMPARE(view.screenModel().cols(), colsBefore);
 }
 
 int main(int argc, char **argv)

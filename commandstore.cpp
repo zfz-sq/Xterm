@@ -223,6 +223,22 @@ static Profile profileFromJson(const QJsonObject &o)
     return p;
 }
 
+bool CommandStore::isDarkTheme() const
+{
+    return m_theme != QStringLiteral("light") && m_theme != QStringLiteral("solarized-light");
+}
+
+void CommandStore::setDarkTheme(bool dark)
+{
+    if (dark) {
+        if (!isDarkTheme())
+            m_theme = QStringLiteral("dark");
+    } else {
+        if (isDarkTheme())
+            m_theme = QStringLiteral("light");
+    }
+}
+
 bool CommandStore::load()
 {
     QFile file(configPath());
@@ -273,18 +289,22 @@ bool CommandStore::load()
         m_lastProfile = m_profiles.first().name;
 
     const QString theme = root.value(QStringLiteral("theme")).toString();
-    m_theme = (theme == QStringLiteral("light")) ? QStringLiteral("light")
-                                                 : QStringLiteral("dark");
+    m_theme = theme.isEmpty() ? QStringLiteral("dark") : theme;
     const QString mode = root.value(QStringLiteral("mode")).toString();
     m_mode = (mode == QStringLiteral("ssh")) ? QStringLiteral("ssh")
                                              : QStringLiteral("serial");
     m_fontSize = qBound(0, root.value(QStringLiteral("fontSize")).toInt(0), 72);
     m_terminalFont = root.value(QStringLiteral("terminalFont")).toString();
-    m_commandBarCollapsed = root.value(QStringLiteral("commandBarCollapsed")).toBool(false);
+    m_sidebarVisible = root.value(QStringLiteral("sidebarVisible")).toBool(true);
     setOsc52Policy(root.value(QStringLiteral("osc52Policy")).toString(QStringLiteral("ask")));
     m_selectToCopy = root.value(QStringLiteral("selectToCopy")).toBool(false);
     setMaxScrollback(root.value(QStringLiteral("maxScrollback")).toInt(10000));
     setMcpAllowWrite(root.value(QStringLiteral("mcpAllowWrite")).toBool(false));
+    setSerialSlowPaste(root.value(QStringLiteral("serialSlowPaste")).toBool(true));
+    setSerialSlowPasteDelay(root.value(QStringLiteral("serialSlowPasteDelay")).toInt(50));
+    setSerialAutoReconnect(root.value(QStringLiteral("serialAutoReconnect")).toBool(true));
+    setSilenceAlert(root.value(QStringLiteral("silenceAlert")).toBool(true));
+    setSilenceAlertSeconds(root.value(QStringLiteral("silenceAlertSeconds")).toInt(5));
 
     m_keywords.clear();
     // 老配置没有 keywords 键 = 从没用过高亮：给一套日志惯例默认规则
@@ -297,8 +317,26 @@ bool CommandStore::load()
         rule.text = o.value(QStringLiteral("text")).toString();
         rule.color = QColor(o.value(QStringLiteral("color")).toString());
         rule.enabled = o.value(QStringLiteral("enabled")).toBool(true);
+        rule.themeSlot = o.value(QStringLiteral("themeSlot")).toInt(-1);
         if (!rule.text.isEmpty() && rule.color.isValid())
             m_keywords.append(rule);
+    }
+    // 旧配置迁移：文本与内置默认规则相同、颜色也没改过的规则补上槽位，
+    // 让这批高亮随主题调色板换色；改过色的（含同词异色）保持固定色
+    for (KeywordRule &rule : m_keywords) {
+        if (rule.themeSlot >= 0)
+            continue;
+        for (int variant = 0; variant < 2; ++variant) {
+            for (const KeywordRule &def : defaultKeywords(variant == 0)) {
+                if (rule.text.compare(def.text, Qt::CaseInsensitive) == 0
+                        && rule.color == def.color) {
+                    rule.themeSlot = def.themeSlot;
+                    break;
+                }
+            }
+            if (rule.themeSlot >= 0)
+                break;
+        }
     }
     // 旧配置把密码明文写在 json 里：迁进凭据库后立刻重写，把字段删掉。
     if (stripLegacyPasswords)
@@ -306,17 +344,30 @@ bool CommandStore::load()
     return true;
 }
 
+QColor CommandStore::classicKeywordColor(int slot, bool dark)
+{
+    switch (slot) {
+    case 1: return dark ? QColor(0xE0, 0x6C, 0x75) : QColor(0xC4, 0x2F, 0x2F);
+    case 2: return dark ? QColor(0x7C, 0xD0, 0x77) : QColor(0x0E, 0x8A, 0x3E);
+    case 3: return dark ? QColor(0xE5, 0xC0, 0x7A) : QColor(0xB5, 0x89, 0x00);
+    case 6: return dark ? QColor(0x56, 0xB6, 0xC2) : QColor(0x11, 0x8A, 0xB3);
+    default: return QColor();
+    }
+}
+
 QList<KeywordRule> CommandStore::defaultKeywords(bool dark)
 {
-    // 颜色与终端调色板同源（暗 = One Dark 系，亮 = kLight 调色板）
-    const QColor red = dark ? QColor(0xE0, 0x6C, 0x75) : QColor(0xC4, 0x2F, 0x2F);
-    const QColor green = dark ? QColor(0x7C, 0xD0, 0x77) : QColor(0x0E, 0x8A, 0x3E);
-    const QColor yellow = dark ? QColor(0xE5, 0xC0, 0x7A) : QColor(0xB5, 0x89, 0x00);
-    const QColor cyan = dark ? QColor(0x56, 0xB6, 0xC2) : QColor(0x11, 0x8A, 0xB3);
-    auto make = [](const char *text, const QColor &color) {
+    // 颜色与终端调色板同源（暗 = One Dark 系，亮 = kLight 调色板）；
+    // themeSlot 指向调色板 normal 槽位，切主题时高亮随调色板重解析
+    const QColor red = classicKeywordColor(1, dark);
+    const QColor green = classicKeywordColor(2, dark);
+    const QColor yellow = classicKeywordColor(3, dark);
+    const QColor cyan = classicKeywordColor(6, dark);
+    auto make = [](const char *text, const QColor &color, int slot) {
         KeywordRule rule;
         rule.text = QString::fromLatin1(text);
         rule.color = color;
+        rule.themeSlot = slot;
         return rule;
     };
     // 匹配是不区分大小写的子串，用词要避开常见误命中：用 passed 而非 pass
@@ -324,16 +375,16 @@ QList<KeywordRule> CommandStore::defaultKeywords(bool dark)
     // 不收 ok（token/socket）、ready（already）、enabled（disabled）、
     // complete（incomplete）、oops（loops）、bug（debug）。
     return {
-        make("error", red),     make("fail", red),  make("fatal", red),
-        make("panic", red),     make("denied", red), make("disconnect", red),
-        make("false", red),     make("critical", red), make("refused", red),
-        make("unable", red),    make("invalid", red), make("segfault", red),
-        make("segmentation", red),
-        make("success", green), make("true", green), make("passed", green),
-        make("done", green),
-        make("warn", yellow),   make("timeout", yellow), make("deprecated", yellow),
-        make("retry", yellow),
-        make("info", cyan),     make("debug", cyan),
+        make("error", red, 1),     make("fail", red, 1),  make("fatal", red, 1),
+        make("panic", red, 1),     make("denied", red, 1), make("disconnect", red, 1),
+        make("false", red, 1),     make("critical", red, 1), make("refused", red, 1),
+        make("unable", red, 1),    make("invalid", red, 1), make("segfault", red, 1),
+        make("segmentation", red, 1),
+        make("success", green, 2), make("true", green, 2), make("passed", green, 2),
+        make("done", green, 2),
+        make("warn", yellow, 3),   make("timeout", yellow, 3), make("deprecated", yellow, 3),
+        make("retry", yellow, 3),
+        make("info", cyan, 6),     make("debug", cyan, 6),
     };
 }
 
@@ -354,10 +405,14 @@ bool CommandStore::save() const
         arr.append(profileToJson(p));
 
     QJsonArray kws;
-    for (const KeywordRule &r : m_keywords)
-        kws.append(QJsonObject{ { QStringLiteral("text"), r.text },
-                                 { QStringLiteral("color"), r.color.name() },
-                                 { QStringLiteral("enabled"), r.enabled } });
+    for (const KeywordRule &r : m_keywords) {
+        QJsonObject o{ { QStringLiteral("text"), r.text },
+                       { QStringLiteral("color"), r.color.name() },
+                       { QStringLiteral("enabled"), r.enabled } };
+        if (r.themeSlot >= 0)
+            o.insert(QStringLiteral("themeSlot"), r.themeSlot);
+        kws.append(o);
+    }
 
     const QJsonObject root{
         { QStringLiteral("version"), 1 },
@@ -366,11 +421,16 @@ bool CommandStore::save() const
         { QStringLiteral("mode"), m_mode },
         { QStringLiteral("fontSize"), m_fontSize },
         { QStringLiteral("terminalFont"), m_terminalFont },
-        { QStringLiteral("commandBarCollapsed"), m_commandBarCollapsed },
+        { QStringLiteral("sidebarVisible"), m_sidebarVisible },
         { QStringLiteral("osc52Policy"), m_osc52Policy },
         { QStringLiteral("selectToCopy"), m_selectToCopy },
         { QStringLiteral("maxScrollback"), m_maxScrollback },
         { QStringLiteral("mcpAllowWrite"), m_mcpAllowWrite },
+        { QStringLiteral("serialSlowPaste"), m_serialSlowPaste },
+        { QStringLiteral("serialSlowPasteDelay"), m_serialSlowPasteDelay },
+        { QStringLiteral("serialAutoReconnect"), m_serialAutoReconnect },
+        { QStringLiteral("silenceAlert"), m_silenceAlert },
+        { QStringLiteral("silenceAlertSeconds"), m_silenceAlertSeconds },
         { QStringLiteral("keywords"), kws },
         { QStringLiteral("profiles"), arr },
     };

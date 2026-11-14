@@ -68,8 +68,10 @@ void SerialSession::onSerialError(QSerialPort::SerialPortError error)
 
     // 设备被拔出：关闭并上报
     if (error == QSerialPort::ResourceError) {
+        const QString lastPort = m_port.portName();
         const QString msg = tr("串口错误：%1（设备可能已被拔出）").arg(m_port.errorString());
         close();
+        emit deviceRemoved(lastPort);
         emitError(msg);
         return;
     }

@@ -3,6 +3,7 @@
 #include "filebrowsermodel.h"
 #include "filebrowserwidgets.h"
 #include "icons.h"
+#include "scrollflash.h"
 #include "sshsession.h"
 #include "transferdialog.h"
 #include "transferqueue.h"
@@ -263,6 +264,7 @@ FileBrowserDialog::FileBrowserDialog(SshSession *session, QWidget *parent)
     setContentLayout(root);
 
     restoreBrowserState();
+    ScrollFlash::attachTree(this); // 文件列表滚动条：滚动浮现/待机隐藏
     const QString savedLocal = m_localPath;
     m_localPath.clear();
     if (!savedLocal.isEmpty() && QDir(savedLocal).exists())
