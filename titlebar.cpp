@@ -93,10 +93,14 @@ TitleBar::TitleBar(QWidget *parent)
     m_iconLabel->setObjectName(QStringLiteral("TitleIcon"));
     m_iconLabel->setPixmap(QPixmap(QStringLiteral(":/icons/app.png"))
                                .scaled(20, 20, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    // 左上角图标即菜单入口（用户定稿 2026-11-15）：点击弹主菜单（设置+关于集成），
+    // 文字菜单按钮（设置/帮助）已移除；手型光标提示可点
+    m_iconLabel->setCursor(Qt::PointingHandCursor);
+    m_iconLabel->setToolTip(tr("应用菜单"));
+    m_iconLabel->installEventFilter(this);
     layout->addWidget(m_iconLabel);
     layout->addSpacing(6);
 
-    // VSCode 式菜单项（设置 / 工具 / 帮助），由 MainWindow 用 addMenuButton 逐个注入
     layout->addSpacing(6);
 
     m_titleLabel = new QLabel(this);
@@ -155,19 +159,6 @@ void TitleBar::setTitle(const QString &title)
 {
     m_titleLabel->setText(title);
     m_titleLabel->setVisible(!title.isEmpty());
-}
-
-QToolButton *TitleBar::addMenuButton(const QString &title)
-{
-    auto *btn = new QToolButton(this);
-    btn->setObjectName(QStringLiteral("TitleMenuBtn"));
-    btn->setText(title);
-    btn->setFixedHeight(kBtnHeight); // 与图标/系统按钮同高，栏内居中不贴边（hover 圆角块统一）
-    btn->setPopupMode(QToolButton::InstantPopup);
-    // 插到标题文字之前：菜单项永远紧挨应用图标一排，标题始终居右弹性区前
-    if (auto *box = qobject_cast<QHBoxLayout *>(layout()))
-        box->insertWidget(box->indexOf(m_titleLabel), btn);
-    return btn;
 }
 
 void TitleBar::setThemeIcon(const QIcon &icon, const QString &tooltip)
@@ -262,10 +253,16 @@ bool TitleBar::eventFilter(QObject *watched, QEvent *event)
     // 窗口状态变化时刷新最大化按钮图标
     if (watched == window() && event->type() == QEvent::WindowStateChange)
         updateMaxButtonGlyph();
+    // 左上角应用图标点击 → 弹主菜单（菜单内容由 UiBuilder 构建，本类只发信号）。
+    // filter 在 QLabel 忽略事件传给父级（拖动）之前拦截，按图标不会拖动窗口
+    if (watched == m_iconLabel && event->type() == QEvent::MouseButtonPress) {
+        emit logoClicked();
+        return true;
+    }
     return QWidget::eventFilter(watched, event);
 }
 
-void applyWin11RoundedCorners(QWidget *window)
+void setWin11RoundedCorners(QWidget *window, bool rounded)
 {
 #ifdef Q_OS_WIN
     if (WId hwnd = window->winId()) {
@@ -274,12 +271,13 @@ void applyWin11RoundedCorners(QWidget *window)
             using PfnDwmSetWindowAttribute = long (*)(void *, unsigned long, const void *, unsigned long);
             if (auto pfn = reinterpret_cast<PfnDwmSetWindowAttribute>(
                     dwm.resolve("DwmSetWindowAttribute"))) {
-                int pref = 2; // DWMWCP_ROUND
+                int pref = rounded ? 2 : 1; // DWMWCP_ROUND / DWMWCP_DONOTROUND
                 pfn(reinterpret_cast<void *>(hwnd), 33, &pref, sizeof(pref));
             }
         }
     }
 #else
     Q_UNUSED(window);
+    Q_UNUSED(rounded);
 #endif
 }

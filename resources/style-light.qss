@@ -12,10 +12,12 @@ QMainWindow, QWidget#centralwidget {
 
 /* ---------------- 面板容器 ---------------- */
 
+/* 参数栏：与命令栏同款毛玻璃浮层（无边框线半透明底，panelBg 抬档+alpha 200；
+   兜底值按 thememanager 的 darker(104)+alpha200 公式预计算，运行时被逐主题 override 覆盖） */
 QFrame#connectionBar, QFrame#advancedBar {
-    background-color: #FFFFFF;
-    border: 1px solid #DCDCDE;
-    border-radius: 6px;
+    background-color: rgba(245, 245, 245, 200);
+    border: none;
+    border-radius: 8px;
 }
 
 /* 终端是窗口主体（Termius 式）：不再做独立卡片，底色即终端画布色，

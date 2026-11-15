@@ -68,7 +68,6 @@ public:
     void toggleMaximized();               // 最大化/还原切换（标题栏按钮与双击共用，自维护伪最大化状态）
 
     // —— 设置菜单与关键词 ——
-    void openThemeSettings();    // 主题设置对话框（卡片/色块预览/即时切换）
     void openKeywordSettings();  // 关键词高亮编辑（表格，改即预览）
     void openFontSettings();     // 终端字体族 + 字号（改即预览，两页同步）
     void applyKeywords(const QList<KeywordRule> &rules); // 落存储并同步两页

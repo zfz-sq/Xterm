@@ -40,8 +40,7 @@ MainWindow::MainWindow(QWidget *parent)
     // MCP 状态标签等仍由主窗口挂状态栏；MCP 提示词内容现住侧边栏第三页（UiBuilder 注入），
     // 原收起态侧边按钮组已废弃，不再挂载 MCP 按钮。
     m_mcp = new McpMainHook(ui->statusbar, this);
-    // 全局快捷键协作类须在标题栏之前创建：标题栏「工具」菜单
-    // 直接取用其 action（同 M1.a 的连接/创建顺序教训）
+    // 全局快捷键协作类（F5 连接 / F9 切模式 / F10 文件管理，行为源归 HotkeyManager）
     m_hotkey = new HotkeyManager(this);
 
     m_uiBuilder = new UiBuilder(this, ui, m_store, m_theme, m_hotkey, m_mcp, this);

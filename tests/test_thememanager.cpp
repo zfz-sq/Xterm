@@ -332,6 +332,15 @@ void TestThemeManager::applyNowInjectsCommandBarOverlay()
     store.setTheme(QStringLiteral("dark"));
     theme.applyNow();
     QVERIFY(qApp->styleSheet().contains(QStringLiteral("CommandBar { background-color: rgba(")));
+
+    // arg 位置守卫：QString::arg 多参等价链式替换最小编号 marker，模板删 marker
+    // 而参数列表未同步会整体错位（历史事故：状态栏/终端面板吃到 accent 蓝）。
+    // 用两个远离模板尾部的锚点验证参数对齐未被破坏
+    const ThemeDefinition darkDef = ThemeManager::themeById(QStringLiteral("dark"));
+    QVERIFY(qApp->styleSheet().contains(QStringLiteral("QStatusBar { background-color: ")
+                                             + darkDef.statusBarBg.name() + QStringLiteral(";")));
+    QVERIFY(qApp->styleSheet().contains(QStringLiteral("QFrame#terminalPanel { background-color: ")
+                                             + darkDef.terminalBg.name() + QStringLiteral(";")));
 }
 
 void TestThemeManager::isDarkTracksStore()
@@ -358,6 +367,11 @@ void TestThemeManager::themeLibraryHasUniqueIds()
         QVERIFY2(!ids.contains(t.id), qPrintable(QStringLiteral("重复 id: %1").arg(t.id)));
         ids.insert(t.id);
         QVERIFY(t.terminalBg.isValid() && t.terminalFg.isValid());
+        // 终端主体化理念（用户定稿 2026-11-15）：窗口背景必须即终端画布色，
+        // 主体与背景是一个整体颜色（历史遗留 dracula/nord 等 6 套曾两色割裂）
+        QVERIFY2(t.windowBg == t.terminalBg,
+                 qPrintable(QStringLiteral("%1: windowBg(%2) != terminalBg(%3)")
+                                .arg(t.id, t.windowBg.name(), t.terminalBg.name())));
         QVERIFY(t.accentColor.isValid());
         QVERIFY(t.statusBarBg.isValid() && t.statusBarFg.isValid());
         QVERIFY(t.textFg.isValid() && t.dialogBg.isValid());

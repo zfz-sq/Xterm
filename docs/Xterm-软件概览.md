@@ -54,7 +54,13 @@
 - 多功能侧边栏（用户定稿 2026-11-14）：命令栏卡片顶部一行图标标签切换三页（间距 10px，避免过挤不协调；主题标签用颜料盘图标 palette.png，由 tools/make_icons.py 管线生成——圆盘+拇指孔+颜料点，与主流终端一致；注意 applyTheme() 按索引重设 tab 图标，图标名必须与 mkTab 初始设置同名，否则启动后主题刷新会把新图标覆盖回旧图）——命令页（预设命令列表）/ 主题页（Termius 式主题列表：缩略图+名称，点击即切，当前主题高亮）/ MCP 提示页（原「MCP 提示词」弹窗内容：说明文本 QTextEdit 富文本布局——QPlainTextEdit 布局引擎忽略块行距，行距 160%+段间距 2px、分隔空行压成 8px 固定高避免大空白，提示词区透明融入卡片，顶部提示语已删；配置 JSON 等宽字体+输入框风格代码块随主题，复制按钮）；后续可再扩新页；标题栏主题按钮右侧新增侧边栏切换按钮（Termius 同位，标题栏保持 30px；三类按钮统一 **28×28 正方形**居中不贴边——图标/侧边栏钮与最小化/最大化/关闭钮同尺寸、菜单钮同高，hover/按下显示 8px 圆润圆角块、无常亮选中态，展开态只存内部状态）控制卡片展开/收起，收起后终端铺满窗口，显隐状态持久化；原「收起成侧边小按钮组」形态已废弃
 - Termius 式悬浮卡片：终端铺满窗口为唯一主体（无边框，底色即终端画布色），命令栏是浮在其右缘的半透明圆角卡片（8px 圆角、左右留 8px 间隙、顶部收窄至 4px + 卡片内顶边距 8px——用户定稿 2026-11-14：与参数栏之间空白带太大，收窄约 8px，底部内边距仍 12px、向下延伸贴到底部、内容距卡片边缘 8px 不压边），三页统一页宽（用户定稿 2026-11-14：以主题页宽度为准 kPageWidth=240，切标签卡片宽度恒定不变，高度仍随页内容伸缩；卡片宽 = 统一页宽 + 左右内边距，由 CommandBar::sizeHint 自管，堆栈用 PageStack 按当前页取高度 hint，规避 QStackedWidget 全页取 max 把卡片铏死），文本网格与滚动条自动避让卡片宽度
 - 卡片毛玻璃质感：底色为主题面板色抬档后的半透明 rgba（暗色更亮/亮色更暗，保证与终端底可辨），无边框线，半透明底透出终端画布色淡影
-- 命令列表去卡片化：无边框+透明底（CommandBar QListWidget 作用域规则，融入毛玻璃卡片整体；行级 hover/选中反馈保留）
+- 参数栏同款毛玻璃（用户定稿 2026-11-15）：顶部连接栏与 SSH 高级参数条与命令栏卡片统一——半透明玻璃底+8px 圆角+无 1px 描边，透出窗口背景淡影成为悬浮面；静态 qss 兜底值按同公式预计算（lighter(112)/darker(104)+alpha 200），运行时被逐主题 override 覆盖。注意模板改造时的 arg 错位陷阱：多参 arg 等价链式替换最小编号 marker，删 %n 必须守卫（已在模板尾部加注释占位，test_thememanager 有错位断言）
+- 主题背景一体化（用户定稿 2026-11-15）：全部主题 windowBg == terminalBg——终端铺满窗口为唯一主体，背景即画布色，不允许两色割裂；早期 6 套双色主题（dracula/nord/monokai/oneDark/solarized dark/light）已统一，themeLibraryHasUniqueIds 有逐主题守卫断言，statusBarBg 是独立设计的状态栏色不受此约束
+- 菜单主题入口整体移除（用户定稿 2026-11-15）：设置菜单不再有「主题」子菜单与「主题设置...」对话框（连带删除 openThemeSettings 死代码）——主题切换唯一入口是侧边栏主题页，深浅快切走标题栏主题按钮，菜单不再维护第二套主题列表；「工具」菜单随后也整体移除（见下条）
+- 标题栏「工具」菜单整体移除（用户定稿 2026-11-15）：菜单栏只剩「设置 / 帮助」——F5/F9/F10 快捷键由 HotkeyManager 独立注册不受影响（action 访问器保留作快捷键载体，test_hotkeymanager 依赖），对应功能按钮（连接/文件/模式切换）仍在界面直达；连带修正 hotkeymanager.h/titlebar.cpp 注释中过时的菜单挂载描述
+- 设置/关于集成到左上角图标（用户定稿 2026-11-15）：标题栏不再有任何文字菜单按钮（addMenuButton 整体删除）——点击左上角应用图标（TitleIcon，手型光标+提示「应用菜单」）在图标正下方弹出唯一主菜单：设置组（关键词高亮/字体/串口三项+两个档位子菜单/退出）+ 分隔线 + 帮助组（文档/关于 Qt/关于 Xterm）；TitleBar 只发 logoClicked 信号（eventFilter 拦 iconLabel 的 MouseButtonPress，不影响拖窗口），菜单内容与弹出位置由 UiBuilder 构建接线，仍复用已有对话框/快捷键行为
+- 主题页字体区（用户定稿 2026-11-15）：主题页底部一行「字体」+ 右侧展开箭头（'›' ↔ '˅'，自绘细线 QIcon——实心大三角被用户否定后重做，颜色取 palette 文字色，applyTheme 重刷随主题），展开为字体族（等宽过滤）+ 字号 stepper（− 11 + 自绘 glyph，靠右对齐——用户定稿 2026-11-15，参考 Termius：Text Size 左、stepper 贴右；U+2212 减号字符在主题字体缺字形会渲染成省略号，不能用字符）+ 恢复默认，可再点收起；改动走与设置对话框/Ctrl+滚轮同一信号链（两页互同步+落盘，值相同不发信号不回环），终端本身就是实时预览不再另设预览块；浮层高度固定贴底，展开只压缩上方列表（stretch 吸收）；「恢复默认字体」发信号回抛 UiBuilder（默认族定义在 ScreenView，CommandBar 不反向依赖）；启动恢复/Ctrl+滚轮经 setCurrentTerminalFont 回推控件（守卫不发请求信号）
+- 命令列表去卡片化：无边框+透明底（CommandBar QListWidget 作用域规则，融入毛玻璃卡片整体；行级 hover/选中反馈保留）；命令页功能按钮行下沉贴底（用户定稿 2026-11-15：按钮行负底 margin 6px，视觉距底 12→6px，仅命令页不影响其他页）
 - 选区与标题栏按钮色全主题适配（用户指出硬编码问题后修复 2026-11-14）：选区色（文本选中底/字）唯一由 ThemeManager override 按主题注入（%9=selectionBg、%26=listSelectedFg，9 套主题各自定义），静态 qss 里的硬编码 selection 已删；标题栏按钮 hover/按下/文字色用 #TitleBar 同构特异性规则按主题注入（静态 qss 的 #TitleBar 前缀特异性更高必须同构覆盖，close 键红色 hover 是 Win 惯例保留）；终端画布内选区色走主题 selectionBg（第三方主题经自定义调色板注入）
 
 ### AI / MCP 集成
@@ -66,11 +72,11 @@
   - **Host**（仅 SSH）：`cpu` / `mem`（状态栏同源采样）/ `disk` / `uptime` / `top`
   - **Session**：`list` / `current` / `switch`（切串口/SSH 不断另一条）/ `openSsh` / `openSerial`（参数写回参数栏再连接，凭据只认界面配置）/ `close`
 - 可观测与防护：所有调用落 `logs/agent-audit.jsonl`（按大小滚动保留）；状态栏角标三态（就绪 / 打字机中 / 「MCP · 工具名（N 秒前）」）；令牌桶限流防 AI 循环刷屏卡界面
-- AI 打字期间用户输入锁定，用户 Ctrl+C 可打断（AI 会收到明确的 interrupted 错误）；管道名与令牌在配置目录 agent.json，工具菜单里有现成的 MCP 提示词可复制
+- AI 打字期间用户输入锁定，用户 Ctrl+C 可打断（AI 会收到明确的 interrupted 错误）；管道名与令牌在配置目录 agent.json，侧边栏第三页（MCP 页）与状态栏 MCP 按钮弹窗都有现成的 MCP 提示词可复制
 
 ### 外观与平台
 
-- 无边框主窗口 + 自绘标题栏（菜单、主题切换、置顶、系统按钮），所有弹窗统一为同风格的无边框对话框（Win11 圆角）；最大化/还原切换自维护伪最大化状态（2026-11-14 修复：FramelessWindowHint 下 Qt 的 setWindowState(Maximized) 只 setGeometry 不置系统 zoomed 位，isMaximized() 恒 false 导致按钮点了没反应——UiBuilder::toggleMaximized 自管状态与还原几何，标题栏按钮/双击共用，按钮字形 ▢/❐ 联动）；外围留白恒定 6px 不随窗口状态变（用户定稿 2026-11-14：最大化清零留白后连接栏/卡片贴边有剪切感，两边间距要保持，边距联动逻辑已删）
+- 无边框主窗口 + 自绘标题栏（菜单、主题切换、置顶、系统按钮），所有弹窗统一为同风格的无边框对话框（Win11 圆角）；最大化/还原切换自维护伪最大化状态（2026-11-14 修复：FramelessWindowHint 下 Qt 的 setWindowState(Maximized) 只 setGeometry 不置系统 zoomed 位，isMaximized() 恒 false 导致按钮点了没反应——UiBuilder::toggleMaximized 自管状态与还原几何，标题栏按钮/双击共用，按钮字形 ▢/❐ 联动；最大化期间禁用 Win11 圆角——伪最大化非系统 zoomed 态 DWM 仍按普通窗口画圆角，四角透出桌面（用户看到的“透明间隙”，实测四角像素为壁纸色，2026-11-14 修复：toggleMaximized 联动 setWin11RoundedCorners(DONOTROUND/ROUND)，还原恢复圆角））；外围留白恒定 6px 不随窗口状态变（用户定稿 2026-11-14：最大化清零留白后连接栏/卡片贴边有剪切感，两边间距要保持，边距联动逻辑已删）
 - 39 套内置主题（原 9 套：VS Code Dark / GitHub Light / Dracula / Nord / Monokai / One Dark / Solarized Dark·Light / Termius 夜航绿；2026-11-14 按 Termius 主题列表复刻新增 30 套：Flexoki Dark·Light、Kanagawa Wave·Dragon·Lotus、Hacker Blue·Green·Red、Everforest Dark·Light、Night Owl / Light Owl、Aura、Rosé Pine·Moon·Dawn、Cobalt2、Octocat Dark·Light、Ayu Dark·Light、Cyberpunk / Cyberpunk Scarlet、Romania Night·Day、Aubergine、Peach Fresh、1984 Dark·Light、Winter Night——全部定义在 thememanager.cpp createThemes()，侧边栏主题页列表与缩略图自动跟随新增；知名开源配色用官方调色板，Termius 独有主题按截图观感近似）：主题设置对话框色块预览 + 终端实时预览、选中即生效、取消可回退；菜单内快捷单选，标题栏一键深/浅翻转；QSS 全局换肤，终端调色板逐主题定制，第三方主题终端正文用主题招牌色（Dracula 淡紫 / Monokai 米黄 / Nord 霜蓝 / One Dark 冷蓝 / Solarized 青灰 / Termius 亮绿），主题跟随每个对话框与取色器；按钮与输入控件全状态适配（普通/悬停/按下/选中/焦点/禁用，含 #id 高特异性的模式切换/齿轮/眼睛按钮与下拉框、数字输入，端口选择框等首个焦点控件不再残留旧灰）；SFTP 文件浏览器/传输队列的树/表格/表头/斑马纹/悬停选中行/pathBar 同步跟随主题（列表类字段逐主题定制）；滚动条 Termius 式：6px 细轨道+同宽直角滑块、平时隐藏，滚动时浮现（轨道色 Termius 主题实色 #2C2F3F，滑块 #285049→悬停招牌亮绿 #21B568），滑块长度钳制 48–100px，内容不足一屏时不浮现、滚动中内容收缩立即隐去，待机鼠标穿透不拦截点击，终端滚动条为 overlay 不再挤压终端列数
 - 终端字体设置：等宽字体族 + 字号对话框，实时预览、两页同步；也可 Ctrl+滚轮直接调字号
 - 配置持久化：profile（连接参数）、主题、终端字体与字号、串口行为开关（慢速粘贴/自动重连/静默提醒）、命令栏状态、关键词规则、SFTP 上次目录，落盘在用户配置目录

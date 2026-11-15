@@ -280,45 +280,18 @@ void UiBuilder::setupTitleBar()
     m_titleBar = new TitleBar(m_window);
     m_window->setMenuWidget(m_titleBar); // QMainWindow 顶部专属位，不占 centralWidget
 
-    // VSCode 式菜单栏：设置 / 工具 / 帮助（复用已有按钮/快捷键行为，避免另起一套逻辑）
-    auto *setMenu = new QMenu(m_titleBar);
+    // 左上角应用图标即唯一菜单入口（用户定稿 2026-11-15）：设置 + 关于全部集成，
+    // 点击图标在图标下方弹出；文字菜单按钮（设置/帮助）已从标题栏移除。
+    // 仍复用已有按钮/对话框行为，避免另起一套逻辑
+    auto *logoMenu = new QMenu(m_titleBar);
 
-    auto *themeSub = setMenu->addMenu(tr("主题"));
-    auto *themeGroup = new QActionGroup(themeSub);
-    const auto &allThemes = ThemeManager::availableThemes();
-    for (const auto &thm : allThemes) {
-        auto *thmAct = themeSub->addAction(thm.name);
-        thmAct->setCheckable(true);
-        thmAct->setChecked(m_theme->currentThemeId() == thm.id);
-        thmAct->setProperty("themeId", thm.id);
-        themeGroup->addAction(thmAct);
-        connect(thmAct, &QAction::triggered, this, [this, thm] {
-            m_theme->setTheme(thm.id);
-            m_store->save();
-        });
-    }
-    // 勾选态跟随真实状态：主题设置对话框/标题栏切换按钮也会改主题，
-    // 菜单 action 只在构建时 setChecked 会停在旧值，每次展开前重对齐
-    connect(themeSub, &QMenu::aboutToShow, this, [this, themeSub] {
-        const QString cur = m_theme->currentThemeId();
-        for (QAction *act : themeSub->actions()) {
-            const QString id = act->property("themeId").toString();
-            if (!id.isEmpty())
-                act->setChecked(id == cur);
-        }
-    });
-    themeSub->addSeparator();
-    themeSub->addAction(tr("切换深/浅模式"), this, [this] {
-        m_theme->toggleTheme();
-        m_store->save();
-    });
+    // 主题入口已从菜单整体移除（用户定稿 2026-11-15）：切换走侧边栏主题页，
+    // 深浅快切走标题栏主题按钮；菜单不再维护第二套主题列表
+    logoMenu->addAction(tr("关键词高亮"), this, &UiBuilder::openKeywordSettings);
+    logoMenu->addAction(tr("字体"), this, &UiBuilder::openFontSettings);
+    logoMenu->addSeparator();
 
-    setMenu->addAction(tr("主题设置..."), this, &UiBuilder::openThemeSettings);
-    setMenu->addAction(tr("关键词高亮"), this, &UiBuilder::openKeywordSettings);
-    setMenu->addAction(tr("字体"), this, &UiBuilder::openFontSettings);
-    setMenu->addSeparator();
-
-    auto *slowPasteAct = setMenu->addAction(tr("串口多行慢速粘贴"));
+    auto *slowPasteAct = logoMenu->addAction(tr("串口多行慢速粘贴"));
     slowPasteAct->setCheckable(true);
     slowPasteAct->setChecked(m_store->serialSlowPaste());
     connect(slowPasteAct, &QAction::toggled, this, [this](bool on) {
@@ -329,7 +302,7 @@ void UiBuilder::setupTitleBar()
 
     // 延时档位子菜单：嵌入式场景不需要任意毫秒精调，常用档够用；
     // 存量自定义值（手改 config.json）不在档位里时全部不勾，选档即覆盖
-    auto *slowDelayMenu = setMenu->addMenu(tr("慢速粘贴行延时"));
+    auto *slowDelayMenu = logoMenu->addMenu(tr("慢速粘贴行延时"));
     auto *slowDelayGroup = new QActionGroup(slowDelayMenu);
     for (const int ms : { 10, 20, 50, 100, 200, 500 }) {
         auto *dAct = slowDelayMenu->addAction(tr("%1 ms").arg(ms));
@@ -351,7 +324,7 @@ void UiBuilder::setupTitleBar()
         }
     });
 
-    auto *autoReconnAct = setMenu->addAction(tr("串口拔插自动重连"));
+    auto *autoReconnAct = logoMenu->addAction(tr("串口拔插自动重连"));
     autoReconnAct->setCheckable(true);
     autoReconnAct->setChecked(m_store->serialAutoReconnect());
     connect(autoReconnAct, &QAction::toggled, this, [this](bool on) {
@@ -361,7 +334,7 @@ void UiBuilder::setupTitleBar()
             m_session->setAutoReconnect(on);
     });
 
-    auto *silenceAlertAct = setMenu->addAction(tr("静默后输出闪烁提醒"));
+    auto *silenceAlertAct = logoMenu->addAction(tr("静默后输出闪烁提醒"));
     silenceAlertAct->setCheckable(true);
     silenceAlertAct->setChecked(m_store->silenceAlert());
     connect(silenceAlertAct, &QAction::toggled, this, [this](bool on) {
@@ -371,7 +344,7 @@ void UiBuilder::setupTitleBar()
 
     // 静默阈值档位：等板子重启的典型时长从几秒到几分钟，档位够用；
     // 与延时子菜单同模式，不在档位里的存量值全不勾，选档即覆盖
-    auto *silenceSecMenu = setMenu->addMenu(tr("静默阈值"));
+    auto *silenceSecMenu = logoMenu->addMenu(tr("静默阈值"));
     auto *silenceSecGroup = new QActionGroup(silenceSecMenu);
     const QList<QPair<int, QString>> silenceSteps = {
         { 5, tr("5 秒") },   { 10, tr("10 秒") },  { 30, tr("30 秒") },
@@ -396,29 +369,24 @@ void UiBuilder::setupTitleBar()
         }
     });
 
-    setMenu->addSeparator();
-    auto *quitAction = setMenu->addAction(tr("退出"), m_window, &QMainWindow::close);
+    logoMenu->addSeparator();
+    auto *quitAction = logoMenu->addAction(tr("退出"), m_window, &QMainWindow::close);
     quitAction->setShortcut(QKeySequence::Quit);
-    m_titleBar->addMenuButton(tr("设置"))->setMenu(setMenu);
 
-    auto *toolMenu = new QMenu(m_titleBar);
-    // F5/F9/F10 由 HotkeyManager 统一注册，这里只把 action 挂进菜单；
-    // 触发信号在 setSessionController 里接到 SessionController 的既有动作上
-    //（文案联动见 updateConnectionUi/updateModeUi）
-    toolMenu->addAction(m_hotkey->connectAction());
-    toolMenu->addAction(m_hotkey->sftpAction());
-    toolMenu->addAction(m_hotkey->switchModeAction());
-    m_titleBar->addMenuButton(tr("工具"))->setMenu(toolMenu);
+    // 「工具」菜单已整体移除（用户定稿 2026-11-15）：F5/F9/F10 快捷键由
+    // HotkeyManager 独立注册不受影响，对应功能按钮（连接/文件/模式）仍在
 
-    auto *helpMenu = new QMenu(m_titleBar);
-    helpMenu->addAction(tr("文档"), this, [] {
+    // 帮助/关于组并入同一 logo 菜单，分隔线隔开设置组（用户定稿 2026-11-15）
+    logoMenu->addSeparator();
+
+    logoMenu->addAction(tr("文档"), this, [] {
         // 优先打开项目自带 docs 目录（打包环境无 docs 时静默失败即可）
         const QString docs = QCoreApplication::applicationDirPath()
                              + QStringLiteral("/docs");
         if (QDir(docs).exists())
             QDesktopServices::openUrl(QUrl::fromLocalFile(docs));
     });
-    helpMenu->addAction(tr("关于 Qt"), this, [this] {
+    logoMenu->addAction(tr("关于 Qt"), this, [this] {
         // QApplication::aboutQt 弹的是原生 QMessageBox，换成公共对话框保持主题一致
         FramelessDialog dlg(m_window);
         dlg.setDialogTitle(tr("关于 Qt"));
@@ -454,7 +422,7 @@ void UiBuilder::setupTitleBar()
         dlg.applyTheme(m_theme->isDark());
         dlg.exec();
     });
-    helpMenu->addAction(tr("关于 Xterm"), this, [this] {
+    logoMenu->addAction(tr("关于 Xterm"), this, [this] {
         // 公共无边框对话框，主题随全局 QSS，暗色下不再露原生样式。
         // 版式: 居中品牌区 → 简介 → 三张信息卡片 → 分隔线 → 页脚(链接/版权/按钮)
         FramelessDialog dlg(m_window);
@@ -558,7 +526,11 @@ void UiBuilder::setupTitleBar()
         dlg.applyTheme(dark);
         dlg.exec();
     });
-    m_titleBar->addMenuButton(tr("帮助"))->setMenu(helpMenu);
+
+    // 图标点击 → 主菜单弹出（位置：图标正下方，窗口左上角）；menu 由本段构建持有
+    connect(m_titleBar, &TitleBar::logoClicked, this, [this, logoMenu] {
+        logoMenu->popup(m_titleBar->mapToGlobal(QPoint(0, m_titleBar->height())));
+    });
 
     // 标题不显示在标题栏（VSCode 式），系统任务栏/Alt+Tab 仍显示 windowTitle
 
@@ -775,11 +747,13 @@ void UiBuilder::setupTerminal()
         m_sshView->setFontSize(pt);
         m_store->setFontSize(pt);
         m_store->save();
+        m_commandBar->setCurrentTerminalFont(m_serialView->fontFamily(), pt); // 侧边栏字体控件跟随
     });
     connect(m_sshView, &ScreenView::fontSizeChanged, this, [this](int pt) {
         m_serialView->setFontSize(pt);
         m_store->setFontSize(pt);
         m_store->save();
+        m_commandBar->setCurrentTerminalFont(m_serialView->fontFamily(), pt);
     });
     // 字体族同样两页联动并落盘（setFontFamily 族相同则不发信号，不会回环）。
     // 选回默认族时存空串：配置文件里保留“未设置”语义，以后系统等宽字体变了也跟着走
@@ -787,11 +761,31 @@ void UiBuilder::setupTerminal()
         m_sshView->setFontFamily(family);
         m_store->setTerminalFont(family == ScreenView::defaultFontFamily() ? QString() : family);
         m_store->save();
+        m_commandBar->setCurrentTerminalFont(family, m_serialView->fontSize());
     });
     connect(m_sshView, &ScreenView::fontFamilyChanged, this, [this](const QString &family) {
         m_serialView->setFontFamily(family);
         m_store->setTerminalFont(family == ScreenView::defaultFontFamily() ? QString() : family);
         m_store->save();
+        m_commandBar->setCurrentTerminalFont(family, m_serialView->fontSize());
+    });
+
+    // 主题页字体区（用户定稿 2026-11-15）：与设置对话框同一信号链——上面的
+    // 联动块已负责两页互同步+落盘，这里只把值落到两页 setter；setCurrentTerminalFont
+    // 的回推也由联动块发出（值相同不发信号），侧边栏控件自动跟上实际效果
+    connect(m_commandBar, &CommandBar::terminalFontRequested, this, [this](const QString &family, int pt) {
+        m_serialView->setFontFamily(family);
+        m_sshView->setFontFamily(family);
+        m_serialView->setFontSize(pt);
+        m_sshView->setFontSize(pt);
+    });
+    // 「恢复默认字体」：默认族定义在 ScreenView（CommandBar 不反向依赖），
+    // 字号保持现状（与设置对话框的恢复行为一致）
+    connect(m_commandBar, &CommandBar::terminalFontResetRequested, this, [this] {
+        const QString def = ScreenView::defaultFontFamily();
+        m_serialView->setFontFamily(def);
+        m_sshView->setFontFamily(def);
+        m_commandBar->setCurrentTerminalFont(def, m_serialView->fontSize());
     });
 }
 
@@ -835,8 +829,6 @@ void UiBuilder::updateModeUi()
     m_ui->modeBtn->setText(serial ? tr("SSH") : tr("串口"));
     m_ui->modeBtn->setToolTip(serial ? tr("切换到 SSH 终端（F9；串口连接与内容保持不断开）")
                                      : tr("切换回串口终端（F9；SSH 连接与内容保持不断开）"));
-    // 工具菜单项与模式按钮同一动作，文案同步（串口页显示「切换到 SSH」，反之亦然）
-    m_hotkey->setSwitchModeText(serial ? tr("切换到 SSH") : tr("切换到串口"));
     // SFTP 走 SSH 通道：串口页不显示文件管理按钮（连同其左侧分隔线）
     m_ui->vline1->setVisible(!serial);
     m_ui->filesBtn->setVisible(!serial);
@@ -877,8 +869,6 @@ void UiBuilder::updateConnectionUi()
     }
     m_ui->connectBtn->setText(text);
     m_ui->connectBtn->setToolTip(tip);
-    // 工具菜单项触发的是同一个按钮，文案同步（断开时显示「连接」，连接时「断开」）
-    m_hotkey->setConnectText(text);
     m_ui->connectBtn->setIcon(themedIcon(open ? QStringLiteral("disconnect.png")
                                               : QStringLiteral("connect.png")));
     m_ui->connectBtn->setEnabled(st != Transport::Disconnecting);
@@ -994,6 +984,9 @@ void UiBuilder::toggleMaximized()
         m_window->setGeometry(m_window->screen()->availableGeometry());
     }
     m_titleBar->setMaximizedShown(m_fakeMaximized); // 字形 ▢/❐ 与提示（无 WindowStateChange 可过滤）
+    // 伪最大化非系统 zoomed 态，DWM 仍按普通窗口绘制圆角，四角透出桌面
+    //（用户看到的“透明间隙”）：最大化期间禁用圆角，还原时恢复
+    setWin11RoundedCorners(m_window, !m_fakeMaximized);
 }
 
 void UiBuilder::restoreTerminalFontSettings()
@@ -1008,6 +1001,8 @@ void UiBuilder::restoreTerminalFontSettings()
         m_serialView->setFontFamily(savedFont);
         m_sshView->setFontFamily(savedFont);
     }
+    // 侧边栏字体控件对齐恢复后的实际值（设置菜单对话框与侧边栏两入口同源）
+    m_commandBar->setCurrentTerminalFont(m_serialView->fontFamily(), m_serialView->fontSize());
 }
 
 // ---------------------------------------------------------------- 关键词高亮
@@ -1318,148 +1313,5 @@ void UiBuilder::openFontSettings()
         m_sshView->setFontFamily(prevFamily);
         m_serialView->setFontSize(prevSize);
         m_sshView->setFontSize(prevSize);
-    }
-}
-
-void UiBuilder::openThemeSettings()
-{
-    FramelessDialog dlg(m_window);
-    dlg.setDialogTitle(tr("主题设置"));
-
-    const QString initialThemeId = m_theme->currentThemeId();
-
-    auto *content = new QWidget;
-    auto *lay = new QVBoxLayout(content);
-    lay->setContentsMargins(18, 14, 18, 14);
-    lay->setSpacing(12);
-
-    auto *hint = new QLabel(tr("选择终端与界面的整体配色方案（即时预览）："));
-    lay->addWidget(hint);
-
-    // 主题选择列表
-    auto *listWidget = new QListWidget;
-    listWidget->setSelectionMode(QAbstractItemView::SingleSelection);
-    listWidget->setMinimumHeight(180);
-
-    const auto &allThemes = ThemeManager::availableThemes();
-    int initialIndex = 0;
-    for (int i = 0; i < allThemes.size(); ++i) {
-        const auto &thm = allThemes.at(i);
-        if (thm.id == initialThemeId)
-            initialIndex = i;
-
-        auto *item = new QListWidgetItem;
-        item->setData(Qt::UserRole, thm.id);
-
-        auto *itemWidget = new QWidget;
-        auto *itemLay = new QHBoxLayout(itemWidget);
-        itemLay->setContentsMargins(8, 4, 8, 4);
-        itemLay->setSpacing(8);
-
-        auto *nameLabel = new QLabel(thm.name);
-        nameLabel->setStyleSheet(QStringLiteral("font-weight: 500; font-size: 13px;"));
-        itemLay->addWidget(nameLabel);
-        itemLay->addStretch(1);
-
-        auto *tagLabel = new QLabel(thm.isDark ? tr("深色") : tr("浅色"));
-        tagLabel->setStyleSheet(QStringLiteral(
-            "color: #888888; font-size: 11px; padding: 2px 6px; "
-            "border: 1px solid #555555; border-radius: 3px;"));
-        itemLay->addWidget(tagLabel);
-
-        // 6 个代表性色块条预览
-        auto *swatchBox = new QWidget;
-        auto *swatchLay = new QHBoxLayout(swatchBox);
-        swatchLay->setContentsMargins(0, 0, 0, 0);
-        swatchLay->setSpacing(3);
-
-        const QList<QColor> swatches = {
-            thm.terminalBg, thm.terminalFg, thm.accentColor,
-            thm.normal[2], thm.normal[1], thm.selectionBg
-        };
-        for (const auto &c : swatches) {
-            auto *sw = new QLabel;
-            sw->setFixedSize(14, 14);
-            sw->setStyleSheet(QStringLiteral(
-                "background-color: %1; border: 1px solid #777777; border-radius: 2px;").arg(c.name()));
-            swatchLay->addWidget(sw);
-        }
-        itemLay->addWidget(swatchBox);
-
-        item->setSizeHint(itemWidget->sizeHint());
-        listWidget->addItem(item);
-        listWidget->setItemWidget(item, itemWidget);
-    }
-    lay->addWidget(listWidget);
-
-    // 终端实时色彩预览框
-    auto *preview = new QLabel;
-    preview->setMinimumHeight(130);
-    preview->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    preview->setTextFormat(Qt::RichText);
-    QFont f(m_serialView->fontFamily(), qBound(9, m_serialView->fontSize(), 12));
-    f.setStyleHint(QFont::Monospace);
-    f.setFixedPitch(true);
-    preview->setFont(f);
-    lay->addWidget(preview);
-
-    auto updatePreview = [&](const ThemeDefinition &thm) {
-        const QString bg = thm.terminalBg.name();
-        const QString fg = thm.terminalFg.name();
-        const QString green = thm.normal[2].name();
-        const QString red = thm.normal[1].name();
-        const QString yellow = thm.normal[3].name();
-        const QString cyan = thm.normal[6].name();
-
-        preview->setStyleSheet(QStringLiteral(
-            "QLabel { background-color: %1; border: 1px solid %2; border-radius: 6px; padding: 10px 12px; }")
-            .arg(bg, thm.panelBorder.name()));
-
-        const QString rich = QStringLiteral(
-            "<span style='color:%1;'>root@xterm:~# uname -r</span><br>"
-            "<span style='color:%2;'>Linux 6.8.0-embed aarch64</span><br>"
-            "<span style='color:%3;'>[  OK  ]</span> <span style='color:%2;'>System started in 1.42s</span><br>"
-            "<span style='color:%4;'>[ WARN ]</span> <span style='color:%2;'>Serial port COM3 buffer 75% full</span><br>"
-            "<span style='color:%5;'>[ FAIL ]</span> <span style='color:%2;'>Ethernet link down (eth0)</span><br>"
-            "<span style='color:%6;'>[ INFO ]</span> <span style='color:%2;'>MCP Agent bridge listening</span>"
-        ).arg(cyan, fg, green, yellow, red, cyan);
-
-        preview->setText(rich);
-    };
-
-    connect(listWidget, &QListWidget::currentRowChanged, this, [&](int row) {
-        if (row >= 0 && row < allThemes.size()) {
-            const auto &thm = allThemes.at(row);
-            updatePreview(thm);
-            m_theme->setTheme(thm.id);
-        }
-    });
-
-    listWidget->setCurrentRow(initialIndex);
-    updatePreview(allThemes.at(initialIndex));
-
-    auto *okBtn = new QPushButton(tr("确定"));
-    okBtn->setDefault(true);
-    auto *cancelBtn = new QPushButton(tr("取消"));
-    connect(okBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
-    connect(cancelBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
-
-    auto *btnRow = new QHBoxLayout;
-    btnRow->addStretch(1);
-    btnRow->addWidget(okBtn);
-    btnRow->addWidget(cancelBtn);
-    lay->addLayout(btnRow);
-
-    dlg.setContentLayout(lay);
-    dlg.resize(520, 480);
-
-    if (dlg.exec() == QDialog::Accepted) {
-        const int curRow = listWidget->currentRow();
-        if (curRow >= 0 && curRow < allThemes.size()) {
-            m_theme->setTheme(allThemes.at(curRow).id);
-            m_store->save();
-        }
-    } else {
-        m_theme->setTheme(initialThemeId);
     }
 }

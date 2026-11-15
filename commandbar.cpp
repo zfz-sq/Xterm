@@ -7,6 +7,7 @@
 #include <QClipboard>
 #include <QDrag>
 #include <QEvent>
+#include <QFontComboBox>
 #include <QFontMetrics>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -41,6 +42,46 @@ constexpr int kCardTopPad = 8; // 顶部内边距单独收窄（用户定稿 202
 // 切换标签时卡片宽度保持不变，不再随页内容变来变去；
 // 卡片宽尺寸唯一真源 = 主题页 minimumWidth（用户手调 kPageWidth 一处即全同步）
 constexpr int kPageWidth = 240;
+
+// 细线 chevron（用户定稿 2026-11-15：实心大三角太丑，Termius 参考图为细线 V 形）。
+// 颜色取当前文字色随主题，主题切换后 applyTheme 重刷
+QIcon makeChevron(bool down)
+{
+    const QColor c = QGuiApplication::palette().color(QPalette::WindowText);
+    QPixmap pm(16, 16);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    QPen pen(c, 1.6);
+    pen.setCapStyle(Qt::RoundCap);
+    p.setPen(pen);
+    if (down) { // ˅ 尖朝下
+        p.drawLine(QPointF(3.5, 6), QPointF(8, 10.5));
+        p.drawLine(QPointF(8, 10.5), QPointF(12.5, 6));
+    } else {    // › 尖朝右
+        p.drawLine(QPointF(6, 3.5), QPointF(10.5, 8));
+        p.drawLine(QPointF(10.5, 8), QPointF(6, 12.5));
+    }
+    return QIcon(pm);
+}
+
+// 字号 stepper ± 号：同款细线描边（U+2212 减号字符在部分主题字体缺字形，
+// 会渲染成省略号，不能用字符），颜色跟主题文字色
+QIcon makePlusMinus(bool plus)
+{
+    const QColor c = QGuiApplication::palette().color(QPalette::WindowText);
+    QPixmap pm(16, 16);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    QPen pen(c, 1.6);
+    pen.setCapStyle(Qt::RoundCap);
+    p.setPen(pen);
+    p.drawLine(QPointF(3.5, 8), QPointF(12.5, 8)); // 横线
+    if (plus)
+        p.drawLine(QPointF(8, 3.5), QPointF(8, 12.5)); // 竖线
+    return QIcon(pm);
+}
 
 // 拖动排序时，QListWidget 默认用代理把整行渲染成跟随光标的缩略图；但本列表的
 // 内容都在 setItemWidget 的自定义控件里，代理渲染不出东西，于是缩略图是一块
@@ -202,6 +243,9 @@ void CommandBar::buildCommandPage()
 
     auto *bottom = new QHBoxLayout;
     bottom->setSpacing(2);
+    // 功能按钮行下沉（用户定稿 2026-11-15：离卡片底缘太远）——负底 margin 让行
+    // 越出布局底界 6px，视觉距底从 12px 收到 6px，不压边；只动本行不波及其他页
+    bottom->setContentsMargins(0, 0, 0, -6);
     bottom->addStretch(1);
     auto mkBtn = [this, bottom](const QString &ico, const QString &tip) {
         auto *b = new QToolButton(m_commandPage);
@@ -234,7 +278,7 @@ void CommandBar::buildCommandPage()
             this, &CommandBar::onRowsReordered, Qt::DirectConnection);
 }
 
-// ---------- 主题页：Termius 式主题列表（缩略图 + 名称，点击切换） ----------
+// ---------- 主题页：Termius 式主题列表 + 底部可展开字体设置（用户定稿 2026-11-15） ----------
 
 void CommandBar::buildThemePage()
 {
@@ -262,6 +306,83 @@ void CommandBar::buildThemePage()
             return;
         emit themeRequested(cur->data(kThemeIdRole).toString());
     });
+
+    // 字体区（用户定稿 2026-11-15）：主题页底部一行「字体」+ 右侧展开箭头，
+    // 展开显示字体族/字号设置，可再点收起。改动实时落到两页终端——终端就在
+    // 卡片旁边，本身就是预览，不再另设预览块。浮层高度由 placeCommandBar
+    // 固定贴底，展开只压缩上方列表（stretch=1 吸收），卡片几何不动
+    m_fontHeader = new QWidget(m_themePage);
+    auto *headLay = new QHBoxLayout(m_fontHeader);
+    headLay->setContentsMargins(0, 4, 0, 0);
+    auto *fontTitle = new QLabel(tr("字体"), m_fontHeader);
+    fontTitle->setStyleSheet(QStringLiteral("font-weight: 600;"));
+    m_fontArrow = new QToolButton(m_fontHeader);
+    m_fontArrow->setAutoRaise(true);
+    m_fontArrow->setIcon(makeChevron(false)); // 收起态细线 '›'，展开换 '˅'
+    m_fontArrow->setIconSize(QSize(16, 16));
+    headLay->addWidget(fontTitle);
+    headLay->addStretch(1);
+    headLay->addWidget(m_fontArrow);
+    m_fontHeader->setCursor(Qt::PointingHandCursor);
+    m_fontHeader->installEventFilter(this); // 整行可点 → 展开/收起（eventFilter 分支）
+    pageLayout->addWidget(m_fontHeader);
+
+    m_fontPanel = new QWidget(m_themePage);
+    auto *fontLay = new QVBoxLayout(m_fontPanel);
+    fontLay->setContentsMargins(0, 2, 0, 0);
+    fontLay->setSpacing(4);
+    m_fontCombo = new QFontComboBox(m_fontPanel);
+    m_fontCombo->setFontFilters(QFontComboBox::MonospacedFonts); // 比例字体在终端格子里会错位
+    auto *sizeRow = new QWidget(m_fontPanel);
+    auto *sizeLay = new QHBoxLayout(sizeRow);
+    sizeLay->setContentsMargins(0, 0, 0, 0);
+    sizeLay->setSpacing(6);
+    sizeLay->addWidget(new QLabel(tr("字号"), sizeRow));
+    sizeLay->addStretch(1);
+    // 字号 stepper（用户定稿 2026-11-15，参考 Termius：− 14 + ，比 spinbox 上下小箭头干净）
+    m_fontMinusBtn = new QToolButton(sizeRow);
+    m_fontMinusBtn->setAutoRaise(true);
+    m_fontMinusBtn->setIcon(makePlusMinus(false));
+    m_fontMinusBtn->setIconSize(QSize(16, 16));
+    m_fontMinusBtn->setFixedWidth(28);
+    m_fontSizeLabel = new QLabel(sizeRow);
+    m_fontSizeLabel->setAlignment(Qt::AlignCenter);
+    m_fontSizeLabel->setFixedWidth(36);
+    m_fontSizeLabel->setNum(m_fontPt);
+    m_fontPlusBtn = new QToolButton(sizeRow);
+    m_fontPlusBtn->setAutoRaise(true);
+    m_fontPlusBtn->setIcon(makePlusMinus(true));
+    m_fontPlusBtn->setIconSize(QSize(16, 16));
+    m_fontPlusBtn->setFixedWidth(28);
+    sizeLay->addWidget(m_fontMinusBtn);
+    sizeLay->addWidget(m_fontSizeLabel);
+    sizeLay->addWidget(m_fontPlusBtn);
+    // 无尾部 stretch：前 stretch 独自推压，− 字号 + 整体靠右对齐（用户定稿 2026-11-15，
+    // 参考 Termius：Text Size 左、stepper 贴右）
+    auto *resetBtn = new QPushButton(tr("恢复默认字体"), m_fontPanel);
+    fontLay->addWidget(m_fontCombo);
+    fontLay->addWidget(sizeRow);
+    fontLay->addWidget(resetBtn);
+    m_fontPanel->setVisible(false); // 默认收起
+    pageLayout->addWidget(m_fontPanel);
+
+    // 改动即应用：与设置对话框/Ctrl+滚轮同一信号链（UiBuilder 接两页 setter，
+    // 字号/族相同则 ScreenView 不发信号，联动链不会回环也不会重复落盘）
+    connect(m_fontCombo, &QFontComboBox::currentFontChanged, this, [this](const QFont &f) {
+        if (!m_fontSyncing)
+            emit terminalFontRequested(f.family(), m_fontPt);
+    });
+    // ± 按钮只由用户点击触发，无需守卫；setCurrentTerminalFont 直接写 label 不经此路径
+    auto applyFontPt = [this](int pt) {
+        m_fontPt = qBound(8, pt, 36);
+        m_fontSizeLabel->setNum(m_fontPt);
+        emit terminalFontRequested(m_fontCombo->currentFont().family(), m_fontPt);
+    };
+    connect(m_fontMinusBtn, &QToolButton::clicked, this, [this, applyFontPt] { applyFontPt(m_fontPt - 1); });
+    connect(m_fontPlusBtn, &QToolButton::clicked, this, [this, applyFontPt] { applyFontPt(m_fontPt + 1); });
+    // 默认族定义在 ScreenView（本类不反向依赖），发信号由 UiBuilder 应用
+    connect(resetBtn, &QPushButton::clicked, this, &CommandBar::terminalFontResetRequested);
+    connect(m_fontArrow, &QToolButton::clicked, this, &CommandBar::toggleFontPanel);
 }
 
 void CommandBar::setThemes(const QList<ThemeDefinition> &themes)
@@ -308,6 +429,26 @@ void CommandBar::rebuildThemeList()
             m_themeList->setCurrentItem(item);
     }
     m_themeRebuilding = false;
+}
+
+// 字体区展开/收起：纯显隐切换（浮层高度固定，列表 stretch 吸收变化），
+// 箭头 '>' ↔ 'v' 同步翻转。标题行/箭头两个入口都归到这里，不会叠加触发
+void CommandBar::toggleFontPanel()
+{
+    const bool expanded = !m_fontPanel->isVisible();
+    m_fontPanel->setVisible(expanded);
+    m_fontArrow->setIcon(makeChevron(expanded)); // '›' ↔ '˅'
+}
+
+// 程序化同步（启动恢复/Ctrl+滚轮/恢复默认回推）：守卫拦住控件信号，
+// 不发 terminalFontRequested——值是外部推来的，再应用回去就成回环
+void CommandBar::setCurrentTerminalFont(const QString &family, int pt)
+{
+    m_fontSyncing = true;
+    m_fontCombo->setCurrentFont(QFont(family));
+    m_fontPt = qBound(8, pt, 36);
+    m_fontSizeLabel->setNum(m_fontPt);
+    m_fontSyncing = false;
 }
 
 // ---------- MCP 页：原「MCP 提示词」弹窗内容（说明/提示词/配置/复制） ----------
@@ -391,6 +532,12 @@ void CommandBar::applyTheme()
     m_tabBtns[0]->setIcon(themedIcon(QStringLiteral("command.png")));
     m_tabBtns[1]->setIcon(themedIcon(QStringLiteral("palette.png"))); // 同 mkTab：颜料盘（用户定稿）
     m_tabBtns[2]->setIcon(themedIcon(QStringLiteral("mcp.png")));
+    if (m_fontArrow)
+        m_fontArrow->setIcon(makeChevron(m_fontPanel && m_fontPanel->isVisible())); // chevron 色跟主题文字色
+    if (m_fontMinusBtn) {
+        m_fontMinusBtn->setIcon(makePlusMinus(false));
+        m_fontPlusBtn->setIcon(makePlusMinus(true));
+    }
 
     for (Row *row : m_rows) {
         if (!row)
@@ -675,6 +822,12 @@ bool CommandBar::eventFilter(QObject *watched, QEvent *event)
             undoRemove();
             return true;
         }
+    }
+    // 主题页「字体」行整行可点：展开/收起。子件 QLabel 不接受鼠标，点击冒泡到
+    // 行容器；箭头按钮自己消费 clicked（容器收不到那次按压），两入口互不重复
+    if (watched == m_fontHeader && event->type() == QEvent::MouseButtonPress) {
+        toggleFontPanel();
+        return true;
     }
     if (event->type() == QEvent::MouseButtonPress) {
         auto *grip = qobject_cast<QLabel *>(watched);

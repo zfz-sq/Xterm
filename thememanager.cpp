@@ -102,7 +102,7 @@ QList<ThemeDefinition> createThemes()
     dracula.bright[2] = QColor(0x69, 0xFF, 0x94); dracula.bright[3] = QColor(0xFF, 0xFF, 0xA5);
     dracula.bright[4] = QColor(0xD6, 0xAC, 0xFF); dracula.bright[5] = QColor(0xFF, 0x92, 0xDF);
     dracula.bright[6] = QColor(0xA4, 0xFF, 0xFF); dracula.bright[7] = QColor(0xFF, 0xFF, 0xFF);
-    dracula.windowBg = QColor(0x21, 0x22, 0x2C);
+    dracula.windowBg = QColor(0x28, 0x2A, 0x36); // 终端主体化：背景即画布色
     dracula.panelBg = QColor(0x28, 0x2A, 0x36);
     dracula.panelBorder = QColor(0x44, 0x47, 0x5A);
     dracula.inputBg = QColor(0x34, 0x37, 0x46);
@@ -139,7 +139,7 @@ QList<ThemeDefinition> createThemes()
     nord.bright[2] = QColor(0xB1, 0xD1, 0x99); nord.bright[3] = QColor(0xF0, 0xD3, 0x99);
     nord.bright[4] = QColor(0x8F, 0xAF, 0xCF); nord.bright[5] = QColor(0xC6, 0x9F, 0xBF);
     nord.bright[6] = QColor(0x8F, 0xBC, 0xBB); nord.bright[7] = QColor(0xEC, 0xEF, 0xF4);
-    nord.windowBg = QColor(0x24, 0x29, 0x33);
+    nord.windowBg = QColor(0x2E, 0x34, 0x40); // 终端主体化：背景即画布色
     nord.panelBg = QColor(0x2E, 0x34, 0x40);
     nord.panelBorder = QColor(0x3B, 0x42, 0x52);
     nord.inputBg = QColor(0x3B, 0x42, 0x52);
@@ -176,7 +176,7 @@ QList<ThemeDefinition> createThemes()
     monokai.bright[2] = QColor(0xB8, 0xF3, 0x40); monokai.bright[3] = QColor(0xFF, 0xE6, 0x8C);
     monokai.bright[4] = QColor(0x8C, 0xE4, 0xFF); monokai.bright[5] = QColor(0xC4, 0x9E, 0xFF);
     monokai.bright[6] = QColor(0xBA, 0xF7, 0xEC); monokai.bright[7] = QColor(0xFF, 0xFF, 0xFF);
-    monokai.windowBg = QColor(0x1E, 0x1F, 0x1C);
+    monokai.windowBg = QColor(0x27, 0x28, 0x22); // 终端主体化：背景即画布色
     monokai.panelBg = QColor(0x27, 0x28, 0x22);
     monokai.panelBorder = QColor(0x3E, 0x3D, 0x32);
     monokai.inputBg = QColor(0x38, 0x38, 0x30);
@@ -213,7 +213,7 @@ QList<ThemeDefinition> createThemes()
     oneDark.bright[2] = QColor(0xB1, 0xE3, 0x8E); oneDark.bright[3] = QColor(0xFF, 0xD5, 0x88);
     oneDark.bright[4] = QColor(0x73, 0xC2, 0xFF); oneDark.bright[5] = QColor(0xDB, 0x8F, 0xFF);
     oneDark.bright[6] = QColor(0x6D, 0xD8, 0xE7); oneDark.bright[7] = QColor(0xFF, 0xFF, 0xFF);
-    oneDark.windowBg = QColor(0x1E, 0x22, 0x27);
+    oneDark.windowBg = QColor(0x21, 0x25, 0x2B); // 终端主体化：背景即画布色
     oneDark.panelBg = QColor(0x21, 0x25, 0x2B);
     oneDark.panelBorder = QColor(0x2C, 0x31, 0x3A);
     oneDark.inputBg = QColor(0x28, 0x2C, 0x34);
@@ -250,7 +250,7 @@ QList<ThemeDefinition> createThemes()
     solDark.bright[2] = QColor(0x58, 0x6E, 0x75); solDark.bright[3] = QColor(0x65, 0x7B, 0x83);
     solDark.bright[4] = QColor(0x83, 0x94, 0x96); solDark.bright[5] = QColor(0x6C, 0x71, 0xC4);
     solDark.bright[6] = QColor(0x93, 0xA1, 0xA1); solDark.bright[7] = QColor(0xFD, 0xF6, 0xE3);
-    solDark.windowBg = QColor(0x00, 0x21, 0x2B);
+    solDark.windowBg = QColor(0x00, 0x2B, 0x36); // 终端主体化：背景即画布色
     solDark.panelBg = QColor(0x00, 0x2B, 0x36);
     solDark.panelBorder = QColor(0x07, 0x36, 0x42);
     solDark.inputBg = QColor(0x07, 0x36, 0x42);
@@ -287,7 +287,7 @@ QList<ThemeDefinition> createThemes()
     solLight.bright[2] = QColor(0x93, 0xA1, 0xA1); solLight.bright[3] = QColor(0x83, 0x94, 0x96);
     solLight.bright[4] = QColor(0x65, 0x7B, 0x83); solLight.bright[5] = QColor(0x6C, 0x71, 0xC4);
     solLight.bright[6] = QColor(0x58, 0x6E, 0x75); solLight.bright[7] = QColor(0x00, 0x2B, 0x36);
-    solLight.windowBg = QColor(0xF5, 0xEF, 0xDC);
+    solLight.windowBg = QColor(0xFD, 0xF6, 0xE3); // 终端主体化：背景即画布色
     solLight.panelBg = QColor(0xFD, 0xF6, 0xE3);
     solLight.panelBorder = QColor(0xE0, 0xDA, 0xC6);
     solLight.inputBg = QColor(0xEE, 0xE8, 0xD5);
@@ -1559,7 +1559,9 @@ void ThemeManager::applyNow()
     const QString overrideQss = QStringLiteral(
         "\n/* ---- 动态主题覆盖 [%1] ---- */\n"
         "QMainWindow, QWidget#centralwidget { background-color: %2; color: %12; }\n"
-        "QFrame#connectionBar, QFrame#advancedBar { background-color: %3; border: 1px solid %4; color: %12; }\n"
+        // 参数栏与命令栏同款毛玻璃浮层（用户定稿 2026-11-15）：无边框线半透明底，
+        // 圆角对齐 CommandBar；透出窗口背景淡影，成为悬浮面而非实心条
+        "QFrame#connectionBar, QFrame#advancedBar { background-color: %34; border: none; border-radius: 8px; color: %12; }\n"
         "QFrame#terminalPanel { background-color: %33; border: none; color: %12; }\n"
         "CommandBar { background-color: %34; border-radius: 8px; }\n"
         "CommandBar QScrollArea, CommandBar QScrollArea > QWidget > QWidget { background: transparent; border: none; }\n"
@@ -1622,6 +1624,10 @@ void ThemeManager::applyNow()
         "QToolButton:checked { background-color: %19; border-color: %20; }\n"
         "QToolButton#modeBtn:checked, QToolButton#mcpBtn:checked { background-color: %19; border-color: %20; }\n"
         "* { selection-background-color: %9; selection-color: %26; }\n"
+        // arg 位置守卫：QString::arg 多参等价链式替换「最小编号 marker」，
+        // 模板中若删除某个 %n 的使用而参数列表未同步缩短，之后所有参数全部错位。
+        // connectionBar 改用 %34 后 %3/%4 暂无消费者，靠注释占位保号（arg 对注释同样替换）
+        "/* arg marker guard: %3 %4 */\n"
     ).arg(theme.id,
          theme.windowBg.name(),
          theme.panelBg.name(),
