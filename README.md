@@ -4,7 +4,7 @@
 
 面向嵌入式开发的**串口 + SSH 双模终端**（Windows / Qt 6 / C++17）。
 
-一条串口链路 + 一条 SSH 链路同时存活、一键切换；SFTP 双栏文件管理复用 SSH 同一条连接；命令栏、关键词高亮、滚动历史查找，并内置 MCP 桥——本机 AI（Claude 等）可直接读屏、发命令。Win11 原生体验：无边框窗口、暗/亮主题、圆角弹窗。
+一条串口链路 + 一条 SSH 链路同时存活、一键切换；SFTP 双栏文件管理复用 SSH 同一条连接；命令栏、关键词高亮、滚动历史查找，并内置 MCP 桥——本机 AI（Claude 等）可直接读屏、发命令。Win11 原生体验：无边框窗口四边四角自由缩放、多主题、圆角弹窗。
 
 > **下载**：[Xterm-0.1.0-win64-portable.zip](https://github.com/yyp-U/Xterm/releases/download/v0.1.0/Xterm-0.1.0-win64-portable.zip)（免安装，解压后直接运行 `bin\Xterm.exe`，无需安装 Qt 或其他运行库）
 
@@ -33,6 +33,7 @@
 - **主机状态**：状态栏实时显示远端 CPU / 内存（共享连接的独立通道）
 - **MCP 桥**：命名管道 + 令牌，AI 工具可读屏 / 发命令 / 发裸字节 / 等待文本
 - **串口行编辑与全屏程序自动共存**：远端一画屏，行编辑自动让路直通；回落纯文本自动恢复
+- **自适应标题栏**：窗口变窄时参数栏渐进精简（文字标签 → 辅助按钮 → 次要参数框分三档隐藏），核心操作永不消失；四边四角均可拖拽缩放，最小宽度兜底
 
 ## 快捷键
 
@@ -48,7 +49,7 @@
 ## 环境要求
 
 - Windows 10/11 x64
-- [Qt 6.8.x](https://www.qt.io/) **llvm-mingw 64-bit** 套件（含 Qt 库与 llvm-mingw 工具链）
+- [Qt 6.10.x](https://www.qt.io/) **MinGW 64-bit** 套件（含 Qt 库与 MinGW 工具链，本项目用 GCC 13.1）
 - CMake ≥ 3.19、Ninja、Git（Qt 在线安装器里均可勾选，或独立安装）
 
 ## 获取与构建
@@ -67,16 +68,18 @@ powershell -File scripts/bootstrap-ssh-deps.ps1
 
 ### 2) 配置与构建
 
-**Qt Creator 方式**（推荐）：直接打开 `CMakeLists.txt`，选择 *Desktop Qt 6.8.x llvm-mingw 64-bit* 套件即可。
+**Qt Creator 方式**（推荐）：直接打开 `CMakeLists.txt`，选择 *Desktop Qt 6.10.x MinGW 64-bit* 套件即可。
 
 **命令行方式**：
 
 ```powershell
+# 先前置 MinGW 工具链（否则编译器子进程报 0xC000007B）
+$env:PATH = "D:\Qt6\Tools\mingw1310_64\bin;" + $env:PATH
 cmake -S . -B build -G Ninja `
   -DCMAKE_BUILD_TYPE=Release `
-  -DCMAKE_PREFIX_PATH=D:/Qt6/6.8.3/llvm-mingw_64 `
-  -DCMAKE_C_COMPILER=D:/Qt6/Tools/llvm-mingw1706_64/bin/clang.exe `
-  -DCMAKE_CXX_COMPILER=D:/Qt6/Tools/llvm-mingw1706_64/bin/clang++.exe `
+  -DCMAKE_PREFIX_PATH=D:/Qt6/6.10.2/mingw_64 `
+  -DCMAKE_C_COMPILER=D:/Qt6/Tools/mingw1310_64/bin/gcc.exe `
+  -DCMAKE_CXX_COMPILER=D:/Qt6/Tools/mingw1310_64/bin/g++.exe `
   -DCMAKE_MAKE_PROGRAM=D:/Qt6/Tools/Ninja/ninja.exe
 cmake --build build --target Xterm
 ```
@@ -84,17 +87,19 @@ cmake --build build --target Xterm
 ### 3) 运行测试
 
 ```powershell
+$env:PATH = "D:\Qt6\Tools\mingw1310_64\bin;" + $env:PATH
 ctest --test-dir build --output-on-failure
 ```
 
 ### 4) 打包发布（生成可独立运行的 install 目录）
 
 ```powershell
-cmake --build build --config Release --target Xterm
+cmake --build build --target Xterm
+New-Item -ItemType Directory -Force -Path build/install/bin | Out-Null
 powershell -File scripts/package.ps1 -BuildDir build
 ```
 
-打包产物在 `build/install/`，含 Xterm.exe、Qt 运行库、libssh/OpenSSL DLL 与 MCP 工具，解压即用。
+打包产物在 `build/install/`，含 Xterm.exe、Qt 与 MinGW 运行库、libssh/OpenSSL DLL 与 MCP 工具，解压即用。
 
 ## 构建选项
 
