@@ -12,13 +12,25 @@ QMainWindow, QWidget#centralwidget {
 
 /* ---------------- 面板容器（连接栏 / 高级参数 / 终端） ---------------- */
 
-/* 参数栏：与命令栏同款毛玻璃浮层（无边框线半透明底，panelBg 抬档+alpha 200；
+/* 高级参数行：与命令栏同款毛玻璃浮层（无边框线半透明底，panelBg 抬档+alpha 200；
    兜底值按 thememanager 的 lighter(112)+alpha200 公式预计算，运行时被逐主题 override 覆盖） */
-QFrame#connectionBar, QFrame#advancedBar {
+QFrame#advancedBar {
     background-color: rgba(41, 41, 44, 200);
     border: none;
     border-radius: 8px;
 }
+
+/* 参数栏已整体嵌入标题栏（用户定稿 2026-11-15）：透明融入标题栏，不再是独立卡片，
+   底色由 #TitleBar 的 statusBarBg 承载 */
+QFrame#connectionBar {
+    background: transparent;
+    border: none;
+}
+
+/* 参数栏控件随标题栏加高（用户定稿 2026-11-15 回调 40px 栏）恢复自然形态：
+   30px 栏时代曾在此硬钳 padding/min-height 到 22px，但 Qt 对超紧凑盒子的文字垂直
+   居中计算不可靠（combo/button 文字贴底被裁），现由 C++ 侧统一 setFixedHeight(28)
+   并走全局样式；editable combo 的内嵌输入框由全局 QComboBox QLineEdit 规则豁免 */
 
 /* 终端是窗口主体（Termius 式）：不再做独立卡片，底色即终端画布色，
    命令栏等浮层直接盖在上面 */
@@ -35,10 +47,14 @@ QLabel {
 
 /* ---------------- 输入类控件 ---------------- */
 
+/* 圆角基准统一为 8px（用户定稿 2026-11-15 十进制调整：10px 试后回调）：与卡片/浮层
+   （advancedBar/CommandBar）同源，也与标题栏按钮 hover 圆角块同款；拼合控件单侧
+   0 与行内小元素（item/crumb 3px、进度条 2px）除外 */
+
 QComboBox, QLineEdit {
     background-color: #2C2C30;
     border: 1px solid #38383E;
-    border-radius: 4px;
+    border-radius: 8px;
     padding: 3px 8px;
     min-height: 20px;
 }
@@ -70,7 +86,7 @@ QComboBox::down-arrow {
 QSpinBox {
     background-color: #2C2C30;
     border: 1px solid #38383E;
-    border-radius: 4px;
+    border-radius: 8px;
     padding: 3px 8px;
     min-height: 20px;
 }
@@ -106,9 +122,10 @@ QSpinBox::down-arrow {
     height: 12px;
 }
 QComboBox#baudCombo {
-    min-height: 30px;
-    max-height: 30px;
-    padding: 0 2px 0 8px;
+    /* min/max-height 30px 已删（2026-11-15 参数栏嵌入标题栏）：QSS polish 会覆写
+       C++ setFixedHeight(28)，高度交还 fixedHeight；纵向 padding 必须保持与全局一致
+       的 3px——为 0 时 min-height(20)+0+border(2) 的 hint 仅 22px，combo 在行内矮一截 */
+    padding: 3px 2px 3px 8px;
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
     border-right: none;
@@ -122,8 +139,7 @@ QToolButton#settingsBtn {
     margin: 0;
     min-width: 30px;
     max-width: 30px;
-    min-height: 30px;
-    max-height: 30px;
+    /* min/max-height 30px 已删（同 baudCombo，避免覆写 fixedHeight(28)） */
 }
 QComboBox {
     combobox-popup: 0;
@@ -161,7 +177,7 @@ QPlainTextEdit, QTextEdit, QTextBrowser {
     background-color: #202023;
     color: #CCCCCC;
     border: 1px solid #303034;
-    border-radius: 4px;
+    border-radius: 8px;
 }
 QPlainTextEdit:focus, QTextEdit:focus, QTextBrowser:focus {
     border-color: #007ACC;
@@ -172,7 +188,7 @@ QPlainTextEdit:focus, QTextEdit:focus, QTextBrowser:focus {
 QPushButton {
     background-color: #2C2C30;
     border: 1px solid #38383E;
-    border-radius: 4px;
+    border-radius: 8px;
     padding: 5px 14px;
     min-height: 18px;
 }
@@ -194,6 +210,10 @@ QPushButton#connectBtn {
     border: 1px solid #2C9A40;
     color: #FFFFFF;
     font-weight: 600;
+    min-height: 0px;   /* 必须显式压掉全局 18px：否则 hint = 18+padding(5*2)+border(2) = 30px
+                          经 polish 压过 setFixedHeight(28)，按钮超高 1px 底部下溢——断开态
+                          透明底只剩 1px 边框时截断最明显；纵向 padding 同全局 3px 语义 */
+    padding: 3px 14px;
 }
 QPushButton#connectBtn:hover {
     background-color: #33B349;
@@ -230,9 +250,8 @@ QToolButton#settingsBtn:pressed {
 }
 
 QLineEdit#passwordEdit {
-    min-height: 30px;
-    max-height: 30px;
-    padding: 0 8px;
+    /* min/max-height 30px 已删（同 baudCombo）；padding 行已删——纵向留 0 会把
+       min-height(20)+border(2) 的 hint 压到 22px 矮于行内其他控件，用全局 3px 8px */
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
     border-right: none;
@@ -246,8 +265,7 @@ QToolButton#pwToggleBtn {
     margin: 0;
     min-width: 30px;
     max-width: 30px;
-    min-height: 30px;
-    max-height: 30px;
+    /* min/max-height 30px 已删（同 baudCombo，避免覆写 fixedHeight(28)） */
 }
 QToolButton#pwToggleBtn:hover {
     background-color: #35353A;
@@ -260,7 +278,7 @@ QToolButton#pwToggleBtn:pressed {
 QToolButton {
     background-color: transparent;
     border: 1px solid transparent;
-    border-radius: 4px;
+    border-radius: 8px;
     padding: 3px;
 }
 QToolButton:hover {
@@ -278,10 +296,26 @@ QToolButton:disabled {
     color: #5A5A5A;
 }
 
+/* 侧边栏三页签（命令/主题/MCP，cbTab 动态属性定位，用户定稿 2026-11-16）：
+   选中态与标题栏收放按钮 hover 同款——圆角色块、无边框线；
+   全局 checked 的蓝底蓝边框不再适用（只留给查找框正则切换钮）；
+   实际色值由 thememanager 动态 override（%35）按主题派生接管——暗色=buttonHoverBg、
+   亮色=panelBg.darker(112)（buttonHoverBg 亮色系与浮层底撞色，选中态隐形）；
+   此处为基准主题兜底值（暗色基准 VS Code Dark 的 buttonHoverBg） */
+CommandBar QToolButton[cbTab=true],
+CommandBar QToolButton[cbTab=true]:hover,
+CommandBar QToolButton[cbTab=true]:checked {
+    border: none;
+}
+CommandBar QToolButton[cbTab=true]:hover,
+CommandBar QToolButton[cbTab=true]:checked {
+    background-color: #35353A;
+}
+
 QToolButton#paneTool {
     background-color: #2C2C30;
     border: 1px solid #38383E;
-    border-radius: 4px;
+    border-radius: 8px;
     padding: 2px 6px;
 }
 QToolButton#paneTool:hover {
@@ -335,7 +369,7 @@ QLabel#pathSep {
 QToolButton#modeBtn, QToolButton#mcpBtn {
     background-color: #2C2C30;
     border: 1px solid #38383E;
-    border-radius: 4px;
+    border-radius: 8px;
     padding: 4px 8px;
     font-weight: 600;
 }
@@ -351,7 +385,7 @@ QToolButton#modeBtn:pressed, QToolButton#mcpBtn:pressed {
 QToolButton#keyBrowseBtn {
     background-color: #2C2C30;
     border: 1px solid #38383E;
-    border-radius: 4px;
+    border-radius: 8px;
     padding: 0;
     min-width: 28px;
     max-width: 28px;
@@ -556,39 +590,46 @@ QWidget#TitleBar QLabel#TitleLabel {
     font-size: 12px;
 }
 
-QWidget#TitleBar QToolButton {
+/* 平铺样式只套标题栏自有按钮（按 objectName 收窄，不可宽泛匹配 #TitleBar QToolButton）：
+   参数栏嵌入标题栏后（用户定稿 2026-11-15），宽泛规则的特异性会压过
+   QToolButton#settingsBtn 等 id 规则与 :checked 选中高亮，把参数栏按钮的
+   实体底色/选中态吃掉 */
+QWidget#TitleBar QToolButton#TitleStatusBtn,
+QWidget#TitleBar QToolButton#TitleSidebarBtn,
+QWidget#TitleBar QToolButton#TitleMinBtn,
+QWidget#TitleBar QToolButton#TitleMaxBtn,
+QWidget#TitleBar QToolButton#TitleCloseBtn {
     background: transparent;
     border: none;
-    border-radius: 10px; /* hover/pressed 圆润圆角块（用户定稿 2026-11-14 五轮：28px 热区上再加大） */
+    border-radius: 8px; /* hover/pressed 圆润圆角块（2026-11-14 五轮定 10px，2026-11-15 全局统一 8px 试定） */
     color: #CCCCCC;
     padding: 4px 8px 0; /* 顶部 padding 把文字/图标往下压一点，纠正垂直居中的视觉偏上 */
 }
 
-/* 图标按钮免 padding：26×26 正方形内 padding 会把 20px 图标挤裁；图标居中即可 */
-QWidget#TitleBar QToolButton#TitleThemeBtn,
+/* 图标按钮免 padding：28×28 正方形内 padding 会把 20px 图标挤裁；图标居中即可 */
+QWidget#TitleBar QToolButton#TitleStatusBtn,
 QWidget#TitleBar QToolButton#TitleSidebarBtn {
     padding: 0;
 }
 
-QWidget#TitleBar QToolButton:hover {
+/* hover/pressed 不含 close：close 键红底是 Win 惯例，由下方专属规则承担 */
+QWidget#TitleBar QToolButton#TitleStatusBtn:hover,
+QWidget#TitleBar QToolButton#TitleSidebarBtn:hover,
+QWidget#TitleBar QToolButton#TitleMinBtn:hover,
+QWidget#TitleBar QToolButton#TitleMaxBtn:hover {
     background-color: #2E2E32;
 }
 
-QWidget#TitleBar QToolButton:pressed {
+QWidget#TitleBar QToolButton#TitleStatusBtn:pressed,
+QWidget#TitleBar QToolButton#TitleSidebarBtn:pressed,
+QWidget#TitleBar QToolButton#TitleMinBtn:pressed,
+QWidget#TitleBar QToolButton#TitleMaxBtn:pressed {
     background-color: #35353A;
 }
 
 QWidget#TitleBar QToolButton#TitleCloseBtn:hover {
     background-color: #C42B1C;
     color: #FFFFFF;
-}
-
-/* 菜单项按钮不画下拉倒三角（VSCode 菜单栏同款纯文字） */
-QWidget#TitleBar QToolButton#TitleMenuBtn::menu-indicator {
-    image: none;
-    width: 0;
-    height: 0;
-    subcontrol-position: right center;
 }
 
 /* ---------------- 标题栏下拉菜单（VSCode 式紧凑菜单） ---------------- */

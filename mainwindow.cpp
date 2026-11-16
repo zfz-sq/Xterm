@@ -2,11 +2,16 @@
 
 #include <QApplication>
 #include <QCloseEvent>
+#include <QCursor>
 #include <QDateTime>
 #include <QEvent>
 #include <QIcon>
 #include <QKeyEvent>
+#include <QMouseEvent>
+#include <QResizeEvent>
 #include <QStatusBar>
+#include <QTimer>
+#include <QWindow>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -31,6 +36,9 @@ MainWindow::MainWindow(QWidget *parent)
     , ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
+    // 参数栏渐进精简的最小宽度兜底（用户定稿 2026-11-16）：折叠态布局的最小需求，
+    // 低于此宽标题栏会真正放不下；渐进裁剪档位见 UiBuilder::updateConnectionBarCompact
+    setMinimumWidth(720);
     setWindowIcon(QIcon(QStringLiteral(":/icons/app.png")));
 
     // ---- 协作类创建（顺序即依赖：M1.a–M1.d，见各头文件）----
@@ -158,10 +166,20 @@ MainWindow::MainWindow(QWidget *parent)
     });
     m_sessionTools.registerTools(&hooks);
     m_mcp->start(hooks, m_store->mcpAllowWrite());
+
+    // 无边框窗口四边四角缩放(Qt 层,见 windowEdgeFlagsAt/onEdgeCursorTick):
+    // 事件过滤只接管边缘按下缩放,光标反馈由轮询维护(悬停 MouseMove 不派发到
+    // 未开 tracking 的控件,纯事件方案在「同控件内从中心移向边缘」时有盲区)
+    qApp->installEventFilter(this);
+    auto *edgeCursorTimer = new QTimer(this);
+    edgeCursorTimer->setInterval(60);
+    connect(edgeCursorTimer, &QTimer::timeout, this, &MainWindow::onEdgeCursorTick);
+    edgeCursorTimer->start();
 }
 
 MainWindow::~MainWindow()
 {
+    qApp->removeEventFilter(this);
     delete ui;
 }
 
@@ -228,6 +246,17 @@ void MainWindow::connectSignals()
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 {
+    // 无边框窗口边缘按下缩放(光标反馈见 onEdgeCursorTick);
+    // 其余事件走原有 AI 锁定键盘拦截逻辑
+    if (event->type() == QEvent::MouseButtonPress) {
+        const auto *mouse = static_cast<const QMouseEvent *>(event);
+        if (mouse->button() == Qt::LeftButton) {
+            const Qt::Edges edges = windowEdgeFlagsAt(mouse->globalPosition().toPoint());
+            QWindow *win = windowHandle();
+            if (edges != 0 && win && win->startSystemResize(edges))
+                return true; // 系统接管 resize 循环,期间光标由系统维护
+        }
+    }
     // AI 打字机输入期间锁定终端键盘：比 ScreenView 更早拦截，
     // 只有 Ctrl+C 放行为「打断 AI」（在这里直接处理，不转发成 0x03，
     // 也不会被 ScreenView 的「有选区 Ctrl+C=复制」分支吃掉）。
@@ -252,6 +281,91 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         return true;
     }
     return QMainWindow::eventFilter(watched, event);
+}
+
+// 无边框窗口边缘命中:窗口外围 8 逻辑像素带,按落点返回对应边/角组合;
+// 伪最大化期间返回 0(自维护几何不被 resize 破坏)
+Qt::Edges MainWindow::windowEdgeFlagsAt(const QPoint &globalPos) const
+{
+    if (!m_uiBuilder || m_uiBuilder->isFakeMaximized())
+        return {};
+    const QRect frame = frameGeometry();
+    constexpr int kResizeBorder = 8; // 逻辑像素命中带,与系统边框拖拽带同量级
+    const bool atLeft = globalPos.x() - frame.left() < kResizeBorder;
+    const bool atRight = frame.right() - globalPos.x() < kResizeBorder;
+    const bool atTop = globalPos.y() - frame.top() < kResizeBorder;
+    const bool atBottom = frame.bottom() - globalPos.y() < kResizeBorder;
+    if (!atLeft && !atRight && !atTop && !atBottom)
+        return {};
+    Qt::Edges edges;
+    if (atLeft) edges.setFlag(Qt::LeftEdge);
+    if (atRight) edges.setFlag(Qt::RightEdge);
+    if (atTop) edges.setFlag(Qt::TopEdge);
+    if (atBottom) edges.setFlag(Qt::BottomEdge);
+    return edges;
+}
+
+// 边缘缩放光标轮询(60ms):悬停 MouseMove 不派发到未开 mouseTracking 的控件,
+// 纯事件方案在「同控件内部从中心移向边缘」时收不到任何事件,故轮询
+// QCursor::pos 维护:带内给命中控件设双向缩放光标,出带恢复(Windows 光标
+// 形状在 setCursor 后立即生效,无需等待鼠标移动)
+void MainWindow::onEdgeCursorTick()
+{
+    const Qt::Edges edges = windowEdgeFlagsAt(QCursor::pos());
+    if (edges == 0) { // 出带/伪最大化:恢复宿主控件原光标
+        if (m_edgeCursorHost) {
+            m_edgeCursorHost->unsetCursor();
+            m_edgeCursorHost = nullptr;
+            m_edgeCursorShape = -1;
+            kickCursorRecalc();
+        }
+        return;
+    }
+    // 光标下的宿主控件:用纯 Qt 树的 childAt 逐层下探。QApplication::widgetAt
+    // 在 Windows 上内部走原生 WindowFromPoint,当浏览器/IDE 等其他进程窗口
+    // 盖在本窗口上方时命中跨进程窗口返回 null(实测),不能作为宿主来源
+    QWidget *cur = this;
+    for (QWidget *child = cur->childAt(cur->mapFromGlobal(QCursor::pos())); child;
+         child = cur->childAt(cur->mapFromGlobal(QCursor::pos()))) {
+        cur = child;
+    }
+    Qt::CursorShape shape = Qt::SizeHorCursor; // 仅左/右
+    if (edges.testFlag(Qt::TopEdge) || edges.testFlag(Qt::BottomEdge)) {
+        if (edges.testFlag(Qt::LeftEdge) || edges.testFlag(Qt::RightEdge))
+            shape = (edges == (Qt::TopEdge | Qt::LeftEdge)
+                         || edges == (Qt::BottomEdge | Qt::RightEdge))
+                        ? Qt::SizeFDiagCursor  // NWSE:左上/右下角
+                        : Qt::SizeBDiagCursor; // NESW:右上/左下角
+        else
+            shape = Qt::SizeVerCursor; // 仅上/下
+    }
+    if (m_edgeCursorHost == cur && m_edgeCursorShape == int(shape))
+        return; // 宿主与形状均未变,避免每 tick 抖动光标
+    if (m_edgeCursorHost && m_edgeCursorHost != cur)
+        m_edgeCursorHost->unsetCursor();
+    m_edgeCursorHost = cur;
+    cur->setCursor(shape);
+    m_edgeCursorShape = int(shape);
+    kickCursorRecalc();
+}
+
+// Windows 的光标形状显示由 WM_SETCURSOR 驱动,光标静止后系统不再发送该消息,
+// widget 上 set/unsetCursor 不会立即反映到屏幕;原地抖动 1 逻辑像素触发一对
+// WM_MOUSEMOVE/WM_SETCURSOR 让 Qt 按新光标立即重算,视觉上不可感
+void MainWindow::kickCursorRecalc()
+{
+    const QPoint p = QCursor::pos();
+    QCursor::setPos(p.x() + 1, p.y());
+    QCursor::setPos(p);
+}
+
+void MainWindow::resizeEvent(QResizeEvent *event)
+{
+    QMainWindow::resizeEvent(event);
+    // 窗口宽度驱动的参数栏渐进精简（分档阈值见 UiBuilder::updateConnectionBarCompact）；
+    // 构造早期 m_uiBuilder 尚未创建，setupUi 触发的同步 resize 直接跳过
+    if (m_uiBuilder)
+        m_uiBuilder->updateConnectionBarCompact(width());
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)

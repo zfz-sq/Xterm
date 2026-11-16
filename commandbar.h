@@ -53,7 +53,7 @@ public:
     void setCommands(const QList<CommandItem> &commands);
     QList<CommandItem> commands() const;
     void setSendEnabled(bool enabled);
-    void applyTheme(); // 按当前图标主题重刷本栏图标
+    void applyTheme(bool dark); // 按当前图标主题重刷本栏图标；dark 同时定自绘字形色（chevron/±）
 
     // 主题页数据：注入主题清单与当前主题 ID（UiBuilder 从 ThemeManager 取，解耦）
     void setThemes(const QList<ThemeDefinition> &themes);
@@ -148,6 +148,7 @@ private:
     QLabel *m_fontSizeLabel = nullptr; // 字号 stepper 数值（− 14 + 形态，Termius 参考图）
     int m_fontPt = 11;                 // 当前字号（范围 8–36，与设置对话框一致）
     bool m_fontSyncing = false; // 程序化同步（setCurrentTerminalFont）时抑制请求信号外发
+    bool m_themeDark = false;   // 当前主题深浅（applyTheme 传入），自绘字形色（chevron/±）重绘依据
 
     // ---- MCP 页 ----
     QTextEdit *m_mcpPrompt = nullptr;      // 说明/提示词：富文本布局，块行距才能生效

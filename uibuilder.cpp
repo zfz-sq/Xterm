@@ -93,9 +93,36 @@ UiBuilder::UiBuilder(QMainWindow *window, Ui::MainWindow *ui, CommandStore *stor
     // 外围恒定 6px 呼吸空间（窗口化/最大化一致）。最大化不再清零留白：
     // 用户定稿 2026-11-14，最大化贴边有“剪切感”，两边间距要保持
     m_ui->mainLayout->setContentsMargins(6, 6, 6, 6);
-    m_ui->terminalLayout->setContentsMargins(6, 6, 6, 6);
+    // 顶部间距归并入标题栏（用户定稿 2026-11-15）：terminalLayout 顶 margin 交还标题栏
+    // （40→50px 吸收，控件居中自然下移），终端框顶端直接接在标题栏下方，
+    // 与侧边卡片顶端（同步归零 topGap）对齐在同一高度；左右底保持 6px 窗口留白体系
+    m_ui->terminalLayout->setContentsMargins(6, 0, 6, 6);
+    // 参数栏嵌入标题栏后（用户定稿 2026-11-15）：connectionLayout 未在 ui 里写 margin，
+    // QLayout 落到 style 默认（上下各 9px）——40px 栏内容区只剩 22px，28px 控件整体
+    // 沉底（文字中心 23~25 vs 栏中心 20，baudCombo 32px 直贴栏底被裁），归零让控件居中
+    m_ui->connectionLayout->setContentsMargins(0, 0, 0, 0);
 
     setupTitleBar(); // 须在主窗口展示前：无边框 flags + menuWidget
+    // 参数栏整体嵌入标题栏（用户定稿 2026-11-15）：从主布局首项摘出后 reparent 进
+    // 标题栏中段，终端上方的独立参数卡片不复存在；advancedBar 仍留在主布局首项
+    // （隐藏不占位，弹出时出现在原参数栏位置，视觉上从标题栏垂下）
+    m_ui->mainLayout->removeWidget(m_ui->connectionBar);
+    m_titleBar->setConnectionBar(m_ui->connectionBar);
+    // 初始档位按当前窗口宽套用；后续由 MainWindow::resizeEvent 委托刷新
+    updateConnectionBarCompact(m_window->width());
+
+    // 栏内控件高度统一（40px 栏内 28px 自然高，与原参数栏形态一致）：
+    // 30px 栏时代曾靠 QSS/fixedHeight 硬钳 22px，但 Qt 对超紧凑盒子的文字垂直
+    // 居中计算不可靠（combo/button 文字贴底被裁），加高到 40px 后恢复自然形态
+    const QList<QWidget *> compact = {
+        m_ui->portCombo,  m_ui->baudCombo,     m_ui->sshPortCombo,
+        m_ui->hostEdit,   m_ui->userEdit,      m_ui->passwordEdit,
+        m_ui->refreshPortBtn, m_ui->settingsBtn, m_ui->sshSettingsBtn,
+        m_ui->pwToggleBtn, m_ui->serialModeBtn, m_ui->filesBtn,
+        m_ui->connectBtn, m_ui->modeBtn,
+    };
+    for (QWidget *w : compact)
+        w->setFixedHeight(28);
     setupIcons();
     setupConnectionCombos();
     setupSshInputs();
@@ -288,7 +315,8 @@ void UiBuilder::setupTitleBar()
     // 主题入口已从菜单整体移除（用户定稿 2026-11-15）：切换走侧边栏主题页，
     // 深浅快切走标题栏主题按钮；菜单不再维护第二套主题列表
     logoMenu->addAction(tr("关键词高亮"), this, &UiBuilder::openKeywordSettings);
-    logoMenu->addAction(tr("字体"), this, &UiBuilder::openFontSettings);
+    // 字体项已删（用户定稿 2026-11-15）：侧边栏主题页底部字体区是唯一字体入口，
+    // 菜单不再保留第二套（openFontSettings 对话框整体删除）
     logoMenu->addSeparator();
 
     auto *slowPasteAct = logoMenu->addAction(tr("串口多行慢速粘贴"));
@@ -534,10 +562,11 @@ void UiBuilder::setupTitleBar()
 
     // 标题不显示在标题栏（VSCode 式），系统任务栏/Alt+Tab 仍显示 windowTitle
 
-    // 主题 / 置顶 / 系统按钮
-    connect(m_titleBar, &TitleBar::themeClicked, this, [this] {
-        m_theme->toggleTheme();
-        m_store->save();
+    // 状态栏 / 置顶 / 系统按钮
+    // 底部状态栏展开/收起（用户定稿 2026-11-16）：标题栏按钮切换 QStatusBar 显隐，
+    // 收起后终端多一行空间；主题快切随原主题按钮移除不再保留（主题页是唯一入口）
+    connect(m_titleBar, &TitleBar::statusbarToggleRequested, this, [this] {
+        m_ui->statusbar->setVisible(!m_ui->statusbar->isVisible());
     });
     connect(m_titleBar, &TitleBar::minimizedRequested, this, [this] {
         m_window->setWindowState(m_window->windowState() | Qt::WindowMinimized);
@@ -672,8 +701,10 @@ void UiBuilder::relocateCommandBar()
 {
     if (!m_commandBar)
         return;
-    constexpr int kCardGap = 8;    // 卡片与终端区左右间隙，浮出主体之感
-    constexpr int kCardTopGap = 4; // 顶部间隙单独收窄（用户定稿 2026-11-14：与参数栏之间空隙太大）
+    constexpr int kCardGap = 8;    // 卡片与终端区左右间隙，浮出主体之感；卡片右缘距窗口
+                                   // 右缘恒为 6+6+8=20px（用户定稿 2026-11-15 不变）
+    constexpr int kCardTopGap = 0; // 顶部间隙已归零（2026-11-15 用户定稿）：顶端间距归并进
+                                   // 标题栏（50px 吸收），卡片贴 terminalPanel 顶与终端框对齐
     const QRect area = m_ui->terminalPanel->rect();
     const int w = qMin(m_commandBar->sizeHint().width(), qMax(0, area.width() - kCardGap * 2));
     const int h = qMax(0, area.height() - kCardTopGap); // 顶部留隙，向下延伸贴到底部
@@ -695,6 +726,49 @@ void UiBuilder::applySidebarVisible(bool shown)
     if (m_titleBar)
         m_titleBar->setSidebarShown(shown);
     relocateCommandBar(); // 显隐改变终端右缘让位（收起后终端铺满窗口）
+}
+
+// 参数栏渐进精简（用户定稿 2026-11-16）：窗口变窄时按档位裁剪标题栏参数区，
+// 核心交互（连接 / 模式切换 / SFTP 文件管理 / 系统按钮）永不隐藏。
+// 档位阈值（SSH 页完整布局约需 1000px 窗宽，实测可调）：
+//   L0 完整；
+//   L1(<1020) 隐藏两页文字标签 —— 输入框 placeholder 已能表达含义；
+//   L2(<880)  隐藏辅助按钮（刷新端口 / 串口高级 / 密码眼睛 / SSH 高级）
+//             及随之失去分隔对象的竖线；
+//   L3(<780)  隐藏次要参数框（用户 / 密码 / SSH 端口 / 波特率），
+//             仅留主机框与设备下拉；最小宽度 720 由 MainWindow 兜底。
+void UiBuilder::updateConnectionBarCompact(int windowWidth)
+{
+    int level = 0;
+    if (windowWidth < 780)
+        level = 3;
+    else if (windowWidth < 880)
+        level = 2;
+    else if (windowWidth < 1020)
+        level = 1;
+    if (level == m_connCompactLevel)
+        return; // 档位未变不重应用，避免同档内每次 resize 都触发布局重排
+    m_connCompactLevel = level;
+
+    // 文字标签（L1+）
+    const QList<QWidget *> labels = {m_ui->hostLabel, m_ui->sshPortLabel,
+                                     m_ui->userLabel, m_ui->pwLabel,
+                                     m_ui->portLabel, m_ui->baudLabel};
+    for (QWidget *w : labels)
+        w->setVisible(level < 1);
+    // 辅助按钮与随之失去分隔对象的竖线（L2+）
+    const QList<QWidget *> helpers = {
+        m_ui->pwToggleBtn,  m_ui->sshSettingsBtn, m_ui->vline3,
+        m_ui->refreshPortBtn, m_ui->vline2,       m_ui->settingsBtn};
+    for (QWidget *w : helpers)
+        w->setVisible(level < 2);
+    // 次要参数框与空组分隔线（L3+）；连接期间这批控件本就被 disable，
+    // 显隐由窗口宽度单独驱动，两组状态互不干涉
+    const QList<QWidget *> minorEdits = {m_ui->userEdit, m_ui->passwordEdit,
+                                         m_ui->sshPortCombo, m_ui->baudCombo,
+                                         m_ui->serialModeLine};
+    for (QWidget *w : minorEdits)
+        w->setVisible(level < 3);
 }
 
 bool UiBuilder::eventFilter(QObject *watched, QEvent *event)
@@ -791,6 +865,11 @@ void UiBuilder::setupTerminal()
 
 void UiBuilder::setupStatusBar()
 {
+    // 右下角缩放把手（QStatusBar 默认开启）移除（用户定稿 2026-11-16）：缩放入口
+    // 统一为窗口四边四角（MainWindow 的 WM_NCHITTEST 边缘命中）；此前只靠把手一处，
+    // 状态栏收起时把手随之隐藏，窗口便无处可缩
+    m_ui->statusbar->setSizeGripEnabled(false);
+
     // 永久状态: 端口/波特率/连接状态
     m_statusLabel = new QLabel(tr("未连接"), m_window);
     m_ui->statusbar->addPermanentWidget(m_statusLabel, 1);
@@ -905,15 +984,11 @@ void UiBuilder::onThemeToggled(bool dark)
         updateModeUi();
     if (m_session)
         updateConnectionUi();
-    // 主题切换入口在自定义标题栏，图标显示"将要切换到"的主题
     if (m_titleBar) {
-        m_titleBar->setThemeIcon(
-            themedIcon(dark ? QStringLiteral("sun.png") : QStringLiteral("moon.png")),
-            dark ? tr("切换到亮色主题") : tr("切换到深色主题"));
         m_titleBar->applyCaptionTheme(dark); // 系统按钮字形颜色跟主题
     }
     if (m_commandBar)
-        m_commandBar->applyTheme();
+        m_commandBar->applyTheme(dark); // 自绘字形（字体区 chevron/±）随主题深浅
     // MCP 按钮跟主题换图标（构造时首次调用已创建；MCP 内容现住侧边栏第三页）
     m_mcp->refreshIcon();
     fitSshPortEdit();
@@ -1001,7 +1076,7 @@ void UiBuilder::restoreTerminalFontSettings()
         m_serialView->setFontFamily(savedFont);
         m_sshView->setFontFamily(savedFont);
     }
-    // 侧边栏字体控件对齐恢复后的实际值（设置菜单对话框与侧边栏两入口同源）
+    // 侧边栏字体控件对齐恢复后的实际值（字体设置唯一入口在侧边栏主题页）
     m_commandBar->setCurrentTerminalFont(m_serialView->fontFamily(), m_serialView->fontSize());
 }
 
@@ -1205,113 +1280,3 @@ void UiBuilder::openKeywordSettings()
         applyKeywords(original); // 取消：还原打开前的规则
 }
 
-void UiBuilder::openFontSettings()
-{
-    FramelessDialog dlg(m_window);
-    dlg.setDialogTitle(tr("字体"));
-
-    // 取消要回滚：记下打开前的字体族与字号
-    const QString prevFamily = m_serialView->fontFamily();
-    const int prevSize = m_serialView->fontSize();
-
-    auto *content = new QWidget;
-    auto *lay = new QVBoxLayout(content);
-    lay->setContentsMargins(18, 14, 18, 14);
-    lay->setSpacing(12);
-
-    // 预览：与当前主题的终端同底色，改字体/字号立刻看到真实效果
-    const ThemeDefinition fontTheme = m_theme->currentTheme();
-    auto *preview = new QLabel;
-    preview->setMinimumHeight(100);
-    preview->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    preview->setText(QStringLiteral("root@HPCS3900:~# uname -a\n"
-                                    "Linux HPCS3900 5.10.0 aarch64 GNU/Linux\n"
-                                    "root@HPCS3900:~# free -m"));
-    preview->setStyleSheet(QStringLiteral(
-                               "QLabel { background-color: %1; color: %2; border: 1px solid %3;"
-                               " border-radius: 6px; padding: 10px 12px; }")
-                               .arg(fontTheme.terminalBg.name(),
-                                    fontTheme.terminalFg.name(),
-                                    fontTheme.inputBorder.name()));
-
-    // 只列等宽字体：比例字体在格子里画终端会错位
-    auto *fontCombo = new QFontComboBox;
-    fontCombo->setFontFilters(QFontComboBox::MonospacedFonts);
-    fontCombo->setCurrentFont(QFont(m_serialView->fontFamily()));
-    fontCombo->setMinimumWidth(250);
-
-    auto *sizeSpin = new QSpinBox;
-    sizeSpin->setRange(8, 36);
-    sizeSpin->setSuffix(tr(" pt"));
-    sizeSpin->setValue(m_serialView->fontSize());
-    sizeSpin->setFixedWidth(96);
-
-    auto *form = new QGridLayout;
-    form->setHorizontalSpacing(14);
-    form->setVerticalSpacing(10);
-    form->addWidget(new QLabel(tr("字体")), 0, 0);
-    form->addWidget(fontCombo, 0, 1, Qt::AlignLeft);
-    form->addWidget(new QLabel(tr("字号")), 1, 0);
-    form->addWidget(sizeSpin, 1, 1, Qt::AlignLeft);
-
-    // 预览跟随：改动先落到两个终端页（信令再同步存储），预览单独设字
-    auto applyLive = [&](const QString &family, int pt) {
-        m_serialView->setFontFamily(family);
-        m_sshView->setFontFamily(family);
-        m_serialView->setFontSize(pt);
-        m_sshView->setFontSize(pt);
-        QFont f(m_serialView->fontFamily(), pt);
-        f.setStyleHint(QFont::Monospace);
-        f.setFixedPitch(true);
-        f.setKerning(false);
-        preview->setFont(f);
-    };
-    connect(fontCombo, &QFontComboBox::currentFontChanged, this,
-            [&](const QFont &f) { applyLive(f.family(), sizeSpin->value()); });
-    connect(sizeSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
-            [&](int pt) { applyLive(fontCombo->currentFont().family(), pt); });
-    applyLive(m_serialView->fontFamily(), m_serialView->fontSize());
-
-    auto *resetBtn = new QPushButton(tr("恢复默认字体"));
-    auto *okBtn = new QPushButton(tr("确定"));
-    okBtn->setDefault(true);
-    auto *cancelBtn = new QPushButton(tr("取消"));
-    connect(resetBtn, &QPushButton::clicked, this, [&] {
-        fontCombo->setCurrentFont(QFont(ScreenView::defaultFontFamily()));
-    });
-    connect(okBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
-    connect(cancelBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
-
-    auto *hint = new QLabel(tr("只列出本机已装的等宽字体；字号也可以直接在终端里 Ctrl+滚轮 调整。"));
-    hint->setWordWrap(true);
-
-    auto *btnRow = new QHBoxLayout;
-    btnRow->addWidget(resetBtn);
-    btnRow->addStretch(1);
-    btnRow->addWidget(okBtn);
-    btnRow->addWidget(cancelBtn);
-
-    lay->addWidget(preview);
-    lay->addLayout(form);
-    lay->addWidget(hint);
-    lay->addStretch(1);
-    lay->addLayout(btnRow);
-    dlg.setContentLayout(lay);
-    // 高度贴合内容自然高度，消除 stretch 吃掉的固定 400 带来的大片留白；
-    // 宽度仍固定 480 保证表单/预览排版稳定
-    dlg.resize(480, dlg.sizeHint().height());
-
-    if (dlg.exec() == QDialog::Accepted) {
-        // 显式写一次：用户没改动时也保证存储与当前显示一致。
-        // 等于默认族时存空串，保留“未设置”语义
-        const QString family = m_serialView->fontFamily();
-        m_store->setTerminalFont(family == ScreenView::defaultFontFamily() ? QString() : family);
-        m_store->setFontSize(m_serialView->fontSize());
-        m_store->save();
-    } else {
-        m_serialView->setFontFamily(prevFamily);
-        m_sshView->setFontFamily(prevFamily);
-        m_serialView->setFontSize(prevSize);
-        m_sshView->setFontSize(prevSize);
-    }
-}

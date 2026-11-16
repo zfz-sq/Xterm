@@ -16,7 +16,7 @@
 #include "titlebar.h"
 
 namespace {
-constexpr int kBarHeight = 30; // 与主窗口 TitleBar 同高，视觉上同一根栏
+constexpr int kBarHeight = 50; // 与主窗口 TitleBar 同高（顶端间距归并后回调 50px），视觉上同一根栏
 }
 
 bool FramelessDialog::s_darkHint = false;

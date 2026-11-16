@@ -14,7 +14,10 @@
 #include <QWindow>
 
 namespace {
-constexpr int kBarHeight = 30;   // 标题栏高度保持原样（用户定稿 2026-11-14 四轮：不加高）
+constexpr int kBarHeight = 50;   // 参数栏嵌入后回调 40px，再升到 50px（2026-11-15 用户定稿）:
+                                 // 背景统一后零碎间隔失去意义，标题栏吸收下方内容自身的顶部间距
+                                 // （terminalLayout 顶 6 + 卡片 topGap 4 = 10px），栏内控件居中自然下移 5px，
+                                 // 卡片/终端框顶端距窗口顶仍为 62px（6+50+spacing6）不变，但中间不再有叠层缝隙
 constexpr int kBtnHeight = 28;   // 三类按钮统一 28×28 正方形（热区够大且栏内上下各留 1px）
 constexpr int kCaptionWidth = 28; // 系统按钮同尺寸正方形（用户定稿：最大化等也一样大）
 } // namespace
@@ -86,7 +89,9 @@ TitleBar::TitleBar(QWidget *parent)
     setFixedHeight(kBarHeight);
 
     auto *layout = new QHBoxLayout(this);
-    layout->setContentsMargins(8, 0, 0, 0);
+    // 两侧按钮离窗口边缘的留白（用户定稿 2026-11-16 再增大）：左 8→14，右 0→12——
+    // 关闭按钮贴右缘既不好看，也挤占右缘 8px 缩放热区
+    layout->setContentsMargins(14, 0, 12, 0);
     layout->setSpacing(0);
 
     m_iconLabel = new QLabel(this);
@@ -110,15 +115,22 @@ TitleBar::TitleBar(QWidget *parent)
     // 弹性占位不挂在隐藏的标题 label 上（隐藏项不占位会把菜单挤到中间），
     // 独立 stretch 保证 [icon][菜单们] 恒靠左、右侧按钮恒靠右
     layout->addStretch(1);
+    // 参数栏（setConnectionBar 嵌入后按钮组贴栏右缘）与右侧按钮区的固定界线：
+    // 本 layout setSpacing(0)，不加这段则连接/模式按钮直接贴住主题按钮（实测 0 间隙）；
+    // Fixed 型不参与 setConnectionBar 的 stretch 退役（按 expandingDirections 区分）
+    layout->addSpacing(12);
 
-    m_themeBtn = new QToolButton(this);
-    m_themeBtn->setObjectName(QStringLiteral("TitleThemeBtn"));
+    // 底部状态栏展开/收起（用户定稿 2026-11-16）：替换原主题按钮位置——深浅快切随按钮
+    // 移除不再保留（侧边栏主题页是唯一主题入口），状态栏显隐让终端多一行空间
+    m_statusBtn = new QToolButton(this);
+    m_statusBtn->setObjectName(QStringLiteral("TitleStatusBtn"));
     // 正方形居中不贴栏边（用户定稿 2026-11-14 四轮：28×28 统一尺寸）：hover 圆角块才是按钮形状
-    m_themeBtn->setFixedSize(kBtnHeight, kBtnHeight);
-    connect(m_themeBtn, &QToolButton::clicked, this, &TitleBar::themeClicked);
-    layout->addWidget(m_themeBtn);
+    m_statusBtn->setFixedSize(kBtnHeight, kBtnHeight);
+    m_statusBtn->setToolTip(tr("展开 / 收起底部状态栏"));
+    connect(m_statusBtn, &QToolButton::clicked, this, &TitleBar::statusbarToggleRequested);
+    layout->addWidget(m_statusBtn);
 
-    // 侧边栏切换（Termius 同位：主题按钮右侧）：命令栏卡片已升级为多功能侧边栏
+    // 侧边栏切换（Termius 同位：状态栏按钮右侧）：命令栏卡片已升级为多功能侧边栏
     // （命令/主题/MCP 三页），此按钮控制其展开/收起，收起后终端铺满窗口；
     // 不用 checked 态（用户定稿：侧边栏开着时按钮常亮不协调），状态只存在 m_sidebarShown
     m_sidebarBtn = new QToolButton(this);
@@ -161,10 +173,29 @@ void TitleBar::setTitle(const QString &title)
     m_titleLabel->setVisible(!title.isEmpty());
 }
 
-void TitleBar::setThemeIcon(const QIcon &icon, const QString &tooltip)
+// 连接参数栏整条嵌入标题栏（用户定稿 2026-11-15）：原终端上方的悬浮参数卡片
+// 运行时 reparent 进来，占标题栏中段（弹性拉伸，栏内自带 stretch 吸收余量），
+// 形态变为 [logo][参数组+连接/文件/模式按钮] [主题][侧边栏][—][□][✕]；
+// 参数控件指针不变，UiBuilder 既有接线/状态刷新零改动。
+// 按钮组靠右固定（用户定稿 2026-11-15）：栏内 connSpacer 改 Expanding 后按钮组
+// 贴参数栏右缘，串口/SSH 参数组宽度差不再推挤连接/模式按钮；构造时的弹性占位
+// 随之退役——两份 stretch 会平分余量，参数栏只占中段一半，按钮组贴不到主题按钮左侧
+void TitleBar::setConnectionBar(QWidget *bar)
 {
-    m_themeBtn->setIcon(icon);
-    m_themeBtn->setToolTip(tooltip);
+    m_connBar = bar;
+    bar->setParent(this);
+    if (auto *box = qobject_cast<QHBoxLayout *>(layout())) {
+        // 只删弹性占位：addSpacing(6) 生成的小间隔同样返回 spacerItem（Fixed 型），
+        // 不能误删——用 expandingDirections 区分（addStretch(1) 才是 Expanding）
+        for (int i = 0; i < box->count(); ++i) {
+            QSpacerItem *sp = box->itemAt(i)->spacerItem();
+            if (sp && (sp->expandingDirections() & Qt::Horizontal)) {
+                delete box->takeAt(i);
+                break;
+            }
+        }
+        box->insertWidget(box->indexOf(m_titleLabel), bar, 1);
+    }
 }
 
 void TitleBar::setSidebarShown(bool shown)
@@ -196,6 +227,23 @@ void TitleBar::applyCaptionTheme(bool dark)
     p.drawRect(QRectF(14.3, 10.2, 2.0, 2.4));
     p.end();
     m_sidebarBtn->setIcon(QIcon(pm));
+
+    // 状态栏按钮：底部面板字形（外框+底部分隔线+状态栏内容小块），同样随主题字形色重绘
+    QPixmap spm(20, 20);
+    spm.fill(Qt::transparent);
+    QPainter sp(&spm);
+    sp.setRenderHint(QPainter::Antialiasing);
+    QPen spen(c, 1.4);
+    spen.setCapStyle(Qt::FlatCap);
+    sp.setPen(spen);
+    sp.setBrush(Qt::NoBrush);
+    sp.drawRoundedRect(QRectF(2.0, 3.5, 16.0, 13.0), 3.0, 3.0); // 外框
+    sp.drawLine(QLineF(2.3, 12.9, 17.7, 12.9));                  // 主区|状态栏分隔线
+    sp.setPen(Qt::NoPen);
+    sp.setBrush(c);
+    sp.drawRect(QRectF(4.5, 14.2, 4.0, 1.6)); // 状态栏内容小块
+    sp.end();
+    m_statusBtn->setIcon(QIcon(spm));
 }
 
 // 按钮字形/提示跟随最大化态：伪最大化路径（UiBuilder::toggleMaximized）不触发

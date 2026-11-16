@@ -66,10 +66,13 @@ public:
     void onThemeToggled(bool dark);
     void applySidebarVisible(bool shown); // 侧边栏展开/收起统一入口（标题栏按钮与启动恢复共用）
     void toggleMaximized();               // 最大化/还原切换（标题栏按钮与双击共用，自维护伪最大化状态）
+    bool isFakeMaximized() const { return m_fakeMaximized; } // 供 MainWindow 边缘缩放避开伪最大化几何
+    // 参数栏渐进精简（窗口宽度驱动，MainWindow::resizeEvent 委托）：
+    // 分档隐藏文字标签→辅助按钮→次要参数框，档位阈值见实现处注释
+    void updateConnectionBarCompact(int windowWidth);
 
     // —— 设置菜单与关键词 ——
-    void openKeywordSettings();  // 关键词高亮编辑（表格，改即预览）
-    void openFontSettings();     // 终端字体族 + 字号（改即预览，两页同步）
+    void openKeywordSettings();  // 关键词高亮编辑（表格，改即预览）；字体项已删（2026-11-15：侧边栏主题页字体区是唯一入口）
     void applyKeywords(const QList<KeywordRule> &rules); // 落存储并同步两页
 
     // —— 启动恢复（store load 之后由主窗口调用）——
@@ -108,6 +111,7 @@ private:
     QLabel *m_xoffLabel = nullptr; // XOFF 提示：发出 Ctrl+S 亮、Ctrl+Q 灭
     KmsgMuteToggle *m_kmsgBtn = nullptr;
     QString m_shellTitle; // SSH 视图标题（OSC 0/2），窗口标题跟随
+    int m_connCompactLevel = -1; // 参数栏渐进精简当前档位（变化才重应用，避免同档布局抖动）
     // FramelessWindowHint 伪最大化状态：Qt 对无边框窗口 setWindowState(Maximized)
     // 只做 setGeometry 不置 zoomed 位，isMaximized() 恒 false，切换/字形
     // 全靠这两个成员自维护

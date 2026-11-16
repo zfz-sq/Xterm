@@ -43,11 +43,19 @@ constexpr int kCardTopPad = 8; // 顶部内边距单独收窄（用户定稿 202
 // 卡片宽尺寸唯一真源 = 主题页 minimumWidth（用户手调 kPageWidth 一处即全同步）
 constexpr int kPageWidth = 240;
 
-// 细线 chevron（用户定稿 2026-11-15：实心大三角太丑，Termius 参考图为细线 V 形）。
-// 颜色取当前文字色随主题，主题切换后 applyTheme 重刷
-QIcon makeChevron(bool down)
+// 自绘字形色按主题深浅（用户定稿 2026-11-16）：QPalette 不随 QSS 主题更新
+// （亮色系统恒黑字，暗色卡片上不可见），不能从 QGuiApplication 取——与标题栏
+// CaptionButton::captionForeground 同值定义，随 applyTheme(dark) 传入重绘
+QColor glyphColor(bool dark)
 {
-    const QColor c = QGuiApplication::palette().color(QPalette::WindowText);
+    return dark ? QColor(0xCC, 0xCC, 0xCC) : QColor(0x24, 0x29, 0x2E);
+}
+
+// 细线 chevron（用户定稿 2026-11-15：实心大三角太丑，Termius 参考图为细线 V 形）。
+// 颜色按主题深浅（原从 QPalette 取不随 QSS 变，暗色下不可见），主题切换后 applyTheme 重刷
+QIcon makeChevron(bool down, bool dark)
+{
+    const QColor c = glyphColor(dark);
     QPixmap pm(16, 16);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
@@ -66,10 +74,10 @@ QIcon makeChevron(bool down)
 }
 
 // 字号 stepper ± 号：同款细线描边（U+2212 减号字符在部分主题字体缺字形，
-// 会渲染成省略号，不能用字符），颜色跟主题文字色
-QIcon makePlusMinus(bool plus)
+// 会渲染成省略号，不能用字符），颜色按主题深浅同 chevron
+QIcon makePlusMinus(bool plus, bool dark)
 {
-    const QColor c = QGuiApplication::palette().color(QPalette::WindowText);
+    const QColor c = glyphColor(dark);
     QPixmap pm(16, 16);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
@@ -318,7 +326,7 @@ void CommandBar::buildThemePage()
     fontTitle->setStyleSheet(QStringLiteral("font-weight: 600;"));
     m_fontArrow = new QToolButton(m_fontHeader);
     m_fontArrow->setAutoRaise(true);
-    m_fontArrow->setIcon(makeChevron(false)); // 收起态细线 '›'，展开换 '˅'
+    m_fontArrow->setIcon(makeChevron(false, m_themeDark)); // 收起态细线 '›'，展开换 '˅'
     m_fontArrow->setIconSize(QSize(16, 16));
     headLay->addWidget(fontTitle);
     headLay->addStretch(1);
@@ -342,7 +350,7 @@ void CommandBar::buildThemePage()
     // 字号 stepper（用户定稿 2026-11-15，参考 Termius：− 14 + ，比 spinbox 上下小箭头干净）
     m_fontMinusBtn = new QToolButton(sizeRow);
     m_fontMinusBtn->setAutoRaise(true);
-    m_fontMinusBtn->setIcon(makePlusMinus(false));
+    m_fontMinusBtn->setIcon(makePlusMinus(false, m_themeDark));
     m_fontMinusBtn->setIconSize(QSize(16, 16));
     m_fontMinusBtn->setFixedWidth(28);
     m_fontSizeLabel = new QLabel(sizeRow);
@@ -351,7 +359,7 @@ void CommandBar::buildThemePage()
     m_fontSizeLabel->setNum(m_fontPt);
     m_fontPlusBtn = new QToolButton(sizeRow);
     m_fontPlusBtn->setAutoRaise(true);
-    m_fontPlusBtn->setIcon(makePlusMinus(true));
+    m_fontPlusBtn->setIcon(makePlusMinus(true, m_themeDark));
     m_fontPlusBtn->setIconSize(QSize(16, 16));
     m_fontPlusBtn->setFixedWidth(28);
     sizeLay->addWidget(m_fontMinusBtn);
@@ -437,7 +445,7 @@ void CommandBar::toggleFontPanel()
 {
     const bool expanded = !m_fontPanel->isVisible();
     m_fontPanel->setVisible(expanded);
-    m_fontArrow->setIcon(makeChevron(expanded)); // '›' ↔ '˅'
+    m_fontArrow->setIcon(makeChevron(expanded, m_themeDark)); // '›' ↔ '˅'
 }
 
 // 程序化同步（启动恢复/Ctrl+滚轮/恢复默认回推）：守卫拦住控件信号，
@@ -522,8 +530,9 @@ void CommandBar::switchTab(int index)
     syncFloatingWidth(); // 宽度恒定（三页统一页宽），此处为幂等同步兜底
 }
 
-void CommandBar::applyTheme()
+void CommandBar::applyTheme(bool dark)
 {
+    m_themeDark = dark; // 自绘字形色（chevron/±）依据，下方重绘取用
     m_copyBtn->setIcon(themedIcon(QStringLiteral("copy.png")));
     m_addBtn->setIcon(themedIcon(QStringLiteral("add.png")));
     m_delBtn->setIcon(themedIcon(QStringLiteral("remove.png")));
@@ -533,10 +542,10 @@ void CommandBar::applyTheme()
     m_tabBtns[1]->setIcon(themedIcon(QStringLiteral("palette.png"))); // 同 mkTab：颜料盘（用户定稿）
     m_tabBtns[2]->setIcon(themedIcon(QStringLiteral("mcp.png")));
     if (m_fontArrow)
-        m_fontArrow->setIcon(makeChevron(m_fontPanel && m_fontPanel->isVisible())); // chevron 色跟主题文字色
+        m_fontArrow->setIcon(makeChevron(m_fontPanel && m_fontPanel->isVisible(), m_themeDark)); // chevron 色随主题深浅
     if (m_fontMinusBtn) {
-        m_fontMinusBtn->setIcon(makePlusMinus(false));
-        m_fontPlusBtn->setIcon(makePlusMinus(true));
+        m_fontMinusBtn->setIcon(makePlusMinus(false, m_themeDark));
+        m_fontPlusBtn->setIcon(makePlusMinus(true, m_themeDark));
     }
 
     for (Row *row : m_rows) {

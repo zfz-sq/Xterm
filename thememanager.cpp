@@ -1546,6 +1546,15 @@ void ThemeManager::applyNow()
     overlayColor.setAlpha(200);
     const QString overlayCss = cssColor(overlayColor);
 
+    // 侧边栏三页签选中/hover 色块（修复用户反馈 2026-11-16）：不能沿用 buttonHoverBg——
+    // 本模板恒拼在静态 qss 之后（同特异性后写胜出），%16 在亮色系与浮层底（overlayCss
+    // = panelBg ± 一档）撞色，选中态隐形（GitHub Light #F0F0F3 vs ≈#EDEEF0）。
+    // 暗色仍用 buttonHoverBg（与标题栏 hover 同源，视觉已验收）；亮色从 panelBg 再深
+    // 一档（darker(112)，浮层只 darker(104)），恒比所在浮层底深约 8% 亮度
+    const QColor cbTabBg = theme.isDark ? theme.buttonHoverBg
+                                        : theme.panelBg.darker(112);
+    const QString cbTabBgCss = cssColor(cbTabBg);
+
     QFile f(theme.isDark ? QStringLiteral(":/style-dark.qss") : QStringLiteral(":/style-light.qss"));
     QString qss;
     if (f.open(QIODevice::ReadOnly | QIODevice::Text))
@@ -1559,22 +1568,34 @@ void ThemeManager::applyNow()
     const QString overrideQss = QStringLiteral(
         "\n/* ---- 动态主题覆盖 [%1] ---- */\n"
         "QMainWindow, QWidget#centralwidget { background-color: %2; color: %12; }\n"
-        // 参数栏与命令栏同款毛玻璃浮层（用户定稿 2026-11-15）：无边框线半透明底，
-        // 圆角对齐 CommandBar；透出窗口背景淡影，成为悬浮面而非实心条
-        "QFrame#connectionBar, QFrame#advancedBar { background-color: %34; border: none; border-radius: 8px; color: %12; }\n"
+        // 高级参数行仍是玻璃浮层（用户定稿 2026-11-15）：无边框线半透明底，圆角对齐
+        // CommandBar；参数栏已嵌入标题栏（透明融入，不吃面板色，底色由 #TitleBar 承载）
+        "QFrame#advancedBar { background-color: %34; border: none; border-radius: 8px; color: %12; }\n"
+        "QFrame#connectionBar { background: transparent; border: none; }\n"
         "QFrame#terminalPanel { background-color: %33; border: none; color: %12; }\n"
         "CommandBar { background-color: %34; border-radius: 8px; }\n"
         "CommandBar QScrollArea, CommandBar QScrollArea > QWidget > QWidget { background: transparent; border: none; }\n"
         // 命令页列表去卡片化（用户定稿：去边框+透明底，融入毛玻璃卡片整体）；
         // 两级选择器特异性压住全局 QListWidget 规则，::item:hover/selected 仍生效保留行反馈
         "CommandBar QListWidget { background-color: transparent; alternate-background-color: transparent; border: none; }\n"
+                // 行容器圆角 8px（用户定稿 2026-11-15）：命令/主题列表行与卡片、输入控件同基准——
+                // 两级选择器压住全局 ::item 的 3px，::item:hover/selected 背景仍生效保留行反馈；
+                // 主题行 48px、命令行内嵌文本框 ~28px，8px 圆角不药丸化
+        "CommandBar QListWidget::item { border-radius: 8px; }\n"
         // MCP 页文本区主题适配（用户定稿 2026-11-14）：全局 QPlainTextEdit/QTextEdit 死色
         // （#202023）不随主题也不融卡片——提示词说明（QTextEdit，富文本布局行距才能生效）
         // 透明融入卡片；配置 JSON 用输入框风格做代码块；:focus 变体压住全局聚焦边框
         "CommandBar QPlainTextEdit, CommandBar QTextEdit, "
         "CommandBar QPlainTextEdit:focus, CommandBar QTextEdit:focus "
         "{ background-color: transparent; border: none; color: %12; }\n"
-        "CommandBar QPlainTextEdit#commandBarMcpConfig { background-color: %5; border: 1px solid %6; border-radius: 4px; }\n"
+        "CommandBar QPlainTextEdit#commandBarMcpConfig { background-color: %5; border: 1px solid %6; border-radius: 8px; }\n" // 圆角基准 8px 同 qss（用户定稿 2026-11-15）
+        // 三页签选中/hover 态（用户定稿 2026-11-16）：与标题栏收放按钮 hover 同款无边框
+        // 圆角色块；%35 专用色（暗色=buttonHoverBg 同源标题栏 hover，亮色=panelBg 派生，
+        // 原因见上方 cbTabBg 注释），覆盖全局 checked 蓝底蓝边框
+        "CommandBar QToolButton[cbTab=true], CommandBar QToolButton[cbTab=true]:hover, "
+        "CommandBar QToolButton[cbTab=true]:checked { border: none; }\n"
+        "CommandBar QToolButton[cbTab=true]:hover, CommandBar QToolButton[cbTab=true]:checked "
+        "{ background-color: %35; }\n"
         "QLabel { color: %12; }\n"
         "QComboBox, QLineEdit { background-color: %5; border: 1px solid %6; color: %7; }\n"
         "QSpinBox { background-color: %5; border: 1px solid %6; color: %7; }\n"
@@ -1590,12 +1611,19 @@ void ThemeManager::applyNow()
         "QDialog#FramelessDialog { background-color: %13; }\n"
         "QMenu { background-color: %13; border: 1px solid %6; }\n"
         "QWidget#TitleBar { background-color: %10; }\n"
-        // 标题栏按钮主题适配（用户指出：hover/按下/文字色在静态 qss 里硬编码只适配
-        // dark/light，第三方主题不变）：静态 qss 用 #TitleBar 前缀特异性更高，override
-        // 必须同构覆盖；close 键红色 hover 是 Win 惯例保留（#TitleCloseBtn 更高特异性不被动）
-        "QWidget#TitleBar QToolButton { color: %12; }\n"
-        "QWidget#TitleBar QToolButton:hover { background-color: %16; }\n"
-        "QWidget#TitleBar QToolButton:pressed { background-color: %18; }\n"
+        // 标题栏自有按钮主题适配（用户指出：hover/按下/文字色在静态 qss 里硬编码只适配
+        // dark/light，第三方主题不变）：静态 qss 已按 objectName 收窄（参数栏嵌入标题栏后
+        // 宽泛 #TitleBar QToolButton 规则会吃掉参数栏按钮的 id 样式与选中态），override
+        // 必须同构列举；hover/pressed 不含 close（红色 Win 惯例由静态专属规则保留）
+        "QWidget#TitleBar QToolButton#TitleStatusBtn, QWidget#TitleBar QToolButton#TitleSidebarBtn,"
+        " QWidget#TitleBar QToolButton#TitleMinBtn, QWidget#TitleBar QToolButton#TitleMaxBtn,"
+        " QWidget#TitleBar QToolButton#TitleCloseBtn { color: %12; }\n"
+        "QWidget#TitleBar QToolButton#TitleStatusBtn:hover, QWidget#TitleBar QToolButton#TitleSidebarBtn:hover,"
+        " QWidget#TitleBar QToolButton#TitleMinBtn:hover, QWidget#TitleBar QToolButton#TitleMaxBtn:hover"
+        " { background-color: %16; }\n"
+        "QWidget#TitleBar QToolButton#TitleStatusBtn:pressed, QWidget#TitleBar QToolButton#TitleSidebarBtn:pressed,"
+        " QWidget#TitleBar QToolButton#TitleMinBtn:pressed, QWidget#TitleBar QToolButton#TitleMaxBtn:pressed"
+        " { background-color: %18; }\n"
         "QListWidget, QTreeWidget, QTreeView, QTableWidget, QTableView { background-color: %21; alternate-background-color: %22; border: 1px solid %23; gridline-color: %28; color: %12; }\n"
         "QTreeView::item:hover, QTreeWidget::item:hover, QTableView::item:hover, QTableWidget::item:hover, QListWidget::item:hover { background-color: %24; }\n"
         "QTreeView::item:selected, QTreeWidget::item:selected, QTableView::item:selected, QTableWidget::item:selected, QListWidget::item:selected { background-color: %25; color: %26; }\n"
@@ -1661,7 +1689,8 @@ void ThemeManager::applyNow()
          theme.scrollHandleHoverBg.name(),
          trackCss,
          theme.terminalBg.name(),
-         overlayCss);
+         overlayCss,
+         cbTabBgCss);
 
     qApp->setStyleSheet(qss + overrideQss);
     FramelessDialog::setThemeHint(theme.isDark);
