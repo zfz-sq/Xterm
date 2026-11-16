@@ -1,11 +1,11 @@
 # Xterm Windows 打包脚本: 生成可独立运行的 install 目录。
 # 用法: powershell -File scripts/package.ps1 [-BuildDir build/ssh-release]
-# 步骤: cmake --install 刷新 exe/第三方 → 拷 Qt DLL + libc++ + 插件 → 拷 MCP 工具。
+# 步骤: cmake --install 刷新 exe/第三方 → 拷 Qt DLL + GCC 运行库 + 插件 → 拷 MCP 工具。
 
 param(
     [string]$BuildDir = "build/ssh-release",
-    [string]$QtBin = "D:/Qt6/6.8.3/llvm-mingw_64/bin",
-    [string]$QtPlugins = "D:/Qt6/6.8.3/llvm-mingw_64/plugins"
+    [string]$QtBin = "D:/Qt6/6.10.2/mingw_64/bin",
+    [string]$QtPlugins = "D:/Qt6/6.10.2/mingw_64/plugins"
 )
 
 $ErrorActionPreference = "Stop"
@@ -24,10 +24,13 @@ foreach ($dll in "legacy.dll", "libssh.dll", "libcrypto-3-x64.dll",
     }
 }
 
-# 2. Qt DLL 与 llvm-mingw 运行库（libunwind 是 libc++ 的 unwind 依赖，缺了弹“找不到 libunwind.dll”）
+# 2. Qt DLL 与 GCC 运行库（2026-11-16 打包链从 llvm-mingw 迁到 mingw_64 GCC 13.1：
+#    不再需要 libc++/libunwind；libgcc_s_seh/libstdc++/libwinpthread 是 MinGW 程序
+#    的运行时三件套，Qt 官方 mingw 包 bin 内自带与工具链同版本）
 Write-Host "== Qt DLLs =="
 foreach ($dll in "Qt6Core.dll", "Qt6Gui.dll", "Qt6Network.dll", "Qt6SerialPort.dll",
-                 "Qt6Widgets.dll", "libc++.dll", "libunwind.dll") {
+                 "Qt6Widgets.dll", "libgcc_s_seh-1.dll", "libstdc++-6.dll",
+                 "libwinpthread-1.dll") {
     Copy-Item (Join-Path $QtBin $dll) -Destination $Bin -Force
 }
 
