@@ -1,12 +1,12 @@
 # Xterm
 
-[![Release](https://img.shields.io/badge/release-v0.1.0-blue)](https://github.com/yyp-U/Xterm/releases) [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)](https://github.com/yyp-U/Xterm/releases)
+[![Release](https://img.shields.io/badge/release-v0.2.0-blue)](https://github.com/yyp-U/Xterm/releases) [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)](https://github.com/yyp-U/Xterm/releases)
 
 面向嵌入式开发的**串口 + SSH 双模终端**（Windows / Qt 6 / C++17）。
 
 一条串口链路 + 一条 SSH 链路同时存活、一键切换；SFTP 双栏文件管理复用 SSH 同一条连接；命令栏、关键词高亮、滚动历史查找，并内置 MCP 桥——本机 AI（Claude 等）可直接读屏、发命令。Win11 原生体验：无边框窗口四边四角自由缩放、多主题、圆角弹窗。
 
-> **下载**：[Xterm-0.1.0-win64-portable.zip](https://github.com/yyp-U/Xterm/releases/download/v0.1.0/Xterm-0.1.0-win64-portable.zip)（免安装，解压后直接运行 `bin\Xterm.exe`，无需安装 Qt 或其他运行库）
+> **下载**：[Xterm-0.2.0-win64-portable.zip](https://github.com/yyp-U/Xterm/releases/download/v0.2.0/Xterm-0.2.0-win64-portable.zip)（免安装，解压后直接运行 `bin\Xterm.exe`，无需安装 Qt 或其他运行库；历史版本见 [Releases](https://github.com/yyp-U/Xterm/releases)）
 
 ## 界面预览
 
