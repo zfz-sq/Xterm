@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.19)
 
-project(Xterm VERSION 0.1.0 LANGUAGES CXX)
+project(Xterm VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -49,15 +49,14 @@ endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets SerialPort Network)
 
+configure_file(version.h.in version.h @ONLY)
+
 qt_standard_project_setup()
 
 # qt_standard_project_setup() 不含 AUTORCC，qrc 资源需显式开启
 set(CMAKE_AUTORCC ON)
 
-qt_add_executable(Xterm
-    WIN32
-    MACOSX_BUNDLE
-    main.cpp
+set(XTERM_COMMON_SOURCES
     icons.cpp
     icons.h
     mainwindow.cpp
@@ -139,14 +138,34 @@ qt_add_executable(Xterm
     ssh/sshworker.cpp
     ssh/sshworker.h
     ssh/sshtypes.h
-    resources/resources.qrc
+)
+
+add_library(xterm_resources OBJECT resources/resources.qrc)
+qt_add_library(xterm_common STATIC ${XTERM_COMMON_SOURCES})
+
+qt_add_executable(Xterm
+    WIN32
+    MACOSX_BUNDLE
+    main.cpp
+    $<TARGET_OBJECTS:xterm_resources>
     ${XTERM_RC_SOURCES}
 )
 
-target_include_directories(Xterm PRIVATE "${CMAKE_SOURCE_DIR}")
+function(xterm_enable_warnings target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+endfunction()
 
-target_link_libraries(Xterm
-    PRIVATE
+target_include_directories(xterm_common PUBLIC "${CMAKE_SOURCE_DIR}")
+target_include_directories(Xterm PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+xterm_enable_warnings(xterm_common)
+xterm_enable_warnings(Xterm)
+
+target_link_libraries(xterm_common
+    PUBLIC
         Qt6::Widgets
         Qt6::SerialPort
         Qt6::Network
@@ -159,6 +178,7 @@ target_link_libraries(Xterm
         uuid
         advapi32
 )
+target_link_libraries(Xterm PRIVATE xterm_common)
 
 xterm_deploy_ssh_runtime(Xterm)
 

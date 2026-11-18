@@ -184,13 +184,13 @@ void AgentBridgeHostTest::notReadyReturnsNote()
     QVERIFY(hooks.tools.contains(QStringLiteral("xterm.host.cpu")));
 
     const AgentBridge::ToolResult cpu =
-        hooks.tools.value(QStringLiteral("xterm.host.cpu"))({{}, nullptr, {}});
+        hooks.tools.value(QStringLiteral("xterm.host.cpu"))({{}, nullptr, {}, {}});
     QVERIFY(cpu.ok);
     QVERIFY(!cpu.data.value(QStringLiteral("ok")).toBool());
     QVERIFY(cpu.data.value(QStringLiteral("note")).toString().contains(QStringLiteral("重试")));
 
     const AgentBridge::ToolResult mem =
-        hooks.tools.value(QStringLiteral("xterm.host.mem"))({{}, nullptr, {}});
+        hooks.tools.value(QStringLiteral("xterm.host.mem"))({{}, nullptr, {}, {}});
     QVERIFY(mem.ok);
     QVERIFY(!mem.data.value(QStringLiteral("ok")).toBool());
 }

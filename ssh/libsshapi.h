@@ -99,6 +99,8 @@ public:
 
     virtual int sftpCanonicalizePath(sftp_session sftp, const QByteArray &path,
                                      QString *out);
+    virtual sftp_attributes sftpStat(sftp_session sftp,
+                                     const QByteArray &path, bool follow);
 
     virtual int sftpMkdir(sftp_session sftp, const QByteArray &path,
                           mode_t mode);

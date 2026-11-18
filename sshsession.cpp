@@ -262,6 +262,16 @@ void SshSession::realPath(SshRequestId requestId, const QString &path)
     emit requestSftp(m_generation, request);
 }
 
+void SshSession::statPath(SshRequestId requestId, const QString &path, bool follow)
+{
+    SftpRequest request;
+    request.requestId = requestId;
+    request.op = SftpOp::Stat;
+    request.path = path;
+    request.followStat = follow;
+    emit requestSftp(m_generation, request);
+}
+
 void SshSession::uploadFile(SshRequestId requestId, const QString &localPath,
                             const QString &remotePath)
 {
@@ -425,6 +435,17 @@ void SshSession::handleWorkerSftpResult(quint64 generation,
         break;
     case SftpResult::Kind::ListedFailed:
         emit sftpListedFailed(result.requestId, result.path, result.error);
+        break;
+    case SftpResult::Kind::Stat:
+        if (result.ok && !result.entries.isEmpty())
+            emit sftpStatFinished(result.requestId, result.path,
+                                  result.entries.first(), true);
+        else if (result.ok)
+            emit sftpStatFinished(result.requestId, result.path,
+                                  SftpEntry{}, false);
+        else
+            emit sftpOpFinished(result.requestId, QStringLiteral("stat"),
+                                result.path, false, result.error);
         break;
     case SftpResult::Kind::Progress:
         emit sftpTransferProgress(result.requestId, result.done, result.total);

@@ -12,7 +12,7 @@ class QFileSystemWatcher;
 class QTimer;
 class SftpClient;
 class TransferDialog;
-struct QWidget;
+class QWidget;
 
 /*
  * TransferQueue: 文件管理器的传输队列网关。

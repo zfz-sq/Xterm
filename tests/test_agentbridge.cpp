@@ -5,9 +5,11 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLocalServer>
 #include <QLocalSocket>
 #include <QSignalSpy>
 #include <QTemporaryDir>
+#include <QTimer>
 
 #include "agentbridge.h"
 
@@ -35,6 +37,8 @@ private slots:
     void auditJsonlRecordsCallsAndSignals();
     void auditRecordsFailures();
     void rateLimitRejectsBurst();
+    void asyncProbeTakesOverStaleAgentFile();
+    void asyncProbeKeepsLiveInstanceWhenRepliesAreSplit();
 
 private:
     QJsonObject waitReply(QLocalSocket *sock);
@@ -69,6 +73,8 @@ void AgentBridgeTest::initTestCase()
         [this](const QByteArray &bytes) { m_sink += bytes; return QString(); },
         [] { return '\n'; },
         [this](const QString &line) { m_sentLines.append(line); },
+        {},
+        {},
     }, m_agentFile);
     QCOMPARE(m_bridge->pipeName(), m_pipe);
 
@@ -508,6 +514,78 @@ void AgentBridgeTest::rateLimitRejectsBurst()
     }
     QVERIFY(sawLimited);
     sock.disconnectFromServer();
+}
+
+// 崩溃残留的 agent.json 不再用同步 waitFor 探测，也不能让第二实例卡 UI。
+void AgentBridgeTest::asyncProbeTakesOverStaleAgentFile()
+{
+    const QString pipe = QStringLiteral("XtermAgentStaleTest-%1").arg(qApp->applicationPid());
+    const QString agentFile = m_dir.filePath(QStringLiteral("agent-stale.json"));
+    QJsonObject stale;
+    stale.insert(QStringLiteral("pipe"), pipe);
+    stale.insert(QStringLiteral("token"), QStringLiteral("stale-token"));
+    QFile file(agentFile);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    file.write(QJsonDocument(stale).toJson(QJsonDocument::Compact));
+    file.close();
+
+    AgentBridge bridge(this, pipe);
+    bridge.start(AgentBridge::Hooks{}, agentFile);
+    QVERIFY(!bridge.isServing()); // 探测先异步进行，不覆盖残留文件
+    QTRY_VERIFY(bridge.isServing());
+
+    QFile replaced(agentFile);
+    QVERIFY(replaced.open(QIODevice::ReadOnly));
+    const QString token = QJsonDocument::fromJson(replaced.readAll()).object()
+                              .value(QStringLiteral("token")).toString();
+    QVERIFY(!token.isEmpty());
+    QVERIFY(token != QStringLiteral("stale-token"));
+}
+
+void AgentBridgeTest::asyncProbeKeepsLiveInstanceWhenRepliesAreSplit()
+{
+    const QString pipe = QStringLiteral("XtermAgentSplitProbe-%1").arg(qApp->applicationPid());
+    const QString agentFile = m_dir.filePath(QStringLiteral("agent-split.json"));
+    QJsonObject live;
+    live.insert(QStringLiteral("pipe"), pipe);
+    live.insert(QStringLiteral("token"), QStringLiteral("live-token"));
+    QFile file(agentFile);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    file.write(QJsonDocument(live).toJson(QJsonDocument::Compact));
+    file.close();
+
+    QLocalServer server;
+    server.setSocketOptions(QLocalServer::UserAccessOption);
+    QVERIFY(server.listen(pipe));
+    bool connectionSeen = false;
+    connect(&server, &QLocalServer::newConnection, &server, [&] {
+        connectionSeen = true;
+        QLocalSocket *client = server.nextPendingConnection();
+        connect(client, &QLocalSocket::disconnected, client, &QObject::deleteLater);
+        connect(client, &QLocalSocket::readyRead, client,
+                [client, replied = false]() mutable {
+            while (client->canReadLine() && !replied) {
+                client->readLine();
+                replied = true;
+                client->write(QByteArrayLiteral("{\"ok\":false}\n"));
+                QTimer::singleShot(20, client, [client] {
+                    client->write(QByteArrayLiteral("{\"ok\":true}\n"));
+                });
+            }
+        });
+    });
+
+    AgentBridge bridge(this, pipe);
+    bridge.start(AgentBridge::Hooks{}, agentFile);
+    QTRY_VERIFY(connectionSeen);
+    QTest::qWait(400); // 覆盖探测超时窗口：第二段响应必须让本实例保持不抢管道
+    QVERIFY(!bridge.isServing());
+
+    QFile replaced(agentFile);
+    QVERIFY(replaced.open(QIODevice::ReadOnly));
+    QCOMPARE(QJsonDocument::fromJson(replaced.readAll()).object()
+                 .value(QStringLiteral("token")).toString(),
+             QStringLiteral("live-token"));
 }
 
 QTEST_MAIN(AgentBridgeTest)

@@ -16,7 +16,11 @@
 #include "titlebar.h"
 
 namespace {
-constexpr int kBarHeight = 50; // 与主窗口 TitleBar 同高（顶端间距归并后回调 50px），视觉上同一根栏
+// 弹窗紧凑栏 36px：主窗口 50px 栏是为容纳内嵌参数栏/菜单行（2026-11-15 定稿），
+// 弹窗只有一行标题 + 关闭钮，同等高度显得空旷不协调（用户反馈 2026-11-18）；
+// 36 = 12px 标题 + 上下各 12px 呼吸，与 Win11 原生对话框标题栏密度一致。
+// QSS 里 #TitleBar 规则组继续复用，基线美化的覆盖见两份 qss 末尾的 #FramelessDialog 段
+constexpr int kBarHeight = 36;
 }
 
 bool FramelessDialog::s_darkHint = false;
@@ -49,6 +53,7 @@ FramelessDialog::FramelessDialog(QWidget *parent)
     m_close->setObjectName(QStringLiteral("TitleCloseBtn"));
     m_close->setToolTip(tr("关闭"));
     m_close->setGlyphColor(CaptionButton::captionForeground(s_darkHint));
+    m_close->setGlyphCentered(true); // 矮栏无菜单行，字形严格居中（主窗口的 +2px 基线偏移不适用）
     // close() 对两种用法都正确：模态 exec 会像 reject 一样结束循环，
     // 非模态配合 WA_DeleteOnClose 还能正常销毁（reject 只隐藏不删）
     connect(m_close, &QToolButton::clicked, this, &FramelessDialog::close);

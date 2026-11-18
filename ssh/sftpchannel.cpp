@@ -244,6 +244,8 @@ SftpChannel::Result SftpChannel::advanceActive(QList<SftpResult> *results)
         return advanceList(results);
     case SftpOp::RealPath:
         return advanceRealPath(results);
+    case SftpOp::Stat:
+        return advanceStat(results);
     case SftpOp::Mkdir:
     case SftpOp::Delete:
     case SftpOp::Rename:
@@ -337,6 +339,25 @@ SftpChannel::Result SftpChannel::advanceRealPath(QList<SftpResult> *results)
         return failActive(results, QStringLiteral("无法解析路径"));
     }
     completeOp(results, QStringLiteral("realpath"), resolved, true);
+    return m_queue.isEmpty() ? Result::Idle : Result::Progress;
+}
+
+SftpChannel::Result SftpChannel::advanceStat(QList<SftpResult> *results)
+{
+    const ScopedSyncSftp sync(m_api, m_session);
+    sftp_attributes attrs = m_api.sftpStat(m_sftp, m_active.path.toUtf8(),
+                                           m_active.followStat);
+    if (attrs == nullptr && isAgain()) {
+        return Result::Again;
+    }
+    if (attrs == nullptr) {
+        completeStat(results, false);
+        return m_queue.isEmpty() ? Result::Idle : Result::Progress;
+    }
+    const SftpEntry entry = entryFromAttributes(attrs);
+    m_api.sftpAttributesFree(attrs);
+    m_entries = {entry};
+    completeStat(results, true);
     return m_queue.isEmpty() ? Result::Idle : Result::Progress;
 }
 
@@ -893,6 +914,10 @@ SftpChannel::Result SftpChannel::failActive(QList<SftpResult> *results,
         results->append({SftpResult::Kind::ListedFailed, request.requestId, {},
                          {}, request.path, {}, 0, 0, false, error});
         break;
+    case SftpOp::Stat:
+        results->append({SftpResult::Kind::Stat, request.requestId, {}, {},
+                         request.path, {}, 0, 0, false, error});
+        break;
     case SftpOp::Upload:
     case SftpOp::Download:
         results->append({SftpResult::Kind::TransferFinished, request.requestId,
@@ -907,6 +932,13 @@ SftpChannel::Result SftpChannel::failActive(QList<SftpResult> *results,
         break;
     }
     return Result::Idle;
+}
+
+void SftpChannel::completeStat(QList<SftpResult> *results, bool found)
+{
+    results->append({SftpResult::Kind::Stat, m_active.requestId, {}, {},
+                     m_active.path, m_entries, 0, 0, found, {}});
+    resetActive();
 }
 
 void SftpChannel::completeOp(QList<SftpResult> *results, const QString &op,

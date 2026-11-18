@@ -60,6 +60,7 @@ private:
         ListRead,
         ListClose,
         RealPath,
+        Stat,
         Mkdir,
         CreateOpen,
         CreateClose,
@@ -84,6 +85,7 @@ private:
     Result advanceActive(QList<SftpResult> *results);
     Result advanceList(QList<SftpResult> *results);
     Result advanceRealPath(QList<SftpResult> *results);
+    Result advanceStat(QList<SftpResult> *results);
     Result advanceSimple(QList<SftpResult> *results);
     Result advanceCreate(QList<SftpResult> *results);
     Result advanceUpload(QList<SftpResult> *results);
@@ -101,6 +103,7 @@ private:
                           const QString &error = {});
     void completeList(QList<SftpResult> *results, bool ok,
                       const QString &error = {});
+    void completeStat(QList<SftpResult> *results, bool found);
     void emitCancelled(QList<SftpResult> *results, const SftpRequest &request);
     void abortActive(QList<SftpResult> *results, const QString &error);
     void cleanupTransfer(bool cancelled);

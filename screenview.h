@@ -216,7 +216,7 @@ private:
     // 开启时把鼠标按下/释放/拖动编码发给当前链路（vim/htop 里可点光标、
     // 滚列表）；Shift 是本地选区/滚历史的逃生口，与现有复制行为互不干扰。
     // 返回 true = 事件已被上报模式消费（不再走本地选区/粘贴）。
-    bool reportMouseEvent(QMouseEvent *event, bool press, bool release, bool motion);
+    bool reportMouseEvent(QMouseEvent *event, bool press, bool release);
     void reportWheelEvent(QWheelEvent *event);
     QByteArray mouseSequence(int code, int mods, int row, int col, bool release) const;
     static int mouseButtonCode(Qt::MouseButton button);
@@ -318,6 +318,9 @@ private:
     // 默认 dark 与 TermScreen 未设调色板时的兑底一致
     QString m_themeId = QStringLiteral("dark");
     QColor m_themeNormal[8];
+    // 当前主题终端底色（applyTheme 时缓存）：关键词可读性兑底用
+    //（readableKeywordColor 的背景参数），默认与 dark 主题一致
+    QColor m_themeBg{0x1E, 0x1E, 0x1E};
 
     // 慢速粘贴私有状态
     void startSlowPaste(const QString &text);

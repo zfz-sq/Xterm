@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "version.h"
 
 #include <QApplication>
 #include <QIcon>
@@ -8,7 +9,7 @@ int main(int argc, char *argv[])
     QApplication a(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("Xterm"));
     QCoreApplication::setApplicationName(QStringLiteral("Xterm"));
-    QCoreApplication::setApplicationVersion(QStringLiteral("0.1.0"));
+    QCoreApplication::setApplicationVersion(QStringLiteral(XTERM_PROJECT_VERSION));
 
     a.setWindowIcon(QIcon(QStringLiteral(":/icons/app.png")));
 

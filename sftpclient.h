@@ -34,6 +34,7 @@ public:
 signals:
     void listed(const QString &path, const QVector<SftpEntry> &entries);
     void listedFailed(const QString &path, const QString &error);
+    void statFinished(const QString &path, const SftpEntry &entry, bool found);
 
     void transferProgress(int id, qint64 done, qint64 total);
     void transferFinished(int id, bool ok, const QString &error);
@@ -43,6 +44,7 @@ signals:
 public slots:
     void listDir(const QString &path);
     void realPath(const QString &path);
+    void statPath(const QString &path, bool follow = false);
     void uploadFile(int id, const QString &localPath, const QString &remotePath);
     void downloadFile(int id, const QString &remotePath, const QString &localPath);
     void cancelTransfer(int id);
@@ -59,6 +61,8 @@ private slots:
                          const QVector<SftpEntry> &entries);
     void onSessionListedFailed(SshRequestId requestId, const QString &path,
                                const QString &error);
+    void onSessionStatFinished(SshRequestId requestId, const QString &path,
+                               const SftpEntry &entry, bool found);
     void onSessionTransferProgress(SshRequestId requestId, qint64 done,
                                    qint64 total);
     void onSessionTransferFinished(SshRequestId requestId, bool ok,

@@ -1,0 +1,6 @@
+#ifndef XTERM_VERSION_H
+#define XTERM_VERSION_H
+
+#define XTERM_PROJECT_VERSION "@PROJECT_VERSION@"
+
+#endif

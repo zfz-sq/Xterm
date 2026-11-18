@@ -438,6 +438,14 @@ int LibsshApi::sftpCanonicalizePath(sftp_session sftp, const QByteArray &path,
     return SSH_OK;
 }
 
+sftp_attributes LibsshApi::sftpStat(sftp_session sftp, const QByteArray &path,
+                                    bool follow)
+{
+    // FsBridge 需要链接本身的 is_symlink 元数据；读文件前的沙箱复核仍走 realpath。
+    return follow ? sftp_stat(sftp, path.constData())
+                  : sftp_lstat(sftp, path.constData());
+}
+
 int LibsshApi::sftpMkdir(sftp_session sftp, const QByteArray &path, mode_t mode)
 {
     return sftp_mkdir(sftp, path.constData(), mode);

@@ -96,6 +96,10 @@ public:
     bool sidebarVisible() const { return m_sidebarVisible; }
     void setSidebarVisible(bool visible) { m_sidebarVisible = visible; }
 
+    // 底部状态栏显隐：标题栏状态栏按钮切换，启动恢复（true = 显示）
+    bool statusBarVisible() const { return m_statusBarVisible; }
+    void setStatusBarVisible(bool visible) { m_statusBarVisible = visible; }
+
     // OSC 52（远端写剪贴板）策略：ask（默认，每次弹窗确认）/ allow（直接写）/
     // deny（拒绝并提示）。全局设置，两页一致；弹窗勾「以后自动允许」落库
     QString osc52Policy() const { return m_osc52Policy; }
@@ -149,6 +153,12 @@ public:
     // 保证零视觉变化；槽位语义 1红/2绿/3黄/6青，其余槽位返回无效色（回退固定色）
     static QColor classicKeywordColor(int slot, bool dark);
 
+    // 多主题可读性兑底：color 在 bg 上的 WCAG 对比度不足 3:1 时，保持色相/
+    // 饱和度、只沿 HSL 亮度轴推进到可辨（固定色规则随主题深浅切换后看不清的
+    // 统一兑底，个别边缘主题组合如浅底调色板黄同样受益）；达标组合原样返回
+    //（内置 dark/light 及绝大多数主题零视觉变化）。结果带进程级缓存
+    static QColor readableKeywordColor(const QColor &color, const QColor &bg);
+
     // 上次使用的工作模式: "serial" / "ssh"
     QString mode() const { return m_mode; }
     void setMode(const QString &mode)
@@ -167,6 +177,7 @@ private:
     int m_fontSize = 0;
     QString m_terminalFont;
     bool m_sidebarVisible = true;
+    bool m_statusBarVisible = true;
     QString m_osc52Policy = QStringLiteral("ask");
     bool m_selectToCopy = false;
     int m_maxScrollback = 10000;

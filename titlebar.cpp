@@ -40,8 +40,9 @@ void CaptionButton::paintEvent(QPaintEvent *event)
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
     const qreal cx = rect().center().x();
-    // 与菜单文字同幅下移 2px（对应 QSS 里 #TitleBar QToolButton 的 padding-top: 4px），保持视觉基线一致
-    const qreal cy = rect().center().y() + 2;
+    // 与菜单文字同幅下移 2px（对应 QSS 里 #TitleBar QToolButton 的 padding-top: 4px），保持视觉基线一致；
+    // 弹窗矮栏无菜单行，setGlyphCentered(true) 后严格居中
+    const qreal cy = rect().center().y() + (m_centered ? 0 : 2);
 
     QColor c = m_color;
     if (m_glyph == Close && (underMouse() || isDown()))

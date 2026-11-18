@@ -25,10 +25,12 @@ private slots:
     void passwordRoundTripSkipsConfigFile();
     void legacyPasswordMigratesOutOfFile();
     void themeIdRoundTripsThroughConfig();
+    void statusBarVisibilityRoundTripsThroughConfig();
     void serialBehaviorSettingsRoundTrip();
     void keywordSlotsFollowDefaultRules();
     void legacyKeywordsGainThemeSlotOnLoad();
     void themeSlotRoundTripsThroughConfig();
+    void keywordColorAdaptsToBackground();
 
 private:
     QJsonObject sshOfFirstProfile() const;
@@ -51,6 +53,44 @@ void CommandStoreTest::cleanupTestCase()
         store.save();
     }
     QFile::remove(CommandStore::configPath());
+}
+
+void CommandStoreTest::keywordColorAdaptsToBackground()
+{
+    // 多主题可读性兑底：对比度足的零变化，不足的保持色相只调亮度
+
+    // 1. 内置 dark 经典色画在 dark 终端底上（对比 ~5:1）：原样返回
+    const QColor classicRed = CommandStore::classicKeywordColor(1, true);
+    QCOMPARE(CommandStore::readableKeywordColor(classicRed, QColor(0x1E, 0x1E, 0x1E)),
+             classicRed);
+
+    // 内置 light 经典色画在白底上（红 ~5.5:1 / 黄 3.2:1 都达标）：原样返回
+    const QColor classicYellow = CommandStore::classicKeywordColor(3, false);
+    QCOMPARE(CommandStore::readableKeywordColor(classicYellow, QColor(0xFF, 0xFF, 0xFF)),
+             classicYellow);
+
+    // 2. 暗底亮色系画在白底上（右键高亮/改色规则切浅色主题的典型场景）：
+    //    暗系经典黄 0xE5C07A 白底对比仅 ~1.75:1，必须被压暗到可辨
+    const QColor paleYellow = CommandStore::classicKeywordColor(3, true);
+    const QColor fixed = CommandStore::readableKeywordColor(paleYellow, QColor(0xFF, 0xFF, 0xFF));
+    QVERIFY(fixed != paleYellow);
+    QVERIFY(fixed.lightness() < paleYellow.lightness()); // 压暗而非提亮
+    int fixedHue = 0, origHue = 0;
+    fixed.getHsv(&fixedHue, nullptr, nullptr);
+    paleYellow.getHsv(&origHue, nullptr, nullptr);
+    QVERIFY(qAbs(fixedHue - origHue) <= 2); // 色相保留（黄还是黄）
+
+    // 3. 暗底亮紫画在暗底上不受影响，画在白底上被压暗
+    const QColor palePurple(0xC6, 0x78, 0xDD); // 新词轮换色板之一
+    QCOMPARE(CommandStore::readableKeywordColor(palePurple, QColor(0x1E, 0x1E, 0x1E)),
+             palePurple); // 暗底 ~5:1 达标
+    QVERIFY(CommandStore::readableKeywordColor(palePurple, QColor(0xFF, 0xFF, 0xFF))
+            != palePurple); // 白底 ~2.9:1 需调整
+
+    // 4. 结果稳定（缓存命中路径）与无效参数透传
+    QCOMPARE(CommandStore::readableKeywordColor(paleYellow, QColor(0xFF, 0xFF, 0xFF)), fixed);
+    QVERIFY(!CommandStore::readableKeywordColor(QColor(), QColor(0xFF, 0xFF, 0xFF)).isValid());
+    QCOMPARE(CommandStore::readableKeywordColor(paleYellow, QColor()), paleYellow);
 }
 
 QJsonObject CommandStoreTest::sshOfFirstProfile() const
@@ -172,6 +212,24 @@ void CommandStoreTest::serialBehaviorSettingsRoundTrip()
     QCOMPARE(again.serialSlowPasteDelay(), 10);
     again.setSilenceAlertSeconds(0);
     QCOMPARE(again.silenceAlertSeconds(), 1);
+}
+
+void CommandStoreTest::statusBarVisibilityRoundTripsThroughConfig()
+{
+    CommandStore store;
+    QVERIFY(store.load());
+    store.setStatusBarVisible(false);
+    QVERIFY(store.save());
+
+    CommandStore again;
+    QVERIFY(again.load());
+    QCOMPARE(again.statusBarVisible(), false);
+
+    again.setStatusBarVisible(true);
+    QVERIFY(again.save());
+    CommandStore restored;
+    QVERIFY(restored.load());
+    QCOMPARE(restored.statusBarVisible(), true);
 }
 
 void CommandStoreTest::keywordSlotsFollowDefaultRules()

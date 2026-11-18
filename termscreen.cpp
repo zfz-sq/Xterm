@@ -543,7 +543,7 @@ void TermScreen::paintIpTokens(TermLine &line)
         quint8 attr = 0;
     };
     const bool dark = m_dark; // 暗色主题下蓝/黄对比不够，提亮加粗才看得清
-    auto style = [dark](int ansi, bool bright, bool bold) {
+    auto style = [](int ansi, bool bright, bool bold) {
         TokenStyle s;
         s.fg.kind = TermColor::Indexed;
         s.fg.index = quint8(bright ? ansi + 8 : ansi);

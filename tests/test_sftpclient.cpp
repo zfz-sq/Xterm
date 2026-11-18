@@ -58,6 +58,7 @@ private slots:
 
     void offlineSubmissionsFailImmediately();
     void forwardsListRealPathAndResults();
+    void forwardsDirectStatWithoutDirectoryRead();
     void forwardsOperationsWithOpNames();
     void uploadMapsIntIdProgressAndFinish();
     void cancelTransferCancelsActiveDownload();
@@ -174,6 +175,24 @@ void TestSftpClient::forwardsListRealPathAndResults()
     QCOMPARE(ops.first().at(1).toString(), QStringLiteral("/home/tester"));
     QVERIFY(ops.first().at(2).toBool());
     QCOMPARE(newSessionCount(*m_api), 1);
+}
+
+void TestSftpClient::forwardsDirectStatWithoutDirectoryRead()
+{
+    connectSession();
+    m_api->statEntries.insert(QStringLiteral("/home/a"),
+                              {QStringLiteral("a"), 123, 456, 0600, false, false});
+    QSignalSpy stat(m_client, &SftpClient::statFinished);
+
+    m_client->statPath(QStringLiteral("/home/a"));
+    QTRY_COMPARE(stat.count(), 1);
+    QCOMPARE(stat.first().at(0).toString(), QStringLiteral("/home/a"));
+    const SftpEntry entry = stat.first().at(1).value<SftpEntry>();
+    QCOMPARE(entry.name, QStringLiteral("a"));
+    QCOMPARE(entry.size, quint64(123));
+    QCOMPARE(entry.mtime, qint64(456));
+    QVERIFY(stat.first().at(2).toBool());
+    QCOMPARE(m_api->statPaths, QStringList({QStringLiteral("/home/a")}));
 }
 
 void TestSftpClient::forwardsOperationsWithOpNames()

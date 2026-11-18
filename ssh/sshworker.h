@@ -70,6 +70,7 @@ private:
     };
 
     static constexpr int ReadyPollDelayMs = 5;
+    static constexpr int MaxReadyPollDelayMs = 25;
     static constexpr int MinAgainBackoffMs = 5;
     static constexpr int MaxAgainBackoffMs = 50;
 
@@ -78,14 +79,16 @@ private:
     void schedule(int delayMs = 0);
     void scheduleAgain();
     void resetBackoff();
+    void resetReadyIdlePoll();
+    int nextReadyPollDelayMs();
     void handleConnectionFinished(quint64 generation,
                                   const SshError &error);
     void failAndClose(const SshError &error);
     void requestClose(bool notify);
     void forceCloseCurrent(bool notify);
-    void serviceSftp();
+    bool serviceSftp();
     void emitSftpResults(const QList<SftpResult> &results);
-    void serviceStats();
+    bool serviceStats();
 
     LibsshApi &m_api;
     KnownHostsStore &m_knownHosts;
@@ -99,6 +102,7 @@ private:
     int m_initialRows = 24;
     int m_againBackoffMs = MinAgainBackoffMs;
     State m_state = State::Idle;
+    int m_readyIdlePolls = 0;
     bool m_closeNotified = false;
     bool m_notifyOnClose = false;
 };

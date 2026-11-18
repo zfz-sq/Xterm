@@ -5,8 +5,10 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QSaveFile>
 #include <algorithm>
+#include <cmath>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -36,6 +38,16 @@ void forgetSshPassword(const QString &profile)
         return;
     const std::wstring target = sshPasswordTarget(profile);
     CredDeleteW(target.c_str(), CRED_TYPE_GENERIC, 0);
+}
+
+// WCAG 相对亮度（readableKeywordColor 用）
+qreal wcagLuminance(const QColor &c)
+{
+    const auto lin = [](int v8) {
+        const qreal v = v8 / 255.0;
+        return v <= 0.03928 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * lin(c.red()) + 0.7152 * lin(c.green()) + 0.0722 * lin(c.blue());
 }
 
 bool storeSshPassword(const QString &profile, const QString &password)
@@ -296,6 +308,7 @@ bool CommandStore::load()
     m_fontSize = qBound(0, root.value(QStringLiteral("fontSize")).toInt(0), 72);
     m_terminalFont = root.value(QStringLiteral("terminalFont")).toString();
     m_sidebarVisible = root.value(QStringLiteral("sidebarVisible")).toBool(true);
+    m_statusBarVisible = root.value(QStringLiteral("statusBarVisible")).toBool(true);
     setOsc52Policy(root.value(QStringLiteral("osc52Policy")).toString(QStringLiteral("ask")));
     m_selectToCopy = root.value(QStringLiteral("selectToCopy")).toBool(false);
     setMaxScrollback(root.value(QStringLiteral("maxScrollback")).toInt(10000));
@@ -353,6 +366,61 @@ QColor CommandStore::classicKeywordColor(int slot, bool dark)
     case 6: return dark ? QColor(0x56, 0xB6, 0xC2) : QColor(0x11, 0x8A, 0xB3);
     default: return QColor();
     }
+}
+
+QColor CommandStore::readableKeywordColor(const QColor &color, const QColor &bg)
+{
+    if (!color.isValid() || !bg.isValid())
+        return color;
+    // 进程级缓存：键 = 原色|底色。绘制端逐行取色，规则虽少但全量重绘行数
+    // 可达滚动历史上限，pow 换算不能每行重来（都在 GUI 线程，无并发）
+    static QHash<QString, QColor> cache;
+    const QString key = color.name() + QLatin1Char('|') + bg.name();
+    const auto hit = cache.constFind(key);
+    if (hit != cache.constEnd())
+        return hit.value();
+
+    const qreal bgL = wcagLuminance(bg);
+    const auto contrast = [&bgL](const QColor &c) {
+        const qreal l = wcagLuminance(c);
+        return (qMax(l, bgL) + 0.05) / (qMin(l, bgL) + 0.05);
+    };
+    QColor result = color;
+    // 3:1 = WCAG 图形/大字下限：关键词高亮是辅助信息，够「可辨」即可；
+    // 阈值再高会把内置 light 的 Solarized 黄（白底 3.2:1）也改掉，破坏零变化
+    constexpr qreal kMinContrast = 3.0;
+    if (contrast(color) < kMinContrast) {
+        float h, s, l, a; // Qt6 getHslF/fromHslF 用 float 通道
+        color.getHslF(&h, &s, &l, &a);
+        // 压暗/提亮两个方向各试一遍，取改动最小的达标者（亮底压暗、暗底
+        // 提亮通常步数更少，但中灰底两向都可行，交由步数自然选择）
+        QColor best;
+        qreal bestDl = 1.0;
+        for (int dir = 0; dir < 2; ++dir) {
+            const qreal step = dir == 0 ? -0.02 : 0.02;
+            qreal l2 = l;
+            for (int i = 0; i < 50; ++i) {
+                l2 += step;
+                if (l2 < 0.0 || l2 > 1.0)
+                    break;
+                const QColor cand = QColor::fromHslF(h, s, l2, a);
+                if (contrast(cand) >= kMinContrast) {
+                    const qreal dl = qAbs(l2 - l);
+                    if (dl < bestDl) {
+                        bestDl = dl;
+                        best = cand;
+                    }
+                    break;
+                }
+            }
+        }
+        if (best.isValid())
+            result = best; // 两向都不达标（极端底色）：保持原色不强改黑白
+    }
+    if (cache.size() > 512) // 防御性上限：规则×主题组合正常远达不到
+        cache.clear();
+    cache.insert(key, result);
+    return result;
 }
 
 QList<KeywordRule> CommandStore::defaultKeywords(bool dark)
@@ -422,6 +490,7 @@ bool CommandStore::save() const
         { QStringLiteral("fontSize"), m_fontSize },
         { QStringLiteral("terminalFont"), m_terminalFont },
         { QStringLiteral("sidebarVisible"), m_sidebarVisible },
+        { QStringLiteral("statusBarVisible"), m_statusBarVisible },
         { QStringLiteral("osc52Policy"), m_osc52Policy },
         { QStringLiteral("selectToCopy"), m_selectToCopy },
         { QStringLiteral("maxScrollback"), m_maxScrollback },

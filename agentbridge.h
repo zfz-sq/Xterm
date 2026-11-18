@@ -229,7 +229,10 @@ private:
     void finishTyping(bool interrupted); // 停止计时器、清状态、发结束信号
     void writeAgentFile();
     void removeAgentFile();
-    bool probeExistingAgent() const; // 探测是否已有活实例在服务管道
+    bool probeExistingAgent(); // 异步探测已有活实例；返回 true 表示探测进行中
+    void startListening();
+    void finishProbe(bool occupied);
+    void cleanupProbe();
 
     Hooks m_hooks;
     QHash<QString, ToolHandler> m_tools;      // 完整工具名 → 处理器（路由表）
@@ -241,6 +244,10 @@ private:
     int m_ratePerSecond = 10;                 // 每秒回填（默认 10）
     qint64 m_rateLastMs = 0;
     QLocalServer *m_server = nullptr;
+    QLocalSocket *m_probeSocket = nullptr;
+    QTimer *m_probeTimer = nullptr;
+    QByteArray m_probeBuffer;
+    int m_probeReplies = 0;
     QTimer *m_poll = nullptr;
     QTimer *m_typeTimer = nullptr;
     Typing m_typing;

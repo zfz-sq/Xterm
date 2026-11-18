@@ -44,6 +44,13 @@ public:
                            const std::function<void(const QVector<SftpEntry> &entries,
                                                     const QString &err)> &done)>
             list;
+        // 查询单个路径元数据。found=false 表示不存在；err 非空表示查询失败。
+        // 缺省时 FsBridge 回退到列父目录，兼容既有轻量测试后端。
+        std::function<void(const QString &path, bool follow,
+                           const std::function<void(const SftpEntry &entry,
+                                                    bool found,
+                                                    const QString &err)> &done)>
+            stat;
         std::function<void(const QString &remote, const QString &local,
                            const std::function<void(bool ok, const QString &err)> &done)>
             download;

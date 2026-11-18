@@ -5,6 +5,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QFileInfo>
 #include <QLocalSocket>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
@@ -28,9 +29,12 @@ struct FakeFs
     QString root = QStringLiteral("/home/dev");
     QHash<QString, QVector<SftpEntry>> dirs;
     QHash<QString, QByteArray> files;
+    QHash<QString, SftpEntry> fileEntries;
     QHash<QString, QString> links; // 词法路径 → realpath（可指向沙箱外）
     QStringList uploads; // 成功 upload 的远端路径记录
     int listCalls = 0;
+    int statCalls = 0;
+    int downloadCalls = 0;
     bool holdList = false;
     std::function<void(const QVector<SftpEntry> &, const QString &)> heldListDone;
     QString heldListPath;
@@ -87,6 +91,31 @@ struct FakeFs
             }
             deliverList(path, done);
         };
+        h.stat = [this](const QString &path, bool,
+                        const std::function<void(const SftpEntry &, bool,
+                                                 const QString &)> &done) {
+            ++statCalls;
+            if (dirs.contains(path)) {
+                SftpEntry entry;
+                entry.name = QFileInfo(path).fileName();
+                entry.isDir = true;
+                done(entry, true, {});
+                return;
+            }
+            const auto file = files.constFind(path);
+            if (file == files.constEnd()) {
+                done({}, false, {});
+                return;
+            }
+            SftpEntry entry;
+            entry.name = QFileInfo(path).fileName();
+            if (fileEntries.contains(path))
+                entry = fileEntries.value(path);
+            else
+                entry.permissions = 0644;
+            entry.size = quint64(file.value().size());
+            done(entry, true, {});
+        };
         h.download = [this](const QString &remote, const QString &local,
                             const std::function<void(bool, const QString &)> &done) {
             const auto it = files.constFind(remote);
@@ -94,6 +123,7 @@ struct FakeFs
                 done(false, QStringLiteral("文件不存在: %1").arg(remote));
                 return;
             }
+            ++downloadCalls;
             {
                 QFile f(local);
                 if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -163,6 +193,8 @@ void AgentBridgeFsTest::initTestCase()
                         SftpEntry{QStringLiteral("a.txt"), 9, 200, 0644, false, false}});
     m_fake.dirs.insert(QStringLiteral("/home/dev/sub"), {});
     m_fake.files.insert(QStringLiteral("/home/dev/a.txt"), QByteArrayLiteral("hello fs\n"));
+    m_fake.fileEntries.insert(QStringLiteral("/home/dev/a.txt"),
+                               m_fake.dirs.value(QStringLiteral("/home/dev")).at(1));
 
     m_pipe = QStringLiteral("XtermAgentFsTest-%1").arg(qApp->applicationPid());
     m_bridge = new AgentBridge(this, m_pipe);
@@ -252,6 +284,8 @@ void AgentBridgeFsTest::listReturnsEntries()
 // stat：存在 → 元数据；不存在 → exists=false（探测不算错）；目录/文件分型正确
 void AgentBridgeFsTest::statReportsEntryAndMissing()
 {
+    const int listsBefore = m_fake.listCalls;
+    const int statsBefore = m_fake.statCalls;
     QLocalSocket sock;
     sock.connectToServer(m_pipe);
     QVERIFY(sock.waitForConnected(2000));
@@ -279,6 +313,8 @@ void AgentBridgeFsTest::statReportsEntryAndMissing()
     QVERIFY(resp3.value(QStringLiteral("ok")).toBool()); // 探测不存在 = 成功 + exists=false
     QVERIFY(!resp3.value(QStringLiteral("result")).toObject()
                  .value(QStringLiteral("exists")).toBool());
+    QCOMPARE(m_fake.statCalls, statsBefore + 3);
+    QCOMPARE(m_fake.listCalls, listsBefore); // 单路径 stat，不再拉父目录
     sock.disconnectFromServer();
 }
 
@@ -307,6 +343,7 @@ void AgentBridgeFsTest::readRejectsOversize()
     sock.connectToServer(m_pipe);
     QVERIFY(sock.waitForConnected(2000));
 
+    const int downloadsBefore = m_fake.downloadCalls;
     QJsonObject params;
     params.insert(QStringLiteral("path"), QStringLiteral("a.txt"));
     params.insert(QStringLiteral("max_bytes"), 3);
@@ -315,6 +352,7 @@ void AgentBridgeFsTest::readRejectsOversize()
     QVERIFY(!resp.value(QStringLiteral("ok")).toBool());
     QVERIFY(resp.value(QStringLiteral("error")).toString()
                 .contains(QStringLiteral("xterm.fs.download")));
+    QCOMPARE(m_fake.downloadCalls, downloadsBefore);
     sock.disconnectFromServer();
 }
 

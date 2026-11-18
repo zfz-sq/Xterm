@@ -11,6 +11,7 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonParseError>
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QSaveFile>
@@ -114,6 +115,7 @@ AgentBridge::AgentBridge(QObject *parent, const QString &pipeName)
 AgentBridge::~AgentBridge()
 {
     m_waiters.clear();
+    cleanupProbe();
     if (m_server)
         m_server->close();
     removeAgentFile();
@@ -124,7 +126,7 @@ void AgentBridge::start(Hooks hooks, const QString &agentFile, bool allowWrite)
 {
     m_hooks = std::move(hooks);
     m_allowWrite = allowWrite;
-    if (m_server)
+    if (m_server || m_probeSocket)
         return;
 
     // M2.a：基于能力字段注册内置工具，再合入调用方的额外工具（同名覆盖）
@@ -141,6 +143,14 @@ void AgentBridge::start(Hooks hooks, const QString &agentFile, bool allowWrite)
     // 全部「令牌不匹配」。注意 Windows 允许同名管道多实例，listen() 成功
     // 不代表没有别人在监听，必须主动探测。
     if (probeExistingAgent())
+        return;
+
+    startListening();
+}
+
+void AgentBridge::startListening()
+{
+    if (m_server != nullptr)
         return;
 
     m_server = new QLocalServer(this);
@@ -160,13 +170,17 @@ void AgentBridge::start(Hooks hooks, const QString &agentFile, bool allowWrite)
         QDir(QFileInfo(m_agentFile).absolutePath()).filePath(QStringLiteral("logs/agent-audit.jsonl")));
 }
 
-bool AgentBridge::probeExistingAgent() const
+bool AgentBridge::probeExistingAgent()
 {
     QFile f(m_agentFile);
     if (!f.open(QIODevice::ReadOnly))
         return false; // 没有文件: 本实例是第一个
-    const QJsonObject obj = QJsonDocument::fromJson(f.readAll()).object();
+    QJsonParseError parseError{};
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &parseError);
     f.close();
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject())
+        return false;
+    const QJsonObject obj = doc.object();
     const QString pipe = obj.value(QStringLiteral("pipe")).toString();
     const QString token = obj.value(QStringLiteral("token")).toString();
     if (pipe.isEmpty() || token.isEmpty())
@@ -175,25 +189,78 @@ bool AgentBridge::probeExistingAgent() const
     // 用文件里的令牌连管道发一个工具调用：能连通且令牌通过 = 有活实例在
     // 前台服务。先试新命名空间名，旧实例（M2.a 之前）不认识会拒绝，再回退
     // 旧短名——升级窗口内新旧两版双开时不能误判旧实例已死而抢管道。
-    QLocalSocket sock;
-    sock.connectToServer(pipe);
-    if (!sock.waitForConnected(300))
-        return false; // 无人监听: 文件是崩溃残留，本实例安全接管（写入时覆盖）
-    auto probeWith = [&sock, &token](const QString &method) {
+    // 残留 agent.json 可能指向半死管道。同步 waitFor* 最坏会卡 GUI 线程
+    // 近一秒，这里改成信号驱动；新/旧两个探测请求一次发出，300ms 收不到
+    // 回应就按崩溃残留接管。
+    m_probeSocket = new QLocalSocket(this);
+    m_probeBuffer.clear();
+    m_probeReplies = 0;
+    auto sendProbe = [this, token](int id, const QString &method) {
         QJsonObject req;
-        req.insert(QStringLiteral("id"), 1);
+        req.insert(QStringLiteral("id"), id);
         req.insert(QStringLiteral("token"), token);
         req.insert(QStringLiteral("method"), method);
         req.insert(QStringLiteral("params"), QJsonObject());
-        sock.write(QJsonDocument(req).toJson(QJsonDocument::Compact));
-        sock.write("\n");
-        if (!sock.waitForBytesWritten(300) || !sock.waitForReadyRead(300))
-            return false; // 有连接但对端无响应（半死状态）: 视为无实例
-        const QJsonObject resp = QJsonDocument::fromJson(sock.readLine()).object();
-        return resp.value(QStringLiteral("ok")).toBool(); // 令牌不匹配/未知工具都算不通过
+        m_probeSocket->write(QJsonDocument(req).toJson(QJsonDocument::Compact));
+        m_probeSocket->write("\n");
     };
-    return probeWith(QStringLiteral("xterm.session.status"))
-           || probeWith(QStringLiteral("status"));
+    connect(m_probeSocket, &QLocalSocket::connected, this, [sendProbe] {
+        sendProbe(1, QStringLiteral("xterm.session.status"));
+        sendProbe(2, QStringLiteral("status"));
+    });
+    connect(m_probeSocket, &QLocalSocket::readyRead, this, [this] {
+        m_probeBuffer += m_probeSocket->readAll();
+        int newline = -1;
+        while ((newline = m_probeBuffer.indexOf('\n')) >= 0) {
+            const QByteArray line = m_probeBuffer.left(newline);
+            m_probeBuffer.remove(0, newline + 1);
+            ++m_probeReplies;
+            const QJsonObject resp = QJsonDocument::fromJson(line).object();
+            if (resp.value(QStringLiteral("ok")).toBool()) {
+                finishProbe(true);
+                return;
+            }
+        }
+        if (m_probeReplies >= 2)
+            finishProbe(true); // 有响应但两个探测都失败：仍是活实例，不抢管道
+    });
+    connect(m_probeSocket, &QLocalSocket::disconnected, this, [this] {
+        finishProbe(false);
+    });
+
+    m_probeTimer = new QTimer(this);
+    m_probeTimer->setSingleShot(true);
+    connect(m_probeTimer, &QTimer::timeout, this, [this] {
+        finishProbe(false);
+    });
+    m_probeTimer->start(300);
+    m_probeSocket->connectToServer(pipe);
+    return true;
+}
+
+void AgentBridge::finishProbe(bool occupied)
+{
+    const bool wasProbing = m_probeSocket != nullptr || m_probeTimer != nullptr;
+    cleanupProbe();
+    if (!wasProbing)
+        return;
+    if (!occupied && m_server == nullptr)
+        startListening();
+}
+
+void AgentBridge::cleanupProbe()
+{
+    if (m_probeTimer != nullptr) {
+        m_probeTimer->stop();
+        m_probeTimer->deleteLater();
+        m_probeTimer = nullptr;
+    }
+    if (m_probeSocket != nullptr) {
+        m_probeSocket->deleteLater();
+        m_probeSocket = nullptr;
+    }
+    m_probeBuffer.clear();
+    m_probeReplies = 0;
 }
 
 void AgentBridge::writeAgentFile()

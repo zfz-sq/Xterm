@@ -334,10 +334,13 @@ void SshWorker::advance()
         emit shellData(m_generation, bytes);
     }
 
+    bool sftpActive = false;
+    bool statsProgress = false;
     if (m_state == State::Ready) {
-        serviceSftp();
-        serviceStats();
+        sftpActive = serviceSftp();
+        statsProgress = serviceStats();
     }
+    const bool backgroundActive = sftpActive || statsProgress;
 
     switch (result) {
     case ShellChannel::Result::Ready:
@@ -347,10 +350,13 @@ void SshWorker::advance()
             emit connected(m_generation);
         }
         resetBackoff();
+        resetReadyIdlePoll();
         schedule(m_state == State::Ready ? ReadyPollDelayMs : 0);
         return;
     case ShellChannel::Result::Progress:
         resetBackoff();
+        if (backgroundActive)
+            resetReadyIdlePoll();
         if (m_state == State::Closing) {
             schedule();
             return;
@@ -358,6 +364,8 @@ void SshWorker::advance()
         schedule(m_state == State::Ready ? ReadyPollDelayMs : 0);
         return;
     case ShellChannel::Result::Again:
+        if (m_state == State::Ready && backgroundActive)
+            resetReadyIdlePoll();
         scheduleAgain();
         return;
     case ShellChannel::Result::Closed:
@@ -393,7 +401,7 @@ void SshWorker::assertOwnerThread() const
 
 void SshWorker::schedule(int delayMs)
 {
-    if (!m_timer->isActive()) {
+    if (!m_timer->isActive() || delayMs < m_timer->remainingTime()) {
         m_timer->start(delayMs);
     }
 }
@@ -401,7 +409,7 @@ void SshWorker::schedule(int delayMs)
 void SshWorker::scheduleAgain()
 {
     const int delay = m_state == State::Ready
-        ? ReadyPollDelayMs
+        ? nextReadyPollDelayMs()
         : m_againBackoffMs;
     schedule(delay);
     if (m_state != State::Ready) {
@@ -413,6 +421,20 @@ void SshWorker::scheduleAgain()
 void SshWorker::resetBackoff()
 {
     m_againBackoffMs = MinAgainBackoffMs;
+}
+
+void SshWorker::resetReadyIdlePoll()
+{
+    m_readyIdlePolls = 0;
+}
+
+int SshWorker::nextReadyPollDelayMs()
+{
+    const int delay = m_readyIdlePolls < 4
+        ? ReadyPollDelayMs
+        : (m_readyIdlePolls < 12 ? 10 : MaxReadyPollDelayMs);
+    ++m_readyIdlePolls;
+    return delay;
 }
 
 void SshWorker::handleConnectionFinished(quint64 generation,
@@ -504,14 +526,15 @@ void SshWorker::forceCloseCurrent(bool notify)
     m_notifyOnClose = false;
 }
 
-void SshWorker::serviceSftp()
+bool SshWorker::serviceSftp()
 {
     if (m_sftp == nullptr) {
-        return;
+        return false;
     }
     QList<SftpResult> results;
-    m_sftp->advance(&results);
+    const SftpChannel::Result result = m_sftp->advance(&results);
     emitSftpResults(results);
+    return result != SftpChannel::Result::Idle;
 }
 
 void SshWorker::emitSftpResults(const QList<SftpResult> &results)
@@ -521,19 +544,21 @@ void SshWorker::emitSftpResults(const QList<SftpResult> &results)
     }
 }
 
-void SshWorker::serviceStats()
+bool SshWorker::serviceStats()
 {
     if (m_stats == nullptr) {
-        return;
+        return false;
     }
     QList<QString> samples;
     bool degraded = false;
     bool recovered = false;
-    m_stats->advance(&samples, &degraded, &recovered);
+    const StatsChannel::Result result =
+        m_stats->advance(&samples, &degraded, &recovered);
     if (degraded) {
         emit statsDegraded(m_generation);
     }
     for (const QString &sample : samples) {
         emit statsSample(m_generation, sample);
     }
+    return result == StatsChannel::Result::Progress;
 }

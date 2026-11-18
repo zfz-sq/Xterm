@@ -190,9 +190,37 @@ void FsBridge::registerTools(AgentBridge::Hooks *hooks)
         return true;
     };
 
-    // —— xterm.fs.stat：存在性 + 元数据。列父目录，不跟随最后一级符号链接 ——
+    auto statPath = [this](const QString &path, bool follow,
+                           const std::function<void(const SftpEntry &,
+                                                    bool,
+                                                    const QString &)> &done) {
+        if (m_hooks.stat) {
+            m_hooks.stat(path, follow, done);
+            return;
+        }
+
+        QString parent;
+        QString base;
+        splitParentBase(path, &parent, &base);
+        m_hooks.list(parent, [base, done](const QVector<SftpEntry> &entries,
+                                          const QString &err) {
+            if (!err.isEmpty()) {
+                done({}, false, err);
+                return;
+            }
+            for (const SftpEntry &entry : entries) {
+                if (entry.name == base) {
+                    done(entry, true, {});
+                    return;
+                }
+            }
+            done({}, false, {});
+        });
+    };
+
+    // —— xterm.fs.stat：存在性 + 元数据。优先单路径 stat，避免大目录整列拉取 ——
     hooks->tools.insert(QStringLiteral("xterm.fs.stat"),
-                        [this, takeBusy](const AgentBridge::ToolCall &call) -> AgentBridge::ToolResult {
+                        [this, takeBusy, statPath](const AgentBridge::ToolCall &call) -> AgentBridge::ToolResult {
                             QString abs, err;
                             if (!resolveInside(call.params.value(QStringLiteral("path")).toString(),
                                                &abs, &err))
@@ -213,34 +241,35 @@ void FsBridge::registerTools(AgentBridge::Hooks *hooks)
                             if (!takeBusy(call, &err, &completion, &busy))
                                 return {false, false, {}, err};
                             canonicalize(parent, false,
-                                         [this, busy, completion, base, abs](const QString &canonParent,
-                                                                             const QString &canonErr) {
+                                         [busy, completion, statPath, abs, base](const QString &canonParent,
+                                                                                 const QString &canonErr) {
                                              if (!canonErr.isEmpty()) {
                                                  completion.finish(false, {}, canonErr);
                                                  return;
                                              }
-                                             m_hooks.list(canonParent,
-                                                          [busy, completion, base, abs](
-                                                              const QVector<SftpEntry> &entries,
-                                                              const QString &listErr) {
-                                                              if (!listErr.isEmpty()) {
-                                                                  completion.finish(false, {}, listErr);
-                                                                  return;
-                                                              }
-                                                              QJsonObject data;
+                                             const QString canonical =
+                                                 (canonParent == QLatin1String("/"))
+                                                     ? QStringLiteral("/") + base
+                                                     : canonParent + QLatin1Char('/') + base;
+                                             statPath(canonical, false,
+                                                      [busy, completion, abs](const SftpEntry &entry,
+                                                                              bool found,
+                                                                              const QString &statErr) {
+                                                          if (!statErr.isEmpty()) {
+                                                              completion.finish(false, {}, statErr);
+                                                              return;
+                                                          }
+                                                          QJsonObject data;
+                                                          data.insert(QStringLiteral("path"), abs);
+                                                          if (found) {
+                                                              data = entryToJson(entry);
                                                               data.insert(QStringLiteral("path"), abs);
-                                                              for (const SftpEntry &e : entries) {
-                                                                  if (e.name != base)
-                                                                      continue;
-                                                                  data = entryToJson(e);
-                                                                  data.insert(QStringLiteral("path"), abs);
-                                                                  data.insert(QStringLiteral("exists"), true);
-                                                                  completion.finish(true, data, {});
-                                                                  return;
-                                                              }
+                                                              data.insert(QStringLiteral("exists"), true);
+                                                          } else {
                                                               data.insert(QStringLiteral("exists"), false);
-                                                              completion.finish(true, data, {});
-                                                          });
+                                                          }
+                                                          completion.finish(true, data, {});
+                                                      });
                                          });
                             return completion.resultOrDefer();
                         });
@@ -303,9 +332,9 @@ void FsBridge::registerTools(AgentBridge::Hooks *hooks)
              return params;
          }());
 
-    // —— xterm.fs.read：realpath 后 download → 临时文件 → 限长读回 ——
+    // —— xterm.fs.read：realpath/stat 预检后 download → 限长读回 ——
     hooks->tools.insert(QStringLiteral("xterm.fs.read"),
-                        [this, takeBusy](const AgentBridge::ToolCall &call) -> AgentBridge::ToolResult {
+                        [this, takeBusy, statPath](const AgentBridge::ToolCall &call) -> AgentBridge::ToolResult {
                             QString abs, err;
                             if (!resolveInside(call.params.value(QStringLiteral("path")).toString(),
                                                &abs, &err))
@@ -319,12 +348,14 @@ void FsBridge::registerTools(AgentBridge::Hooks *hooks)
                             std::shared_ptr<BusyFlag> busy;
                             if (!takeBusy(call, &err, &completion, &busy))
                                 return {false, false, {}, err};
-                            canonicalize(abs, false, [this, busy, completion, maxBytes](const QString &canon,
-                                                                                        const QString &canonErr) {
+                            canonicalize(abs, false,
+                                         [this, busy, completion, maxBytes, statPath](const QString &canon,
+                                                                                     const QString &canonErr) {
                                 if (!canonErr.isEmpty()) {
                                     completion.finish(false, {}, canonErr);
                                     return;
                                 }
+                                auto startDownload = [this, busy, completion, canon, maxBytes]() {
                                 auto tmp = std::make_shared<QTemporaryFile>(
                                     QDir::temp().filePath(QStringLiteral("xterm-fs-read-XXXXXX")));
                                 tmp->setAutoRemove(true);
@@ -364,11 +395,40 @@ void FsBridge::registerTools(AgentBridge::Hooks *hooks)
                                                                  QString::fromUtf8(bytes));
                                                      completion.finish(true, data, {});
                                                  });
+                                };
+                                statPath(canon, true,
+                                         [&startDownload, completion, canon, maxBytes](const SftpEntry &entry,
+                                                                                   bool found,
+                                                                                   const QString &statErr) {
+                                     if (!statErr.isEmpty()) {
+                                         completion.finish(false, {}, statErr);
+                                         return;
+                                     }
+                                     if (!found) {
+                                         completion.finish(false, {},
+                                                           QStringLiteral("路径不存在: %1").arg(canon));
+                                         return;
+                                     }
+                                     if (entry.isDir) {
+                                         completion.finish(false, {},
+                                                           QStringLiteral("路径是目录: %1").arg(canon));
+                                         return;
+                                     }
+                                     if (qint64(entry.size) > maxBytes) {
+                                         completion.finish(
+                                             false, {},
+                                             QStringLiteral("文件超过 max_bytes（%1 字节），"
+                                                            "请改用 xterm.fs.download")
+                                                 .arg(QString::number(maxBytes)));
+                                         return;
+                                     }
+                                     startDownload();
+                                 });
                             });
                             return completion.resultOrDefer();
                         });
     meta("xterm.fs.read",
-         QStringLiteral("读远端文本文件内容（默认尾 64KB，上限 1MB；更大用 download）"),
+         QStringLiteral("读远端文本文件内容（从头限长读取，默认 64KB，上限 1MB；更大用 download）"),
          [] {
              QJsonObject params;
              QJsonObject path;

@@ -73,6 +73,7 @@ MainWindow::MainWindow(QWidget *parent)
     // 恢复上次保存的侧边栏显隐（标题栏按钮勾态同步）、终端字号/字体族、
     // 关键词高亮规则（均为全局设置，两页一致）
     m_uiBuilder->applySidebarVisible(m_store->sidebarVisible());
+    m_uiBuilder->applyStatusBarVisible(m_store->statusBarVisible());
     m_uiBuilder->restoreTerminalFontSettings();
     m_uiBuilder->applyKeywords(m_store->keywords());
     // OSC 52 策略（全局，两页一致）：ask / allow / deny
@@ -249,8 +250,14 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
     // 无边框窗口边缘按下缩放(光标反馈见 onEdgeCursorTick);
     // 其余事件走原有 AI 锁定键盘拦截逻辑
     if (event->type() == QEvent::MouseButtonPress) {
+        // 过滤器挂在 qApp 上,会看到全部顶层窗口的事件:边缘缩放只接管
+        // 发生在本窗口树内的按下。否则其他窗口(SFTP 文件管理/传输队列/
+        // 弹窗)只要坐标落在本窗口边缘带或窗口外(windowEdgeFlagsAt 的
+        // 单向判定无下界),点击就被吞掉换成本窗口 resize——表现为
+        // SFTP 窗口的关闭按钮点不动
+        const auto *widget = qobject_cast<QWidget *>(watched);
         const auto *mouse = static_cast<const QMouseEvent *>(event);
-        if (mouse->button() == Qt::LeftButton) {
+        if (widget && widget->window() == this && mouse->button() == Qt::LeftButton) {
             const Qt::Edges edges = windowEdgeFlagsAt(mouse->globalPosition().toPoint());
             QWindow *win = windowHandle();
             if (edges != 0 && win && win->startSystemResize(edges))
@@ -323,8 +330,18 @@ void MainWindow::onEdgeCursorTick()
     }
     // 光标下的宿主控件:用纯 Qt 树的 childAt 逐层下探。QApplication::widgetAt
     // 在 Windows 上内部走原生 WindowFromPoint,当浏览器/IDE 等其他进程窗口
-    // 盖在本窗口上方时命中跨进程窗口返回 null(实测),不能作为宿主来源
-    QWidget *cur = this;
+    // 盖在本窗口上方时命中跨进程窗口返回 null(实测),不能作为宿主来源。
+    // 首层就探不到控件 = 鼠标在本窗口外或被其他窗口盖住:不设光标不抖鼠标,
+    // 否则会把缩放光标挂到本窗口并每 tick 全局挪动光标,干扰上层窗口操作
+    QWidget *cur = childAt(mapFromGlobal(QCursor::pos()));
+    if (cur == nullptr) {
+        if (m_edgeCursorHost) {
+            m_edgeCursorHost->unsetCursor();
+            m_edgeCursorHost = nullptr;
+            m_edgeCursorShape = -1;
+        }
+        return;
+    }
     for (QWidget *child = cur->childAt(cur->mapFromGlobal(QCursor::pos())); child;
          child = cur->childAt(cur->mapFromGlobal(QCursor::pos()))) {
         cur = child;

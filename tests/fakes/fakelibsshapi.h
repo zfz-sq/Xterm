@@ -5,10 +5,12 @@
 
 #include <QCryptographicHash>
 #include <QFile>
+#include <QFileInfo>
 #include <QHash>
 #include <QList>
 #include <QStringList>
 
+#include <algorithm>
 #include <cstring>
 #include <fcntl.h>
 
@@ -471,6 +473,34 @@ public:
         return SSH_OK;
     }
 
+    sftp_attributes sftpStat(sftp_session, const QByteArray &path, bool) override
+    {
+        const QString key = QString::fromUtf8(path);
+        statPaths.append(key);
+        if (statEntries.contains(key)) {
+            return makeAttributes(statEntries.value(key));
+        }
+        SftpEntry entry;
+        entry.name = QFileInfo(key).fileName();
+        if (directoryEntries.contains(key)) {
+            const QVector<SftpEntry> entries = directoryEntries.value(key);
+            const auto match = std::find_if(entries.cbegin(), entries.cend(),
+                                            [&entry](const SftpEntry &candidate) {
+                                                return candidate.name == entry.name;
+                                            });
+            if (match != entries.cend())
+                entry = *match;
+            else
+                entry.isDir = true;
+        } else if (remoteContents.contains(key)) {
+            entry.size = quint64(remoteContents.value(key).size());
+            entry.permissions = 0644;
+        } else {
+            return nullptr;
+        }
+        return makeAttributes(entry);
+    }
+
     int sftpMkdir(sftp_session, const QByteArray &path, mode_t) override
     {
         mkdirPaths.append(QString::fromUtf8(path));
@@ -741,6 +771,8 @@ public:
     QByteArray execStderr;
     int execExitStatus = 0;
     QList<ssh_channel> createdChannels;
+    QStringList statPaths;
+    QHash<QString, SftpEntry> statEntries;
     QHash<ssh_channel, QList<QByteArray>> streamByChannel;
     int aioBeginReadCount = 0;
     int aioWaitReadCount = 0;

@@ -65,6 +65,7 @@ public:
     void updatePersistentStatus();
     void onThemeToggled(bool dark);
     void applySidebarVisible(bool shown); // 侧边栏展开/收起统一入口（标题栏按钮与启动恢复共用）
+    void applyStatusBarVisible(bool visible); // 底部状态栏显隐统一入口（标题栏按钮与启动恢复共用）
     void toggleMaximized();               // 最大化/还原切换（标题栏按钮与双击共用，自维护伪最大化状态）
     bool isFakeMaximized() const { return m_fakeMaximized; } // 供 MainWindow 边缘缩放避开伪最大化几何
     // 参数栏渐进精简（窗口宽度驱动，MainWindow::resizeEvent 委托）：
@@ -112,6 +113,9 @@ private:
     KmsgMuteToggle *m_kmsgBtn = nullptr;
     QString m_shellTitle; // SSH 视图标题（OSC 0/2），窗口标题跟随
     int m_connCompactLevel = -1; // 参数栏渐进精简当前档位（变化才重应用，避免同档布局抖动）
+    bool m_sidebarShown = true; // 侧边栏展开意图（用户定稿默认展开）：inset 判定专用——
+    // 构造期窗口未 show 时 isVisible() 恒为 false，用它判定会让 inset 在启动后
+    // 永远停留在 0（终端文字画到命令卡片下），直到某次 resize 才自愈
     // FramelessWindowHint 伪最大化状态：Qt 对无边框窗口 setWindowState(Maximized)
     // 只做 setGeometry 不置 zoomed 位，isMaximized() 恒 false，切换/字形
     // 全靠这两个成员自维护

@@ -52,6 +52,7 @@ private slots:
     void closeRetriesAsynchronouslyBeforeFreeing();
     void connectingAgainTimerIsNotZeroMs();
     void openingShellAgainTimerIsNotZeroMs();
+    void readyPollRelaxesWhenIdleAndResumesOnActivity();
     void nonOwnerShellChannelCallsDoNotTouchHandles();
     void pendingWriteDoesNotStarveOutputWithinTwoTicks();
     void streamsStatsSamplesOnDedicatedChannel();
@@ -346,6 +347,30 @@ void TestSshWorker::openingShellAgainTimerIsNotZeroMs()
     QVERIFY(api.calls.count(QStringLiteral("openChannelSession"))
             - before <= 15);
     worker.closeConnection(28);
+}
+
+void TestSshWorker::readyPollRelaxesWhenIdleAndResumesOnActivity()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    FakeLibsshApi api;
+    prepareSuccessfulConnection(api);
+    KnownHostsStore store(api, directory.path());
+    SshWorker worker(api, store);
+    QSignalSpy connected(&worker, &SshWorker::connected);
+    QSignalSpy data(&worker, &SshWorker::shellData);
+
+    worker.connectToHost(34, target(), 80, 24);
+    QTRY_COMPARE(connected.count(), 1);
+    QTimer *timer = workerTimer(worker);
+    QVERIFY(timer != nullptr);
+    QTRY_COMPARE(timer->interval(), 25);
+
+    api.readEvents = {{false, QByteArrayLiteral("wake")}};
+    worker.resizeShell(34, 80, 24); // 立即触发下一轮调度，不等放宽后的定时器
+    QTRY_COMPARE(data.count(), 1);
+    QCOMPARE(timer->interval(), 5);
+    worker.closeConnection(34);
 }
 
 void TestSshWorker::nonOwnerShellChannelCallsDoNotTouchHandles()

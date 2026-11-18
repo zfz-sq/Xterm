@@ -68,13 +68,20 @@ void tuneEditableCombo(QComboBox *combo, int maxVisible = 20)
         list->setUniformItemSizes(true);
 }
 
-// 新增关键词高亮的默认色在几个醒目色间轮换（设置对话框与右键「高亮此词」共用）
-QColor nextKeywordColor(int used)
+// 新增关键词高亮的默认色在几个醒目色间轮换（设置对话框与右键「高亮此词」共用）。
+// 按当前主题深浅取板：暗底用 One Dark 亮色系，亮底用 light 调色板同源的深色系
+// （暗底亮色画在白底上看不清）；渲染端另有 readableKeywordColor 对比度兑底
+QColor nextKeywordColor(int used, bool dark)
 {
-    static const QColor palette[] = {
+    static const QColor darkPalette[] = {
         QColor(0xE0, 0x6C, 0x75), QColor(0xE5, 0xC0, 0x7A), QColor(0x7C, 0xD0, 0x77),
         QColor(0x61, 0xAF, 0xEF), QColor(0xC6, 0x78, 0xDD),
     };
+    static const QColor lightPalette[] = {
+        QColor(0xC4, 0x2F, 0x2F), QColor(0xB5, 0x89, 0x00), QColor(0x0E, 0x8A, 0x3E),
+        QColor(0x09, 0x69, 0xA2), QColor(0x86, 0x3C, 0xA8),
+    };
+    const QColor *palette = dark ? darkPalette : lightPalette;
     return palette[used % 5];
 }
 } // namespace
@@ -564,9 +571,12 @@ void UiBuilder::setupTitleBar()
 
     // 状态栏 / 置顶 / 系统按钮
     // 底部状态栏展开/收起（用户定稿 2026-11-16）：标题栏按钮切换 QStatusBar 显隐，
-    // 收起后终端多一行空间；主题快切随原主题按钮移除不再保留（主题页是唯一入口）
+    // 收起后终端多一行空间；显隐状态落库，启动由 MainWindow 恢复
     connect(m_titleBar, &TitleBar::statusbarToggleRequested, this, [this] {
-        m_ui->statusbar->setVisible(!m_ui->statusbar->isVisible());
+        const bool visible = !m_ui->statusbar->isVisible();
+        applyStatusBarVisible(visible);
+        m_store->setStatusBarVisible(visible);
+        m_store->save();
     });
     connect(m_titleBar, &TitleBar::minimizedRequested, this, [this] {
         m_window->setWindowState(m_window->windowState() | Qt::WindowMinimized);
@@ -709,7 +719,7 @@ void UiBuilder::relocateCommandBar()
     const int w = qMin(m_commandBar->sizeHint().width(), qMax(0, area.width() - kCardGap * 2));
     const int h = qMax(0, area.height() - kCardTopGap); // 顶部留隙，向下延伸贴到底部
     m_commandBar->setGeometry(area.width() - w - kCardGap, kCardTopGap, w, h);
-    const int inset = m_commandBar->isVisible() && w > 0 ? w + kCardGap + 2 : 0;
+    const int inset = m_sidebarShown && w > 0 ? w + kCardGap + 2 : 0;
     if (m_serialView)
         m_serialView->setRightInset(inset);
     if (m_sshView)
@@ -722,10 +732,18 @@ void UiBuilder::applySidebarVisible(bool shown)
 {
     if (!m_commandBar)
         return;
+    m_sidebarShown = shown; // 意图状态先落：构造期窗口未 show 时 isVisible() 恒 false，
+                            // inset 判定不能用它（见成员注释）
     m_commandBar->setVisible(shown);
     if (m_titleBar)
         m_titleBar->setSidebarShown(shown);
     relocateCommandBar(); // 显隐改变终端右缘让位（收起后终端铺满窗口）
+}
+
+void UiBuilder::applyStatusBarVisible(bool visible)
+{
+    if (m_ui && m_ui->statusbar)
+        m_ui->statusbar->setVisible(visible);
 }
 
 // 参数栏渐进精简（用户定稿 2026-11-16）：窗口变窄时按档位裁剪标题栏参数区，
@@ -1106,7 +1124,7 @@ void UiBuilder::onHighlightRequested(const QString &word)
     }
     KeywordRule rule;
     rule.text = word;
-    rule.color = nextKeywordColor(rules.size());
+    rule.color = nextKeywordColor(rules.size(), m_theme->isDark());
     rules.append(rule);
     applyKeywords(rules);
     m_store->save();
@@ -1144,11 +1162,14 @@ void UiBuilder::openKeywordSettings()
         return kwTheme.normal[qBound(0, slot, 7)];
     };
     auto swatchStyle = [&kwTheme](const QColor &color) {
+        // 预览即终端实际效果：同样过 readableKeywordColor 兜底（与绘制端
+        // collectKeywordHits 同源），设置里看到的颜色 = 终端里渲染的颜色
+        const QColor shown = CommandStore::readableKeywordColor(color, kwTheme.terminalBg);
         return QStringLiteral(
                    "QPushButton { background-color: %1; color: %2; border: 1px solid %3;"
                    " border-radius: 3px; font-weight: 600; }")
             .arg(kwTheme.terminalBg.name(),
-                 color.name(),
+                 shown.name(),
                  kwTheme.inputBorder.name());
     };
     // 表格 -> 规则列表 -> 立即预览（确定才落盘，取消回滚）
@@ -1216,7 +1237,7 @@ void UiBuilder::openKeywordSettings()
     okBtn->setDefault(true);
     auto *cancelBtn = new QPushButton(tr("取消"));
     connect(addBtn, &QPushButton::clicked, this, [&] {
-        const QColor color = nextKeywordColor(table->rowCount());
+        const QColor color = nextKeywordColor(table->rowCount(), dark);
         addRow(tr("新关键词"), color, true);
         applyFromTable();
         table->editItem(table->item(table->rowCount() - 1, 0));

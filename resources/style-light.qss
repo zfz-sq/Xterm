@@ -673,3 +673,10 @@ QDialog#FramelessDialog {
     background-color: #FFFFFF;
     border: 1px solid #C9C9CD;
 }
+
+/* 弹窗紧凑栏（36px，用户反馈 2026-11-18：主窗口 50px 承载参数栏，弹窗无需同高）：
+   主窗口栏里标题的 padding-top 4px 是与菜单行文字基线对齐用的，矮栏里会显得
+   偏下，归零交给布局垂直居中。选择器加 #FramelessDialog 前缀提高特异性，不回透主窗口 */
+QDialog#FramelessDialog QWidget#TitleBar QLabel#TitleLabel {
+    padding-top: 0px;
+}

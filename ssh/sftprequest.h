@@ -26,6 +26,7 @@ Q_DECLARE_METATYPE(QVector<SftpEntry>)
 enum class SftpOp {
     List,
     RealPath,
+    Stat,
     Upload,
     Download,
     Mkdir,
@@ -47,12 +48,14 @@ struct SftpRequest {
     QString command;
     quint32 mode = 0;
     bool isDir = false;
+    bool followStat = false;
 };
 
 struct SftpResult {
     enum class Kind {
         Listed,
         ListedFailed,
+        Stat,
         Progress,
         TransferFinished,
         OpFinished
@@ -79,6 +82,8 @@ inline QString sftpOpName(SftpOp op)
     switch (op) {
     case SftpOp::RealPath:
         return QStringLiteral("realpath");
+    case SftpOp::Stat:
+        return QStringLiteral("stat");
     case SftpOp::Mkdir:
         return QStringLiteral("mkdir");
     case SftpOp::Create:

@@ -20,6 +20,8 @@ SftpClient::SftpClient(SshSession *session, QObject *parent)
             &SftpClient::onSessionListed);
     connect(m_session, &SshSession::sftpListedFailed, this,
             &SftpClient::onSessionListedFailed);
+    connect(m_session, &SshSession::sftpStatFinished, this,
+            &SftpClient::onSessionStatFinished);
     connect(m_session, &SshSession::sftpTransferProgress, this,
             &SftpClient::onSessionTransferProgress);
     connect(m_session, &SshSession::sftpTransferFinished, this,
@@ -48,6 +50,15 @@ void SftpClient::realPath(const QString &path)
     SftpRequest request;
     request.op = SftpOp::RealPath;
     request.path = path;
+    submit(request);
+}
+
+void SftpClient::statPath(const QString &path, bool follow)
+{
+    SftpRequest request;
+    request.op = SftpOp::Stat;
+    request.path = path;
+    request.followStat = follow;
     submit(request);
 }
 
@@ -178,6 +189,9 @@ void SftpClient::submit(SftpRequest request, int transferId)
     case SftpOp::RealPath:
         m_session->realPath(request.requestId, request.path);
         break;
+    case SftpOp::Stat:
+        m_session->statPath(request.requestId, request.path, request.followStat);
+        break;
     case SftpOp::Upload:
         m_session->uploadFile(request.requestId, request.localPath,
                               request.remotePath);
@@ -243,6 +257,15 @@ void SftpClient::onSessionListedFailed(SshRequestId requestId,
     emit listedFailed(path, error);
 }
 
+void SftpClient::onSessionStatFinished(SshRequestId requestId,
+                                       const QString &path,
+                                       const SftpEntry &entry, bool found)
+{
+    if (!trackedTake(requestId, nullptr))
+        return;
+    emit statFinished(path, entry, found);
+}
+
 void SftpClient::onSessionTransferProgress(SshRequestId requestId,
                                            qint64 done, qint64 total)
 {
@@ -306,6 +329,14 @@ struct RealWait
     std::function<void(const QString &, const QString &)> done;
 };
 
+struct StatWait
+{
+    std::shared_ptr<BridgeSeat> seat;
+    QString path;
+    bool follow = false;
+    std::function<void(const SftpEntry &, bool, const QString &)> done;
+};
+
 } // namespace
 
 // —— FsBridge 真实后端：信号转回调。不在界面线程上 QEventLoop::exec ——
@@ -314,6 +345,7 @@ FsBridge::FsHooks FsBridge::hooksForSftp(SftpClient *client)
     FsHooks h;
 
     auto realWaits = std::make_shared<QList<RealWait>>();
+    auto statWaits = std::make_shared<QList<StatWait>>();
     QObject::connect(
         client, &SftpClient::opFinished, client,
         [realWaits](const QString &op, const QString &arg, bool succeeded, const QString &error) {
@@ -346,6 +378,66 @@ FsBridge::FsHooks FsBridge::hooksForSftp(SftpClient *client)
         realWaits->append(wait);
         wait.seat->timer->start(kIoTimeoutMs);
         client->realPath(path);
+    };
+
+    QObject::connect(
+        client, &SftpClient::statFinished, client,
+        [statWaits](const QString &path, const SftpEntry &entry, bool found) {
+            for (int i = 0; i < statWaits->size(); ++i) {
+                StatWait &wait = (*statWaits)[i];
+                if (wait.path != path || !wait.seat || wait.seat->settled)
+                    continue;
+                wait.seat->cancel();
+                const auto done = wait.done;
+                statWaits->removeAt(i);
+                done(entry, found, {});
+                return;
+            }
+        });
+
+    h.stat = [client, statWaits](const QString &path, bool follow,
+                                 const std::function<void(const SftpEntry &,
+                                                          bool,
+                                                          const QString &)> &done) {
+        auto seat = std::make_shared<BridgeSeat>();
+        StatWait wait;
+        wait.seat = seat;
+        wait.path = path;
+        wait.follow = follow;
+        wait.done = done;
+        statWaits->append(wait);
+        seat->c1 = QObject::connect(
+            client, &SftpClient::opFinished, client,
+            [statWaits, seat, done](const QString &op, const QString &arg,
+                                    bool, const QString &error) {
+                if (op != QLatin1String("stat"))
+                    return;
+                for (int i = 0; i < statWaits->size(); ++i) {
+                    StatWait &wait = (*statWaits)[i];
+                    if (wait.path != arg || !wait.seat || wait.seat->settled)
+                        continue;
+                    wait.seat->cancel();
+                    statWaits->removeAt(i);
+                    done({}, false, error);
+                    return;
+                }
+            });
+        seat->timer = new QTimer(client);
+        seat->timer->setSingleShot(true);
+        QObject::connect(seat->timer, &QTimer::timeout, client, [statWaits, seat] {
+            if (!seat || seat->settled)
+                return;
+            for (int i = 0; i < statWaits->size(); ++i) {
+                if ((*statWaits)[i].seat == seat) {
+                    (*statWaits)[i].done({}, false, QStringLiteral("stat 超时"));
+                    statWaits->removeAt(i);
+                    break;
+                }
+            }
+            seat->cancel();
+        });
+        seat->timer->start(kIoTimeoutMs);
+        client->statPath(path, follow);
     };
 
     h.list = [client](const QString &path,

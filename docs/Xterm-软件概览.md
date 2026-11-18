@@ -1,6 +1,6 @@
 # Xterm 软件概览
 
-> 版本 0.1.0 · Windows 桌面应用 · Qt 6.8 / C++17 · MIT 许可
+> 版本 0.2.0 · Windows 桌面应用 · Qt 6.8 / C++17 · MIT 许可
 >
 > 这份文档介绍 Xterm 是什么、已经做了什么、还缺什么。欢迎在文末「征求建议」处提意见。
 > 构建、测试与打包的具体步骤见仓库 [README.md](../README.md)。
@@ -57,7 +57,7 @@
 - SSH 高级参数条毛玻璃（用户定稿 2026-11-15）：高级参数条与命令栏卡片统一——半透明玻璃底+8px 圆角+无 1px 描边，透出窗口背景淡影成为悬浮面（静态 qss 兜底值按同公式预计算 lighter(112)/darker(104)+alpha 200，运行时被逐主题 override 覆盖）；参数栏本体已嵌入标题栏（见「参数栏嵌入标题栏」条）不再吃玻璃底。注意模板改造时的 arg 错位陷阱：多参 arg 等价链式替换最小编号 marker，删 %n 必须守卫（已在模板尾部加注释占位，test_thememanager 有错位断言）
 - 主题背景一体化（用户定稿 2026-11-15）：全部主题 windowBg == terminalBg——终端铺满窗口为唯一主体，背景即画布色，不允许两色割裂；早期 6 套双色主题（dracula/nord/monokai/oneDark/solarized dark/light）已统一，themeLibraryHasUniqueIds 有逐主题守卫断言，statusBarBg 是独立设计的状态栏色不受此约束
 - 菜单主题入口整体移除（用户定稿 2026-11-15）：设置菜单不再有「主题」子菜单与「主题设置...」对话框（连带删除 openThemeSettings 死代码）——主题切换唯一入口是侧边栏主题页（深浅快切按钮次日也被移除，见下条），菜单不再维护第二套主题列表；「工具」菜单随后也整体移除（见下条）
-- 标题栏主题按钮更换为底部状态栏开关（用户定稿 2026-11-16）：TitleThemeBtn（月亮/太阳图标，themeClicked→toggleTheme 快切链）整体退役——深浅快切不再保留（主题页选主题已是完整入口），按钮位换成 TitleStatusBtn：QPainter 自绘「底部面板」字形（外框+主区|状态栏分隔线+状态栏内容小块，与侧边栏面板图标同模式）随 applyCaptionTheme 重绘随主题，点击发 statusbarToggleRequested，UiBuilder 接线翻转 QStatusBar::setVisible（终端多一行空间）；QSS 收窄列举三处同步（静态两份 qss + thememanager 动态 override）TitleThemeBtn→TitleStatusBtn；状态栏显隐不持久化（会话级，重启默认显示）
+- 标题栏主题按钮更换为底部状态栏开关（用户定稿 2026-11-16）：TitleThemeBtn（月亮/太阳图标，themeClicked→toggleTheme 快切链）整体退役——深浅快切不再保留（主题页选主题已是完整入口），按钮位换成 TitleStatusBtn：QPainter 自绘「底部面板」字形（外框+主区|状态栏分隔线+状态栏内容小块，与侧边栏面板图标同模式）随 applyCaptionTheme 重绘随主题，点击发 statusbarToggleRequested，UiBuilder 接线翻转 QStatusBar::setVisible（终端多一行空间）；QSS 收窄列举三处同步（静态两份 qss + thememanager 动态 override）TitleThemeBtn→TitleStatusBtn；状态栏显隐持久化，启动恢复上次状态（默认显示）
 - 侧边栏三页签选中态与标题栏按钮 hover 同源（用户定稿 2026-11-16）：命令/主题/MCP 页签（cbTab 动态属性定位）的选中态由全局 QToolButton:checked 蓝底蓝边框（VSCode 风）改为与标题栏收放按钮 hover 同款——无边框圆角色块（hover 态同步去边框同色）；cbTab 属性选择器三条规则加在两份静态 qss 全局段后 + thememanager 动态 override 同构两条；全局 checked 蓝色选中样式保留给查找框正则切换钮（唯一其他 checkable QToolButton），菜单项与右键菜单的 checkable 是 QAction 不受 QToolButton 规则影响；色块值次日撞色修复改绑专用 %35（见下条）
 - 侧边栏三页签选中色亮色撞色修复（用户反馈 2026-11-16）：初版动态 override 绑 %16（buttonHoverBg，与标题栏 hover 同源），但本模板恒拼在静态 qss 之后（同特异性后写胜出）——静态值从不生效且 buttonHoverBg 亮色系与页签所在浮层底（overlayCss = panelBg ± 一档）撞色：GitHub Light 选中块 #F0F0F3 vs 浮层 ≈#EDEEF0（Δ≈3/通道）完全隐形，暗色系因浮层反向抬档对比充足未被发现；修复：新增 %35 专用色块（arg 表尾部追加无错位风险），暗色=buttonHoverBg（与标题栏 hover 同源、视觉已验收不变）、亮色=panelBg.darker(112)（浮层只 darker(104)，恒深约 8% 亮度）；静态 qss 兜底值同步（dark #35353A / light #DCDDDF 基准主题值）；实机双主题量化验证：亮色（Solarized Light）#D8D6CC vs #EEEBE1 Δ≈21、暗色（Dracula）#56596E vs #2C2E3B Δ≈45，checked 随页签切换正确移动
 - 字体区自绘字形适配暗色（用户定稿 2026-11-16）：主题页字体区展开箭头（细线 chevron '›'/'˅'）与字号 stepper ±（自绘细线 glyph）在暗色主题下不可见——根因：两者颜色取 QGuiApplication::palette().color(QPalette::WindowText)，但本应用主题走 QSS（setStyleSheet），**QSS 不写回 QPalette**，palette 恒为系统默认（亮色系统恒黑字），applyTheme 重刷时虽重调 makeChevron 但取色不变；修复：两函数加 dark 参数，颜色改 glyphColor(dark)（dark #CCCCCC / light #24292E，与标题栏 CaptionButton::captionForeground 同值定义），CommandBar::applyTheme() 改签名 applyTheme(bool dark) 存入 m_themeDark 成员，构造/toggleFontPanel/applyTheme 全部调用点传参，UiBuilder 唯一调用点（onThemeToggled，作用域有 dark）同步；展宽展开/收起与主题切换两个触发路径都正确重绘

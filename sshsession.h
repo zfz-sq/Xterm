@@ -43,6 +43,7 @@ public:
 
     void listDir(SshRequestId requestId, const QString &path);
     void realPath(SshRequestId requestId, const QString &path);
+    void statPath(SshRequestId requestId, const QString &path, bool follow);
     void uploadFile(SshRequestId requestId, const QString &localPath,
                     const QString &remotePath);
     void downloadFile(SshRequestId requestId, const QString &remotePath,
@@ -86,6 +87,8 @@ signals:
                     const QVector<SftpEntry> &entries);
     void sftpListedFailed(SshRequestId requestId, const QString &path,
                           const QString &error);
+    void sftpStatFinished(SshRequestId requestId, const QString &path,
+                          const SftpEntry &entry, bool found);
     void sftpTransferProgress(SshRequestId requestId, qint64 done,
                               qint64 total);
     void sftpTransferFinished(SshRequestId requestId, bool ok,

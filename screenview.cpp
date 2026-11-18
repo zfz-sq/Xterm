@@ -72,12 +72,16 @@ void lineTextWithCols(const TermLine *line, QString &text, QVector<int> &cols)
     }
 }
 
-// 默认字体族 = 系统等宽字体，与「设置 → 字体」功能加入前完全一致。
-// 这里刻意不做任何“更好看”的替换：默认值必须稳定，选字体是用户自己的事，
-// 换了默认族会让老用户一升级就发现字形变了。
 QString systemFixedFamily()
 {
     return QFontDatabase::systemFont(QFontDatabase::FixedFont).family();
+}
+
+bool installedFontFamily(const QString &family)
+{
+    // QFontDatabase::families() 会枚举全部系统字体；两页联动会连续校验多次。
+    static const QStringList installed = QFontDatabase::families();
+    return installed.contains(family, Qt::CaseInsensitive);
 }
 
 } // namespace
@@ -95,6 +99,7 @@ ScreenView::ScreenView(QWidget *parent)
     setCursor(Qt::IBeamCursor);
     setMinimumSize(160, 80);
 
+    // 默认仍取系统等宽字体，但字号按用户反馈上调 2pt；已保存字号优先。
     m_font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     const int systemPt = m_font.pointSize();
     m_font.setPointSize(qMax(9, systemPt > 0 ? systemPt : 9) + 2);
@@ -201,6 +206,7 @@ void ScreenView::applyTheme(const ThemeDefinition &theme)
     m_themeId = theme.id;
     for (int i = 0; i < 8; ++i)
         m_themeNormal[i] = theme.normal[i];
+    m_themeBg = theme.terminalBg;
     if (m_find) {
         const QString bg = theme.inputBg.name();
         const QString fg = theme.terminalFg.name();
@@ -468,7 +474,7 @@ void ScreenView::setFontFamily(const QString &family)
     // 空串 / 本机没装的族一律回落到系统等宽，避免静默变成比例字体
     QString next = family.trimmed();
     if (next.isEmpty()
-        || !QFontDatabase::families().contains(next, Qt::CaseInsensitive)) {
+        || !installedFontFamily(next)) {
         next = systemFixedFamily();
     }
     if (next == m_familyId)
@@ -534,6 +540,10 @@ void ScreenView::collectKeywordHits(const TermLine *line, int cols,
                               : rule.color;
         if (!hitColor.isValid()) // 主题不认这个槽位（非 1/2/3/6）：回退固定色
             hitColor = rule.color;
+        // 多主题可读性兑底：固定色规则（右键高亮/改过色的词，多为暗底亮色系）
+        // 切到浅底主题后对比度不足，个别边缘主题组合（浅底调色板黄）同理；
+        // 保持色相只调亮度到可辨，达标的组合原样返回（内置 dark/light 零变化）
+        hitColor = CommandStore::readableKeywordColor(hitColor, m_themeBg);
         // 词边界：命中向两侧扩到完整单词（字母/数字/下划线）。子串只染
         // 半截很破碎：Successfully 只染前半的 Success、fully 留灰色。
         const auto isWordChar = [](const QChar &c) {
@@ -860,7 +870,7 @@ QByteArray ScreenView::mouseSequence(int code, int mods, int row, int col, bool 
  * - 拖动：1000 不报；1002 只在按住按钮时报（编码 = 按钮+32）；1003 任何
  *   移动都报（无按钮时编码 35），同一格不重发。
  */
-bool ScreenView::reportMouseEvent(QMouseEvent *event, bool press, bool release, bool motion)
+bool ScreenView::reportMouseEvent(QMouseEvent *event, bool press, bool release)
 {
     const int track = m_screen.mouseTrackingMode();
     if (track == 0)
@@ -1965,7 +1975,7 @@ void ScreenView::askOsc52(const QByteArray &text)
 void ScreenView::mousePressEvent(QMouseEvent *event)
 {
     setFocus();
-    if (reportMouseEvent(event, true, false, false)) {
+    if (reportMouseEvent(event, true, false)) {
         event->accept();
         return; // 鼠标上报：事件交给远端程序
     }
@@ -2035,7 +2045,7 @@ void ScreenView::mousePressEvent(QMouseEvent *event)
 
 void ScreenView::mouseMoveEvent(QMouseEvent *event)
 {
-    if (reportMouseEvent(event, false, false, true)) {
+    if (reportMouseEvent(event, false, false)) {
         event->accept();
         return;
     }
@@ -2050,7 +2060,7 @@ void ScreenView::mouseMoveEvent(QMouseEvent *event)
 
 void ScreenView::mouseReleaseEvent(QMouseEvent *event)
 {
-    if (reportMouseEvent(event, false, true, false)) {
+    if (reportMouseEvent(event, false, true)) {
         event->accept();
         return;
     }
@@ -2064,7 +2074,7 @@ void ScreenView::mouseReleaseEvent(QMouseEvent *event)
 
 void ScreenView::mouseDoubleClickEvent(QMouseEvent *event)
 {
-    if (reportMouseEvent(event, true, false, false)) {
+        if (reportMouseEvent(event, true, false)) {
         event->accept();
         return; // 双击是第二次按下的上报（Qt 不会再发 press）
     }
@@ -2278,7 +2288,7 @@ bool ScreenView::event(QEvent *event)
         QMouseEvent mouse(QEvent::MouseMove, hover->position(),
                           hover->globalPosition(), Qt::NoButton, Qt::NoButton,
                           hover->modifiers());
-        if (reportMouseEvent(&mouse, false, false, true))
+        if (reportMouseEvent(&mouse, false, false))
             return true;
     }
     return QWidget::event(event);

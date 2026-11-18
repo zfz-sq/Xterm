@@ -18,6 +18,10 @@ public:
 
     void setGlyph(Glyph glyph) { m_glyph = glyph; update(); }
     void setGlyphColor(const QColor &color) { m_color = color; update(); }
+    // 字形是否严格几何居中：主窗口 50px 栏里为了与菜单文字（QSS padding-top
+    // 4px）基线一致，字形默认下移 2px；矮栏弹窗（无菜单行，布局整体居中）
+    // 用严格居中，避免 +2 偏移在小栏里看起来偏下
+    void setGlyphCentered(bool centered) { m_centered = centered; update(); }
     // 标题栏字形前景色（主题深浅决定），主窗口与对话框标题栏共用
     static QColor captionForeground(bool dark)
     {
@@ -30,6 +34,7 @@ protected:
 private:
     Glyph m_glyph;
     QColor m_color{0x24, 0x29, 0x2E}; // 默认亮色主题前景，applyCaptionTheme 会覆盖
+    bool m_centered = false;          // 见 setGlyphCentered：默认与主窗口菜单基线对齐(+2px)
 };
 
 // 自定义标题栏（无边框窗口）。
