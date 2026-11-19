@@ -655,14 +655,17 @@ void CommandBar::rebuildRows(const QStringList &texts, int selectRow)
         row->sendBtn = new QPushButton(w);
         row->sendBtn->setIcon(themedIcon(QStringLiteral("send.png")));
         row->sendBtn->setIconSize(QSize(18, 18));
-        row->sendBtn->setFixedSize(30, 26);
+        // 高度必须 ≥ QSS 全链需求（padding 5×2 + border 1×2 + min-height 18 = 30）:
+        // 固定高 26 时代的"超紧凑盒子"在 Qt 下垂直布局不可靠,18px 图标贴底被裁
+        // (同 style-*.qss 参数栏注释记录的 30px 栏时代症状;宽 30 保持方形图标钮)
+        row->sendBtn->setFixedSize(30, 30);
         row->sendBtn->setToolTip(tr("发送此命令"));
         row->sendBtn->setEnabled(!texts[i].isEmpty());
         row->sendBtn->installEventFilter(this); // 持焦点时 Ctrl+Z 撤销删除
 
         row->gripLabel = new QLabel(w);
         row->gripLabel->setPixmap(themedIcon(QStringLiteral("grip.png")).pixmap(16, 16));
-        row->gripLabel->setFixedSize(18, 26);
+        row->gripLabel->setFixedSize(18, 30); // 与 sendBtn 同高（行内两个固定高件同高对齐）
         row->gripLabel->setCursor(Qt::SizeAllCursor);
         row->gripLabel->setToolTip(tr("拖动排序"));
         row->gripLabel->installEventFilter(this);
@@ -673,7 +676,12 @@ void CommandBar::rebuildRows(const QStringList &texts, int selectRow)
         lay->addWidget(row->gripLabel);
 
         item->setData(kRowRole, reinterpret_cast<qulonglong>(row));
-        item->setSizeHint(w->sizeHint());
+        // ::item 的 QSS padding(2px) 会把 setItemWidget 的行容器四向各内缩 2px
+        // (QStyleSheetStyle 按 contentsRect 布局 index widget):hint 直接透传时
+        // 行容器被压到 310x30,装不下 margins(2,2)+发送钮 30 需要的 34 高,按钮
+        // 底部溢出行容器、底边框被裁(用户实测 2026-11-19)。补上四向 padding,
+        // 让行容器拿回完整布局空间(诊断: test_cmdgeom 临时验证过)
+        item->setSizeHint(w->sizeHint() + QSize(4, 4));
         m_list->setItemWidget(item, w);
         m_rows.insert(item, row);
 
