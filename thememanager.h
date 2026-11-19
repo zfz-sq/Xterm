@@ -49,13 +49,21 @@ struct ThemeDefinition
 
     // 按钮四态（普通/悬停/按下）：基础 QSS 里按钮色同样只备 dark/light 两套，
     // 第三方主题靠动态覆盖注入，否则切主题后按钮仍是旧灰。文字色不单设
-    //（继承容器 color）；禁用态与 connectBtn 语义色（连接绿/断开红）不覆盖。
+    //（继承容器 color）；connectBtn 语义色（连接绿/断开红）不覆盖。
     // dark/light 取基础 QSS 原值，内置主题零视觉变化
     QColor buttonBg;
     QColor buttonBorder;
     QColor buttonHoverBg;
     QColor buttonHoverBorder;
     QColor buttonPressedBg;
+
+    // 按钮禁用态（底/边框/文字）：基础 QSS 同样只备 dark/light 两套，第三方
+    // 主题靠动态覆盖，否则 SFTP 文件管理未选中时整排禁用面板钮（下载/删除/
+    // 重命名等）仍是旧灰黑。connectBtn 语义绿仍由专属规则保留不覆盖。
+    // dark/light 取基础 QSS 原值，内置主题零视觉变化
+    QColor buttonDisabledBg;
+    QColor buttonDisabledBorder;
+    QColor buttonDisabledFg;
 
     // 通用 QToolButton 的选中态（终端/调试切换等 checkable 工具钮）：
     // 基础 QSS 只有 dark（VSCode 蓝底）/light（淡蓝底）两套，第三方主题

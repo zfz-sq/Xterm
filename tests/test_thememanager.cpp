@@ -168,6 +168,16 @@ void TestThemeManager::applyNowInjectsButtonStates()
                          + dracula.buttonHoverBg.name()));
     QVERIFY(qss.contains(QStringLiteral("QPushButton:pressed { background-color: ")
                          + dracula.buttonPressedBg.name()));
+    // 禁用态同口径注入：SFTP 面板钮未选中时整排禁用，第三方主题下仍是旧灰黑
+    // 是用户反馈的硬编码残留点；connectBtn 语义绿特异性更高不受影响
+    QVERIFY(qss.contains(QStringLiteral("QPushButton:disabled { color: ")
+                         + dracula.buttonDisabledFg.name()));
+    QVERIFY(qss.contains(QStringLiteral("QToolButton#paneTool:disabled { color: ")
+                         + dracula.buttonDisabledFg.name()
+                         + QStringLiteral("; background-color: ")
+                         + dracula.buttonDisabledBg.name()
+                         + QStringLiteral("; border-color: ")
+                         + dracula.buttonDisabledBorder.name()));
     // #id 特异性的工具按钮（设置齿轮/密码眼睛）也要同规则压住基础 QSS
     QVERIFY(qss.contains(QStringLiteral("QToolButton#settingsBtn, QToolButton#pwToggleBtn { background-color: ")
                          + dracula.buttonBg.name()));
@@ -191,6 +201,9 @@ void TestThemeManager::applyNowInjectsButtonStates()
     QVERIFY(dark.buttonBg.name() == QLatin1String("#2c2c30"));
     QVERIFY(dark.buttonHoverBg.name() == QLatin1String("#35353a"));
     QVERIFY(dark.buttonPressedBg.name() == QLatin1String("#2a2a2e"));
+    QVERIFY(dark.buttonDisabledBg.name() == QLatin1String("#262629"));
+    QVERIFY(dark.buttonDisabledBorder.name() == QLatin1String("#303034"));
+    QVERIFY(dark.buttonDisabledFg.name() == QLatin1String("#6a6a6a"));
     store.setTheme(QStringLiteral("dark"));
     theme.applyNow();
     QVERIFY(qApp->styleSheet().contains(QStringLiteral("QPushButton { background-color: #2c2c30")));
@@ -200,6 +213,9 @@ void TestThemeManager::applyNowInjectsButtonStates()
         QVERIFY2(t.buttonBg.isValid() && t.buttonBorder.isValid(), qPrintable(t.name));
         QVERIFY2(t.buttonHoverBg.isValid() && t.buttonHoverBorder.isValid(), qPrintable(t.name));
         QVERIFY2(t.buttonPressedBg.isValid(), qPrintable(t.name));
+        QVERIFY2(t.buttonDisabledBg.isValid() && t.buttonDisabledBorder.isValid()
+                     && t.buttonDisabledFg.isValid(),
+                 qPrintable(t.name));
     }
 }
 

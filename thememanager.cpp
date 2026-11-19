@@ -41,6 +41,7 @@ QList<ThemeDefinition> createThemes()
         dark.buttonBg = QColor(0x2C, 0x2C, 0x30); dark.buttonBorder = QColor(0x38, 0x38, 0x3E); // 与基础 QSS 原值一致
         dark.buttonHoverBg = QColor(0x35, 0x35, 0x3A); dark.buttonHoverBorder = QColor(0x4A, 0x4A, 0x52);
         dark.buttonPressedBg = QColor(0x2A, 0x2A, 0x2E);
+        dark.buttonDisabledBg = QColor(0x26, 0x26, 0x29); dark.buttonDisabledBorder = QColor(0x30, 0x30, 0x34); dark.buttonDisabledFg = QColor(0x6A, 0x6A, 0x6A); // 与基础 QSS 原值一致
         dark.toolCheckedBg = QColor(0x09, 0x47, 0x71); dark.toolCheckedBorder = QColor(0x0E, 0x63, 0x9C); // VSCode 蓝选中原值
         dark.listBg = QColor(0x20, 0x20, 0x23); dark.listAltBg = QColor(0x25, 0x25, 0x28); dark.listBorder = QColor(0x30, 0x30, 0x34); // 与基础 QSS 原值一致
         dark.listHoverBg = QColor(0x2C, 0x2C, 0x30); dark.listSelectedBg = QColor(0x09, 0x47, 0x71); dark.listSelectedFg = QColor(0xFF, 0xFF, 0xFF);
@@ -78,6 +79,7 @@ QList<ThemeDefinition> createThemes()
     light.buttonBg = QColor(0xFF, 0xFF, 0xFF); light.buttonBorder = QColor(0xC9, 0xC9, 0xCD); // 与基础 QSS 原值一致
     light.buttonHoverBg = QColor(0xF0, 0xF0, 0xF3); light.buttonHoverBorder = QColor(0xA8, 0xA8, 0xAE);
     light.buttonPressedBg = QColor(0xE8, 0xE8, 0xEC);
+    light.buttonDisabledBg = QColor(0xF2, 0xF2, 0xF4); light.buttonDisabledBorder = QColor(0xDC, 0xDC, 0xDE); light.buttonDisabledFg = QColor(0x9A, 0x9A, 0x9E); // 与基础 QSS 原值一致
     light.toolCheckedBg = QColor(0xCD, 0xE4, 0xFB); light.toolCheckedBorder = QColor(0x7F, 0xB6, 0xE8); // 淡蓝选中原值
     light.listBg = QColor(0xFB, 0xFB, 0xFC); light.listAltBg = QColor(0xF3, 0xF3, 0xF5); light.listBorder = QColor(0xDC, 0xDC, 0xDE);
     light.listHoverBg = QColor(0xF0, 0xF0, 0xF3); light.listSelectedBg = QColor(0xD6, 0xE9, 0xFF); light.listSelectedFg = QColor(0x1F, 0x1F, 0x1F);
@@ -115,6 +117,7 @@ QList<ThemeDefinition> createThemes()
     dracula.buttonBg = QColor(0x44, 0x47, 0x5A); dracula.buttonBorder = QColor(0x62, 0x72, 0xA4); // 选区紫灰底 + comment 紫边
     dracula.buttonHoverBg = QColor(0x56, 0x59, 0x6E); dracula.buttonHoverBorder = QColor(0x74, 0x82, 0xB4);
     dracula.buttonPressedBg = QColor(0x3B, 0x3D, 0x4F);
+    dracula.buttonDisabledBg = QColor(0x2F, 0x31, 0x40); dracula.buttonDisabledBorder = QColor(0x3A, 0x3C, 0x4E); dracula.buttonDisabledFg = QColor(0x62, 0x72, 0xA4); // comment 紫做禁用文字
     dracula.toolCheckedBg = QColor(0x3B, 0x20, 0x65); dracula.toolCheckedBorder = QColor(0x62, 0x72, 0xA4); // 紫系选中
     dracula.listBg = QColor(0x2D, 0x2F, 0x3C); dracula.listAltBg = QColor(0x28, 0x2A, 0x36); dracula.listBorder = QColor(0x44, 0x47, 0x5A);
     dracula.listHoverBg = QColor(0x3D, 0x3F, 0x52); dracula.listSelectedBg = QColor(0x44, 0x47, 0x5A); dracula.listSelectedFg = QColor(0xF8, 0xF8, 0xF2);
@@ -152,6 +155,7 @@ QList<ThemeDefinition> createThemes()
         nord.buttonBg = QColor(0x3B, 0x42, 0x52); nord.buttonBorder = QColor(0x4C, 0x56, 0x6A); // Nord2/Nord3
         nord.buttonHoverBg = QColor(0x43, 0x4C, 0x5E); nord.buttonHoverBorder = QColor(0x5E, 0x6B, 0x7E);
         nord.buttonPressedBg = QColor(0x35, 0x3C, 0x4A);
+        nord.buttonDisabledBg = QColor(0x2E, 0x34, 0x40); nord.buttonDisabledBorder = QColor(0x3B, 0x42, 0x52); nord.buttonDisabledFg = QColor(0x4C, 0x56, 0x6A); // Nord0 底 + Nord3 灰文字
         nord.toolCheckedBg = QColor(0x43, 0x4C, 0x5E); nord.toolCheckedBorder = QColor(0x81, 0xA1, 0xC1); // Nord 选中
         nord.listBg = QColor(0x34, 0x3B, 0x48); nord.listAltBg = QColor(0x2E, 0x34, 0x40); nord.listBorder = QColor(0x3B, 0x42, 0x52);
         nord.listHoverBg = QColor(0x3B, 0x42, 0x52); nord.listSelectedBg = QColor(0x43, 0x4C, 0x5E); nord.listSelectedFg = QColor(0xEC, 0xEF, 0xF4);
@@ -189,6 +193,7 @@ QList<ThemeDefinition> createThemes()
         monokai.buttonBg = QColor(0x3E, 0x3D, 0x32); monokai.buttonBorder = QColor(0x5B, 0x5A, 0x4A); // 选区色系
         monokai.buttonHoverBg = QColor(0x4A, 0x49, 0x3C); monokai.buttonHoverBorder = QColor(0x6E, 0x6D, 0x5B);
         monokai.buttonPressedBg = QColor(0x34, 0x33, 0x2A);
+        monokai.buttonDisabledBg = QColor(0x2A, 0x2A, 0x22); monokai.buttonDisabledBorder = QColor(0x34, 0x33, 0x2A); monokai.buttonDisabledFg = QColor(0x5C, 0x5B, 0x4C);
         monokai.toolCheckedBg = QColor(0x46, 0x50, 0x2C); monokai.toolCheckedBorder = QColor(0x98, 0xCB, 0x00); // 绿系选中
         monokai.listBg = QColor(0x31, 0x30, 0x2A); monokai.listAltBg = QColor(0x2A, 0x2B, 0x24); monokai.listBorder = QColor(0x3E, 0x3D, 0x32);
         monokai.listHoverBg = QColor(0x38, 0x38, 0x30); monokai.listSelectedBg = QColor(0x49, 0x48, 0x3E); monokai.listSelectedFg = QColor(0xF8, 0xF8, 0xF2);
@@ -226,6 +231,7 @@ QList<ThemeDefinition> createThemes()
         oneDark.buttonBg = QColor(0x2C, 0x31, 0x3A); oneDark.buttonBorder = QColor(0x3E, 0x44, 0x51);
         oneDark.buttonHoverBg = QColor(0x35, 0x3B, 0x45); oneDark.buttonHoverBorder = QColor(0x4A, 0x52, 0x61);
         oneDark.buttonPressedBg = QColor(0x26, 0x2A, 0x31);
+        oneDark.buttonDisabledBg = QColor(0x21, 0x25, 0x2B); oneDark.buttonDisabledBorder = QColor(0x26, 0x2A, 0x31); oneDark.buttonDisabledFg = QColor(0x56, 0x5E, 0x6B);
         oneDark.toolCheckedBg = QColor(0x2C, 0x52, 0x82); oneDark.toolCheckedBorder = QColor(0x3E, 0x6F, 0xA8); // 蓝系选中
         oneDark.listBg = QColor(0x26, 0x2B, 0x33); oneDark.listAltBg = QColor(0x21, 0x25, 0x2B); oneDark.listBorder = QColor(0x2C, 0x31, 0x3A);
         oneDark.listHoverBg = QColor(0x28, 0x2C, 0x34); oneDark.listSelectedBg = QColor(0x3E, 0x44, 0x51); oneDark.listSelectedFg = QColor(0xDC, 0xDF, 0xE4);
@@ -263,6 +269,7 @@ QList<ThemeDefinition> createThemes()
         solDark.buttonBg = QColor(0x07, 0x36, 0x42); solDark.buttonBorder = QColor(0x58, 0x6E, 0x75); // base02 + base01
         solDark.buttonHoverBg = QColor(0x0B, 0x45, 0x54); solDark.buttonHoverBorder = QColor(0x6C, 0x84, 0x94);
         solDark.buttonPressedBg = QColor(0x05, 0x2B, 0x34);
+        solDark.buttonDisabledBg = QColor(0x04, 0x26, 0x30); solDark.buttonDisabledBorder = QColor(0x0A, 0x40, 0x50); solDark.buttonDisabledFg = QColor(0x4E, 0x65, 0x70); // base02 再暗一档
         solDark.toolCheckedBg = QColor(0x0E, 0x45, 0x54); solDark.toolCheckedBorder = QColor(0x26, 0x8B, 0xD2); // Solarized blue
         solDark.listBg = QColor(0x0A, 0x34, 0x40); solDark.listAltBg = QColor(0x07, 0x36, 0x42); solDark.listBorder = QColor(0x0E, 0x45, 0x54);
         solDark.listHoverBg = QColor(0x0B, 0x45, 0x54); solDark.listSelectedBg = QColor(0x0E, 0x45, 0x54); solDark.listSelectedFg = QColor(0xEE, 0xE8, 0xD5);
@@ -300,6 +307,7 @@ QList<ThemeDefinition> createThemes()
         solLight.buttonBg = QColor(0xFD, 0xF6, 0xE3); solLight.buttonBorder = QColor(0xD3, 0xCC, 0xB8);
         solLight.buttonHoverBg = QColor(0xF5, 0xEF, 0xDC); solLight.buttonHoverBorder = QColor(0xB8, 0xB0, 0x9A);
         solLight.buttonPressedBg = QColor(0xED, 0xE6, 0xD0);
+        solLight.buttonDisabledBg = QColor(0xF5, 0xEF, 0xDC); solLight.buttonDisabledBorder = QColor(0xE3, 0xDC, 0xC6); solLight.buttonDisabledFg = QColor(0x93, 0xA1, 0xA1); // base0 灰文字
         solLight.toolCheckedBg = QColor(0xDC, 0xD9, 0xC8); solLight.toolCheckedBorder = QColor(0x26, 0x8B, 0xD2); // 米色底 + blue 边
         solLight.listBg = QColor(0xF7, 0xF1, 0xDF); solLight.listAltBg = QColor(0xEE, 0xE8, 0xD5); solLight.listBorder = QColor(0xD3, 0xCC, 0xB8);
         solLight.listHoverBg = QColor(0xEF, 0xE9, 0xD6); solLight.listSelectedBg = QColor(0xDC, 0xD9, 0xC8); solLight.listSelectedFg = QColor(0x58, 0x6E, 0x75);
@@ -339,6 +347,7 @@ QList<ThemeDefinition> createThemes()
         termius.buttonBg = QColor(0x1E, 0x25, 0x40); termius.buttonBorder = QColor(0x32, 0x3B, 0x5E); // 与输入框同源
         termius.buttonHoverBg = QColor(0x28, 0x32, 0x5A); termius.buttonHoverBorder = QColor(0x46, 0x53, 0x8A);
         termius.buttonPressedBg = QColor(0x17, 0x1E, 0x36);
+        termius.buttonDisabledBg = QColor(0x16, 0x1C, 0x31); termius.buttonDisabledBorder = QColor(0x23, 0x2B, 0x47); termius.buttonDisabledFg = QColor(0x4A, 0x58, 0x78); // 夜航蓝灰
         termius.toolCheckedBg = QColor(0x16, 0x32, 0x4E); termius.toolCheckedBorder = QColor(0x1F, 0x8E, 0xF2); // Termius 蓝选中
         termius.listBg = QColor(0x1D, 0x24, 0x39); termius.listAltBg = QColor(0x1A, 0x20, 0x36); termius.listBorder = QColor(0x2A, 0x31, 0x52);
         termius.listHoverBg = QColor(0x23, 0x2B, 0x4A); termius.listSelectedBg = QColor(0x16, 0x32, 0x4E); termius.listSelectedFg = QColor(0xDC, 0xE4, 0xF5);
@@ -376,6 +385,7 @@ QList<ThemeDefinition> createThemes()
         flexokiDark.buttonBg = QColor(0x26, 0x25, 0x24); flexokiDark.buttonBorder = QColor(0x40, 0x3E, 0x3D);
         flexokiDark.buttonHoverBg = QColor(0x36, 0x35, 0x34); flexokiDark.buttonHoverBorder = QColor(0x57, 0x55, 0x50);
         flexokiDark.buttonPressedBg = QColor(0x1C, 0x1B, 0x1A);
+        flexokiDark.buttonDisabledBg = QColor(0x1C, 0x1B, 0x1A); flexokiDark.buttonDisabledBorder = QColor(0x26, 0x25, 0x24); flexokiDark.buttonDisabledFg = QColor(0x6F, 0x6B, 0x64);
         flexokiDark.toolCheckedBg = QColor(0x36, 0x35, 0x34); flexokiDark.toolCheckedBorder = QColor(0xDA, 0x70, 0x2C);
         flexokiDark.listBg = QColor(0x1C, 0x1B, 0x1A); flexokiDark.listAltBg = QColor(0x26, 0x25, 0x24); flexokiDark.listBorder = QColor(0x36, 0x35, 0x34);
         flexokiDark.listHoverBg = QColor(0x26, 0x25, 0x24); flexokiDark.listSelectedBg = QColor(0x36, 0x35, 0x34); flexokiDark.listSelectedFg = QColor(0xFF, 0xFC, 0xF0);
@@ -413,6 +423,7 @@ QList<ThemeDefinition> createThemes()
         flexokiLight.buttonBg = QColor(0xF2, 0xF0, 0xE5); flexokiLight.buttonBorder = QColor(0xB9, 0xB7, 0xA8);
         flexokiLight.buttonHoverBg = QColor(0xE6, 0xE4, 0xD9); flexokiLight.buttonHoverBorder = QColor(0x87, 0x84, 0x7F);
         flexokiLight.buttonPressedBg = QColor(0xCE, 0xCE, 0xC4);
+        flexokiLight.buttonDisabledBg = QColor(0xE6, 0xE4, 0xD9); flexokiLight.buttonDisabledBorder = QColor(0xD8, 0xD5, 0xC4); flexokiLight.buttonDisabledFg = QColor(0xA1, 0x9E, 0x94);
         flexokiLight.toolCheckedBg = QColor(0xE6, 0xE4, 0xD9); flexokiLight.toolCheckedBorder = QColor(0xDA, 0x70, 0x2C);
         flexokiLight.listBg = QColor(0xF2, 0xF0, 0xE5); flexokiLight.listAltBg = QColor(0xE6, 0xE4, 0xD9); flexokiLight.listBorder = QColor(0xE6, 0xE4, 0xD9);
         flexokiLight.listHoverBg = QColor(0xE6, 0xE4, 0xD9); flexokiLight.listSelectedBg = QColor(0xE6, 0xE4, 0xD9); flexokiLight.listSelectedFg = QColor(0x10, 0x00, 0x00);
@@ -450,6 +461,7 @@ QList<ThemeDefinition> createThemes()
         kanagawaWave.buttonBg = QColor(0x26, 0x26, 0x33); kanagawaWave.buttonBorder = QColor(0x36, 0x36, 0x49);
         kanagawaWave.buttonHoverBg = QColor(0x2E, 0x2E, 0x3C); kanagawaWave.buttonHoverBorder = QColor(0x4A, 0x4A, 0x5F);
         kanagawaWave.buttonPressedBg = QColor(0x1A, 0x1A, 0x26);
+        kanagawaWave.buttonDisabledBg = QColor(0x1A, 0x1A, 0x26); kanagawaWave.buttonDisabledBorder = QColor(0x22, 0x22, 0x2E); kanagawaWave.buttonDisabledFg = QColor(0x54, 0x54, 0x62); // sumiInk4 灰
         kanagawaWave.toolCheckedBg = QColor(0x2D, 0x4F, 0x67); kanagawaWave.toolCheckedBorder = QColor(0x7E, 0x9C, 0xD8);
         kanagawaWave.listBg = QColor(0x1A, 0x1A, 0x26); kanagawaWave.listAltBg = QColor(0x23, 0x23, 0x2E); kanagawaWave.listBorder = QColor(0x2A, 0x2A, 0x37);
         kanagawaWave.listHoverBg = QColor(0x2A, 0x2A, 0x37); kanagawaWave.listSelectedBg = QColor(0x2D, 0x4F, 0x67); kanagawaWave.listSelectedFg = QColor(0xDC, 0xD7, 0xBA);
@@ -487,6 +499,7 @@ QList<ThemeDefinition> createThemes()
         kanagawaDragon.buttonBg = QColor(0x26, 0x25, 0x25); kanagawaDragon.buttonBorder = QColor(0x38, 0x36, 0x36);
         kanagawaDragon.buttonHoverBg = QColor(0x30, 0x2E, 0x2E); kanagawaDragon.buttonHoverBorder = QColor(0x4A, 0x48, 0x48);
         kanagawaDragon.buttonPressedBg = QColor(0x1C, 0x1A, 0x1A);
+        kanagawaDragon.buttonDisabledBg = QColor(0x1C, 0x1A, 0x1A); kanagawaDragon.buttonDisabledBorder = QColor(0x29, 0x26, 0x26); kanagawaDragon.buttonDisabledFg = QColor(0x6B, 0x66, 0x60);
         kanagawaDragon.toolCheckedBg = QColor(0x2C, 0x2E, 0x33); kanagawaDragon.toolCheckedBorder = QColor(0x8B, 0xA4, 0xC0);
         kanagawaDragon.listBg = QColor(0x1C, 0x1A, 0x1A); kanagawaDragon.listAltBg = QColor(0x23, 0x21, 0x21); kanagawaDragon.listBorder = QColor(0x2B, 0x29, 0x29);
         kanagawaDragon.listHoverBg = QColor(0x2B, 0x29, 0x29); kanagawaDragon.listSelectedBg = QColor(0x2C, 0x2E, 0x33); kanagawaDragon.listSelectedFg = QColor(0xDC, 0xD7, 0xBA);
@@ -524,6 +537,7 @@ QList<ThemeDefinition> createThemes()
         kanagawaLotus.buttonBg = QColor(0xE9, 0xE3, 0xC8); kanagawaLotus.buttonBorder = QColor(0xC5, 0xBF, 0xA0);
         kanagawaLotus.buttonHoverBg = QColor(0xE0, 0xDA, 0xB8); kanagawaLotus.buttonHoverBorder = QColor(0xA8, 0xA2, 0x82);
         kanagawaLotus.buttonPressedBg = QColor(0xD8, 0xD2, 0xB4);
+        kanagawaLotus.buttonDisabledBg = QColor(0xE0, 0xDA, 0xC0); kanagawaLotus.buttonDisabledBorder = QColor(0xD3, 0xCC, 0xB0); kanagawaLotus.buttonDisabledFg = QColor(0x95, 0x93, 0x7E); // lotusGray
         kanagawaLotus.toolCheckedBg = QColor(0xD8, 0xD2, 0xB4); kanagawaLotus.toolCheckedBorder = QColor(0x62, 0x4C, 0x83);
         kanagawaLotus.listBg = QColor(0xEC, 0xE6, 0xCC); kanagawaLotus.listAltBg = QColor(0xE7, 0xE1, 0xC2); kanagawaLotus.listBorder = QColor(0xD8, 0xD2, 0xB4);
         kanagawaLotus.listHoverBg = QColor(0xE7, 0xE1, 0xC2); kanagawaLotus.listSelectedBg = QColor(0xD8, 0xD2, 0xB4); kanagawaLotus.listSelectedFg = QColor(0x1F, 0x1F, 0x28);
@@ -561,6 +575,7 @@ QList<ThemeDefinition> createThemes()
         hackerBlue.buttonBg = QColor(0x0A, 0x22, 0x33); hackerBlue.buttonBorder = QColor(0x14, 0x41, 0x5C);
         hackerBlue.buttonHoverBg = QColor(0x12, 0x30, 0x46); hackerBlue.buttonHoverBorder = QColor(0x1E, 0x56, 0x78);
         hackerBlue.buttonPressedBg = QColor(0x05, 0x1A, 0x26);
+        hackerBlue.buttonDisabledBg = QColor(0x05, 0x17, 0x22); hackerBlue.buttonDisabledBorder = QColor(0x0A, 0x2A, 0x3A); hackerBlue.buttonDisabledFg = QColor(0x2E, 0x5A, 0x78);
         hackerBlue.toolCheckedBg = QColor(0x0D, 0x3D, 0x66); hackerBlue.toolCheckedBorder = QColor(0x2C, 0xA5, 0xFF);
         hackerBlue.listBg = QColor(0x05, 0x1A, 0x26); hackerBlue.listAltBg = QColor(0x0A, 0x22, 0x33); hackerBlue.listBorder = QColor(0x0E, 0x2E, 0x42);
         hackerBlue.listHoverBg = QColor(0x0E, 0x2E, 0x42); hackerBlue.listSelectedBg = QColor(0x0D, 0x3D, 0x66); hackerBlue.listSelectedFg = QColor(0xDC, 0xEE, 0xFC);
@@ -598,6 +613,7 @@ QList<ThemeDefinition> createThemes()
         hackerGreen.buttonBg = QColor(0x0A, 0x24, 0x12); hackerGreen.buttonBorder = QColor(0x1B, 0x52, 0x30);
         hackerGreen.buttonHoverBg = QColor(0x11, 0x33, 0x1E); hackerGreen.buttonHoverBorder = QColor(0x25, 0x66, 0x3C);
         hackerGreen.buttonPressedBg = QColor(0x06, 0x18, 0x0D);
+        hackerGreen.buttonDisabledBg = QColor(0x04, 0x18, 0x09); hackerGreen.buttonDisabledBorder = QColor(0x0C, 0x30, 0x18); hackerGreen.buttonDisabledFg = QColor(0x2E, 0x6B, 0x45);
         hackerGreen.toolCheckedBg = QColor(0x0B, 0x4A, 0x20); hackerGreen.toolCheckedBorder = QColor(0x00, 0xE6, 0x3D);
         hackerGreen.listBg = QColor(0x06, 0x18, 0x0D); hackerGreen.listAltBg = QColor(0x0A, 0x24, 0x12); hackerGreen.listBorder = QColor(0x12, 0x3B, 0x1E);
         hackerGreen.listHoverBg = QColor(0x12, 0x3B, 0x1E); hackerGreen.listSelectedBg = QColor(0x0B, 0x4A, 0x20); hackerGreen.listSelectedFg = QColor(0xDC, 0xF5, 0xE2);
@@ -635,6 +651,7 @@ QList<ThemeDefinition> createThemes()
         hackerRed.buttonBg = QColor(0x24, 0x0F, 0x0F); hackerRed.buttonBorder = QColor(0x43, 0x1C, 0x1C);
         hackerRed.buttonHoverBg = QColor(0x33, 0x16, 0x16); hackerRed.buttonHoverBorder = QColor(0x55, 0x25, 0x25);
         hackerRed.buttonPressedBg = QColor(0x1A, 0x0A, 0x0A);
+        hackerRed.buttonDisabledBg = QColor(0x14, 0x08, 0x08); hackerRed.buttonDisabledBorder = QColor(0x26, 0x12, 0x12); hackerRed.buttonDisabledFg = QColor(0x6B, 0x35, 0x35);
         hackerRed.toolCheckedBg = QColor(0x52, 0x14, 0x14); hackerRed.toolCheckedBorder = QColor(0xFF, 0x57, 0x57);
         hackerRed.listBg = QColor(0x1A, 0x0A, 0x0A); hackerRed.listAltBg = QColor(0x24, 0x0F, 0x0F); hackerRed.listBorder = QColor(0x33, 0x16, 0x16);
         hackerRed.listHoverBg = QColor(0x33, 0x16, 0x16); hackerRed.listSelectedBg = QColor(0x52, 0x14, 0x14); hackerRed.listSelectedFg = QColor(0xFF, 0xE2, 0xE2);
@@ -672,6 +689,7 @@ QList<ThemeDefinition> createThemes()
         everforestDark.buttonBg = QColor(0x3D, 0x48, 0x4D); everforestDark.buttonBorder = QColor(0x47, 0x52, 0x58);
         everforestDark.buttonHoverBg = QColor(0x47, 0x52, 0x58); everforestDark.buttonHoverBorder = QColor(0x59, 0x66, 0x68);
         everforestDark.buttonPressedBg = QColor(0x34, 0x3F, 0x44);
+        everforestDark.buttonDisabledBg = QColor(0x2E, 0x39, 0x3E); everforestDark.buttonDisabledBorder = QColor(0x38, 0x43, 0x48); everforestDark.buttonDisabledFg = QColor(0x6B, 0x7A, 0x70);
         everforestDark.toolCheckedBg = QColor(0x44, 0x53, 0x3E); everforestDark.toolCheckedBorder = QColor(0xA7, 0xC0, 0x80);
         everforestDark.listBg = QColor(0x34, 0x3F, 0x44); everforestDark.listAltBg = QColor(0x3D, 0x48, 0x4D); everforestDark.listBorder = QColor(0x47, 0x52, 0x58);
         everforestDark.listHoverBg = QColor(0x3D, 0x48, 0x4D); everforestDark.listSelectedBg = QColor(0x44, 0x53, 0x3E); everforestDark.listSelectedFg = QColor(0xE6, 0xE2, 0xCC);
@@ -709,6 +727,7 @@ QList<ThemeDefinition> createThemes()
         everforestLight.buttonBg = QColor(0xF0, 0xEA, 0xD6); everforestLight.buttonBorder = QColor(0xC8, 0xBF, 0xA8);
         everforestLight.buttonHoverBg = QColor(0xE8, 0xDF, 0xCB); everforestLight.buttonHoverBorder = QColor(0xA8, 0x9E, 0x84);
         everforestLight.buttonPressedBg = QColor(0xDC, 0xD3, 0xBE);
+        everforestLight.buttonDisabledBg = QColor(0xE8, 0xE0, 0xCC); everforestLight.buttonDisabledBorder = QColor(0xDA, 0xD0, 0xBA); everforestLight.buttonDisabledFg = QColor(0x93, 0x98, 0x8C);
         everforestLight.toolCheckedBg = QColor(0xE0, 0xE2, 0xC6); everforestLight.toolCheckedBorder = QColor(0x78, 0x89, 0x3B);
         everforestLight.listBg = QColor(0xF0, 0xEA, 0xD6); everforestLight.listAltBg = QColor(0xE8, 0xE0, 0xCC); everforestLight.listBorder = QColor(0xDC, 0xD3, 0xBE);
         everforestLight.listHoverBg = QColor(0xE8, 0xDF, 0xCB); everforestLight.listSelectedBg = QColor(0xE0, 0xE2, 0xC6); everforestLight.listSelectedFg = QColor(0x41, 0x4B, 0x46);
@@ -746,6 +765,7 @@ QList<ThemeDefinition> createThemes()
         nightOwl.buttonBg = QColor(0x0B, 0x29, 0x42); nightOwl.buttonBorder = QColor(0x1D, 0x3B, 0x53);
         nightOwl.buttonHoverBg = QColor(0x12, 0x35, 0x54); nightOwl.buttonHoverBorder = QColor(0x2B, 0x4E, 0x70);
         nightOwl.buttonPressedBg = QColor(0x0B, 0x29, 0x42);
+        nightOwl.buttonDisabledBg = QColor(0x07, 0x20, 0x36); nightOwl.buttonDisabledBorder = QColor(0x11, 0x30, 0x4D); nightOwl.buttonDisabledFg = QColor(0x4C, 0x6B, 0x8C);
         nightOwl.toolCheckedBg = QColor(0x1D, 0x3B, 0x53); nightOwl.toolCheckedBorder = QColor(0x82, 0xAA, 0xFF);
         nightOwl.listBg = QColor(0x0B, 0x29, 0x42); nightOwl.listAltBg = QColor(0x0E, 0x2F, 0x4C); nightOwl.listBorder = QColor(0x1D, 0x3B, 0x53);
         nightOwl.listHoverBg = QColor(0x12, 0x35, 0x54); nightOwl.listSelectedBg = QColor(0x1D, 0x3B, 0x53); nightOwl.listSelectedFg = QColor(0xE3, 0xEA, 0xF5);
@@ -783,6 +803,7 @@ QList<ThemeDefinition> createThemes()
         lightOwl.buttonBg = QColor(0xF1, 0xF2, 0xF5); lightOwl.buttonBorder = QColor(0xC9, 0xD2, 0xDE);
         lightOwl.buttonHoverBg = QColor(0xE7, 0xEA, 0xF0); lightOwl.buttonHoverBorder = QColor(0xA9, 0xB5, 0xC4);
         lightOwl.buttonPressedBg = QColor(0xDE, 0xE3, 0xEA);
+        lightOwl.buttonDisabledBg = QColor(0xE9, 0xEB, 0xEF); lightOwl.buttonDisabledBorder = QColor(0xDB, 0xE0, 0xE7); lightOwl.buttonDisabledFg = QColor(0xA5, 0xB0, 0xBF);
         lightOwl.toolCheckedBg = QColor(0xDB, 0xE7, 0xF5); lightOwl.toolCheckedBorder = QColor(0x2A, 0x63, 0xF6);
         lightOwl.listBg = QColor(0xF1, 0xF2, 0xF5); lightOwl.listAltBg = QColor(0xEA, 0xEC, 0xEF); lightOwl.listBorder = QColor(0xE2, 0xE6, 0xEC);
         lightOwl.listHoverBg = QColor(0xE7, 0xEA, 0xF0); lightOwl.listSelectedBg = QColor(0xDB, 0xE7, 0xF5); lightOwl.listSelectedFg = QColor(0x2C, 0x3A, 0x54);
@@ -820,6 +841,7 @@ QList<ThemeDefinition> createThemes()
         aura.buttonBg = QColor(0x24, 0x22, 0x31); aura.buttonBorder = QColor(0x3B, 0x39, 0x50);
         aura.buttonHoverBg = QColor(0x2F, 0x2C, 0x40); aura.buttonHoverBorder = QColor(0x4F, 0x4B, 0x6C);
         aura.buttonPressedBg = QColor(0x1C, 0x1B, 0x24);
+        aura.buttonDisabledBg = QColor(0x1C, 0x1B, 0x24); aura.buttonDisabledBorder = QColor(0x27, 0x25, 0x35); aura.buttonDisabledFg = QColor(0x55, 0x51, 0x6A); // 灰紫
         aura.toolCheckedBg = QColor(0x30, 0x2E, 0x46); aura.toolCheckedBorder = QColor(0xA2, 0x77, 0xFF);
         aura.listBg = QColor(0x1C, 0x1B, 0x24); aura.listAltBg = QColor(0x24, 0x22, 0x31); aura.listBorder = QColor(0x2E, 0x2C, 0x3C);
         aura.listHoverBg = QColor(0x2F, 0x2C, 0x40); aura.listSelectedBg = QColor(0x30, 0x2E, 0x46); aura.listSelectedFg = QColor(0xE7, 0xE3, 0xF5);
@@ -857,6 +879,7 @@ QList<ThemeDefinition> createThemes()
         rosePine.buttonBg = QColor(0x26, 0x23, 0x3A); rosePine.buttonBorder = QColor(0x40, 0x3D, 0x58);
         rosePine.buttonHoverBg = QColor(0x30, 0x2C, 0x46); rosePine.buttonHoverBorder = QColor(0x51, 0x4C, 0x69);
         rosePine.buttonPressedBg = QColor(0x1F, 0x1D, 0x2E);
+        rosePine.buttonDisabledBg = QColor(0x1F, 0x1D, 0x2E); rosePine.buttonDisabledBorder = QColor(0x2A, 0x27, 0x40); rosePine.buttonDisabledFg = QColor(0x6E, 0x6A, 0x86); // muted
         rosePine.toolCheckedBg = QColor(0x40, 0x3D, 0x58); rosePine.toolCheckedBorder = QColor(0xC4, 0xA7, 0xE7);
         rosePine.listBg = QColor(0x1F, 0x1D, 0x2E); rosePine.listAltBg = QColor(0x26, 0x23, 0x3A); rosePine.listBorder = QColor(0x31, 0x2F, 0x44);
         rosePine.listHoverBg = QColor(0x30, 0x2C, 0x46); rosePine.listSelectedBg = QColor(0x40, 0x3D, 0x58); rosePine.listSelectedFg = QColor(0xE0, 0xDE, 0xF4);
@@ -894,6 +917,7 @@ QList<ThemeDefinition> createThemes()
         rosePineMoon.buttonBg = QColor(0x2D, 0x27, 0x46); rosePineMoon.buttonBorder = QColor(0x43, 0x39, 0x69);
         rosePineMoon.buttonHoverBg = QColor(0x3B, 0x34, 0x59); rosePineMoon.buttonHoverBorder = QColor(0x57, 0x4C, 0x7C);
         rosePineMoon.buttonPressedBg = QColor(0x2A, 0x25, 0x44);
+        rosePineMoon.buttonDisabledBg = QColor(0x26, 0x21, 0x3D); rosePineMoon.buttonDisabledBorder = QColor(0x33, 0x2E, 0x52); rosePineMoon.buttonDisabledFg = QColor(0x6E, 0x6A, 0x8E);
         rosePineMoon.toolCheckedBg = QColor(0x43, 0x39, 0x69); rosePineMoon.toolCheckedBorder = QColor(0xC4, 0xA7, 0xE7);
         rosePineMoon.listBg = QColor(0x2A, 0x25, 0x44); rosePineMoon.listAltBg = QColor(0x2D, 0x27, 0x46); rosePineMoon.listBorder = QColor(0x3B, 0x34, 0x59);
         rosePineMoon.listHoverBg = QColor(0x3B, 0x34, 0x59); rosePineMoon.listSelectedBg = QColor(0x43, 0x39, 0x69); rosePineMoon.listSelectedFg = QColor(0xE0, 0xDE, 0xF4);
@@ -931,6 +955,7 @@ QList<ThemeDefinition> createThemes()
         rosePineDawn.buttonBg = QColor(0xEF, 0xE7, 0xDC); rosePineDawn.buttonBorder = QColor(0xD8, 0xCC, 0xC0);
         rosePineDawn.buttonHoverBg = QColor(0xE8, 0xDD, 0xD3); rosePineDawn.buttonHoverBorder = QColor(0xB8, 0xAA, 0x9C);
         rosePineDawn.buttonPressedBg = QColor(0xE4, 0xD9, 0xCF);
+        rosePineDawn.buttonDisabledBg = QColor(0xE8, 0xDD, 0xD3); rosePineDawn.buttonDisabledBorder = QColor(0xD4, 0xC8, 0xBC); rosePineDawn.buttonDisabledFg = QColor(0x98, 0x93, 0xA5); // muted
         rosePineDawn.toolCheckedBg = QColor(0xE4, 0xD9, 0xCF); rosePineDawn.toolCheckedBorder = QColor(0x90, 0x7A, 0xA9);
         rosePineDawn.listBg = QColor(0xF4, 0xED, 0xE4); rosePineDawn.listAltBg = QColor(0xEF, 0xE7, 0xDC); rosePineDawn.listBorder = QColor(0xE8, 0xDD, 0xD3);
         rosePineDawn.listHoverBg = QColor(0xE8, 0xDD, 0xD3); rosePineDawn.listSelectedBg = QColor(0xE4, 0xD9, 0xCF); rosePineDawn.listSelectedFg = QColor(0x57, 0x52, 0x79);
@@ -968,6 +993,7 @@ QList<ThemeDefinition> createThemes()
         cobalt2.buttonBg = QColor(0x1B, 0x3E, 0x54); cobalt2.buttonBorder = QColor(0x2C, 0x6E, 0x92);
         cobalt2.buttonHoverBg = QColor(0x24, 0x4D, 0x68); cobalt2.buttonHoverBorder = QColor(0x3E, 0x8A, 0xB2);
         cobalt2.buttonPressedBg = QColor(0x14, 0x2E, 0x40);
+        cobalt2.buttonDisabledBg = QColor(0x12, 0x30, 0x3F); cobalt2.buttonDisabledBorder = QColor(0x1A, 0x3D, 0x52); cobalt2.buttonDisabledFg = QColor(0x46, 0x68, 0x7F);
         cobalt2.toolCheckedBg = QColor(0x1F, 0x46, 0x62); cobalt2.toolCheckedBorder = QColor(0xFF, 0xC6, 0x00);
         cobalt2.listBg = QColor(0x14, 0x2E, 0x40); cobalt2.listAltBg = QColor(0x1B, 0x3E, 0x54); cobalt2.listBorder = QColor(0x2C, 0x6E, 0x92);
         cobalt2.listHoverBg = QColor(0x24, 0x4D, 0x68); cobalt2.listSelectedBg = QColor(0x1F, 0x46, 0x62); cobalt2.listSelectedFg = QColor(0xE8, 0xF2, 0xF8);
@@ -1005,6 +1031,7 @@ QList<ThemeDefinition> createThemes()
         octocatDark.buttonBg = QColor(0x21, 0x27, 0x2E); octocatDark.buttonBorder = QColor(0x37, 0x3E, 0x46);
         octocatDark.buttonHoverBg = QColor(0x2B, 0x31, 0x39); octocatDark.buttonHoverBorder = QColor(0x48, 0x50, 0x59);
         octocatDark.buttonPressedBg = QColor(0x16, 0x1B, 0x22);
+        octocatDark.buttonDisabledBg = QColor(0x16, 0x1B, 0x22); octocatDark.buttonDisabledBorder = QColor(0x26, 0x2C, 0x34); octocatDark.buttonDisabledFg = QColor(0x6E, 0x76, 0x81); // GitHub muted 灰
         octocatDark.toolCheckedBg = QColor(0x2A, 0x4F, 0x6E); octocatDark.toolCheckedBorder = QColor(0x58, 0xA6, 0xFF);
         octocatDark.listBg = QColor(0x16, 0x1B, 0x22); octocatDark.listAltBg = QColor(0x1B, 0x21, 0x29); octocatDark.listBorder = QColor(0x30, 0x36, 0x3D);
         octocatDark.listHoverBg = QColor(0x2B, 0x31, 0x39); octocatDark.listSelectedBg = QColor(0x2A, 0x4F, 0x6E); octocatDark.listSelectedFg = QColor(0xE6, 0xED, 0xF3);
@@ -1042,6 +1069,7 @@ QList<ThemeDefinition> createThemes()
         octocatLight.buttonBg = QColor(0xF6, 0xF8, 0xFA); octocatLight.buttonBorder = QColor(0xD0, 0xD7, 0xDE);
         octocatLight.buttonHoverBg = QColor(0xEC, 0xEF, 0xF3); octocatLight.buttonHoverBorder = QColor(0xAF, 0xB8, 0xC4);
         octocatLight.buttonPressedBg = QColor(0xE4, 0xE8, 0xEC);
+        octocatLight.buttonDisabledBg = QColor(0xEC, 0xEF, 0xF3); octocatLight.buttonDisabledBorder = QColor(0xD5, 0xDC, 0xE4); octocatLight.buttonDisabledFg = QColor(0x8C, 0x95, 0x9F);
         octocatLight.toolCheckedBg = QColor(0xDD, 0xE9, 0xF9); octocatLight.toolCheckedBorder = QColor(0x09, 0x69, 0xDA);
         octocatLight.listBg = QColor(0xF6, 0xF8, 0xFA); octocatLight.listAltBg = QColor(0xEF, 0xF1, 0xF4); octocatLight.listBorder = QColor(0xD0, 0xD7, 0xDE);
         octocatLight.listHoverBg = QColor(0xEC, 0xEF, 0xF3); octocatLight.listSelectedBg = QColor(0xDD, 0xE9, 0xF9); octocatLight.listSelectedFg = QColor(0x1B, 0x1F, 0x24);
@@ -1079,6 +1107,7 @@ QList<ThemeDefinition> createThemes()
         ayuDark.buttonBg = QColor(0x13, 0x17, 0x21); ayuDark.buttonBorder = QColor(0x2D, 0x36, 0x43);
         ayuDark.buttonHoverBg = QColor(0x1D, 0x24, 0x30); ayuDark.buttonHoverBorder = QColor(0x3E, 0x48, 0x56);
         ayuDark.buttonPressedBg = QColor(0x11, 0x15, 0x1C);
+        ayuDark.buttonDisabledBg = QColor(0x0F, 0x13, 0x1A); ayuDark.buttonDisabledBorder = QColor(0x1B, 0x22, 0x30); ayuDark.buttonDisabledFg = QColor(0x4E, 0x55, 0x61);
         ayuDark.toolCheckedBg = QColor(0x1E, 0x4B, 0x57); ayuDark.toolCheckedBorder = QColor(0xFF, 0xB4, 0x54);
         ayuDark.listBg = QColor(0x11, 0x15, 0x1C); ayuDark.listAltBg = QColor(0x16, 0x1B, 0x24); ayuDark.listBorder = QColor(0x1E, 0x26, 0x33);
         ayuDark.listHoverBg = QColor(0x1D, 0x24, 0x30); ayuDark.listSelectedBg = QColor(0x1E, 0x4B, 0x57); ayuDark.listSelectedFg = QColor(0xE6, 0xE4, 0xD6);
@@ -1116,6 +1145,7 @@ QList<ThemeDefinition> createThemes()
         ayuLight.buttonBg = QColor(0xF1, 0xF2, 0xF3); ayuLight.buttonBorder = QColor(0xD9, 0xDD, 0xE1);
         ayuLight.buttonHoverBg = QColor(0xE8, 0xEA, 0xEC); ayuLight.buttonHoverBorder = QColor(0xB5, 0xBC, 0xC4);
         ayuLight.buttonPressedBg = QColor(0xE0, 0xE2, 0xE5);
+        ayuLight.buttonDisabledBg = QColor(0xE8, 0xEA, 0xEC); ayuLight.buttonDisabledBorder = QColor(0xD2, 0xD6, 0xDB); ayuLight.buttonDisabledFg = QColor(0xA2, 0xA9, 0xB0);
         ayuLight.toolCheckedBg = QColor(0xEB, 0xE2, 0xAE); ayuLight.toolCheckedBorder = QColor(0xFA, 0x8D, 0x3E);
         ayuLight.listBg = QColor(0xF1, 0xF2, 0xF3); ayuLight.listAltBg = QColor(0xED, 0xEE, 0xEF); ayuLight.listBorder = QColor(0xE4, 0xE6, 0xE9);
         ayuLight.listHoverBg = QColor(0xE8, 0xEA, 0xEC); ayuLight.listSelectedBg = QColor(0xEB, 0xE2, 0xAE); ayuLight.listSelectedFg = QColor(0x4A, 0x50, 0x56);
@@ -1153,6 +1183,7 @@ QList<ThemeDefinition> createThemes()
         cyberpunk.buttonBg = QColor(0x22, 0x2C, 0x56); cyberpunk.buttonBorder = QColor(0x34, 0x40, 0x7A);
         cyberpunk.buttonHoverBg = QColor(0x2B, 0x36, 0x68); cyberpunk.buttonHoverBorder = QColor(0x44, 0x50, 0x92);
         cyberpunk.buttonPressedBg = QColor(0x1C, 0x23, 0x44);
+        cyberpunk.buttonDisabledBg = QColor(0x17, 0x1C, 0x38); cyberpunk.buttonDisabledBorder = QColor(0x20, 0x28, 0x48); cyberpunk.buttonDisabledFg = QColor(0x4A, 0x55, 0x7E);
         cyberpunk.toolCheckedBg = QColor(0x2F, 0x3D, 0x74); cyberpunk.toolCheckedBorder = QColor(0x00, 0xE0, 0xE0);
         cyberpunk.listBg = QColor(0x1C, 0x23, 0x44); cyberpunk.listAltBg = QColor(0x22, 0x2C, 0x56); cyberpunk.listBorder = QColor(0x2C, 0x36, 0x66);
         cyberpunk.listHoverBg = QColor(0x2B, 0x36, 0x68); cyberpunk.listSelectedBg = QColor(0x2F, 0x3D, 0x74); cyberpunk.listSelectedFg = QColor(0xE4, 0xE2, 0xF8);
@@ -1190,6 +1221,7 @@ QList<ThemeDefinition> createThemes()
         cyberpunkScarlet.buttonBg = QColor(0x2E, 0x16, 0x22); cyberpunkScarlet.buttonBorder = QColor(0x4A, 0x23, 0x38);
         cyberpunkScarlet.buttonHoverBg = QColor(0x3D, 0x1E, 0x2D); cyberpunkScarlet.buttonHoverBorder = QColor(0x5D, 0x2E, 0x42);
         cyberpunkScarlet.buttonPressedBg = QColor(0x24, 0x12, 0x1B);
+        cyberpunkScarlet.buttonDisabledBg = QColor(0x1C, 0x0E, 0x16); cyberpunkScarlet.buttonDisabledBorder = QColor(0x2E, 0x16, 0x20); cyberpunkScarlet.buttonDisabledFg = QColor(0x6E, 0x3B, 0x4C);
         cyberpunkScarlet.toolCheckedBg = QColor(0x61, 0x1B, 0x2F); cyberpunkScarlet.toolCheckedBorder = QColor(0xFF, 0x2B, 0x5C);
         cyberpunkScarlet.listBg = QColor(0x24, 0x12, 0x1B); cyberpunkScarlet.listAltBg = QColor(0x2E, 0x16, 0x22); cyberpunkScarlet.listBorder = QColor(0x3F, 0x1E, 0x2F);
         cyberpunkScarlet.listHoverBg = QColor(0x3D, 0x1E, 0x2D); cyberpunkScarlet.listSelectedBg = QColor(0x61, 0x1B, 0x2F); cyberpunkScarlet.listSelectedFg = QColor(0xF8, 0xE4, 0xEC);
@@ -1227,6 +1259,7 @@ QList<ThemeDefinition> createThemes()
         romaniaNight.buttonBg = QColor(0x1B, 0x35, 0x47); romaniaNight.buttonBorder = QColor(0x2E, 0x55, 0x6C);
         romaniaNight.buttonHoverBg = QColor(0x24, 0x45, 0x5C); romaniaNight.buttonHoverBorder = QColor(0x3C, 0x67, 0x82);
         romaniaNight.buttonPressedBg = QColor(0x14, 0x2B, 0x3D);
+        romaniaNight.buttonDisabledBg = QColor(0x14, 0x2B, 0x3D); romaniaNight.buttonDisabledBorder = QColor(0x1E, 0x3A, 0x4E); romaniaNight.buttonDisabledFg = QColor(0x4A, 0x6B, 0x7E);
         romaniaNight.toolCheckedBg = QColor(0x27, 0x49, 0x60); romaniaNight.toolCheckedBorder = QColor(0x4B, 0x9C, 0xD9);
         romaniaNight.listBg = QColor(0x14, 0x2B, 0x3D); romaniaNight.listAltBg = QColor(0x1B, 0x35, 0x47); romaniaNight.listBorder = QColor(0x24, 0x45, 0x5C);
         romaniaNight.listHoverBg = QColor(0x24, 0x45, 0x5C); romaniaNight.listSelectedBg = QColor(0x27, 0x49, 0x60); romaniaNight.listSelectedFg = QColor(0xE2, 0xF1, 0xF8);
@@ -1264,6 +1297,7 @@ QList<ThemeDefinition> createThemes()
         romaniaDay.buttonBg = QColor(0xEB, 0xE6, 0xDA); romaniaDay.buttonBorder = QColor(0xC9, 0xC1, 0xAF);
         romaniaDay.buttonHoverBg = QColor(0xE0, 0xDA, 0xCA); romaniaDay.buttonHoverBorder = QColor(0xAA, 0xA2, 0x8E);
         romaniaDay.buttonPressedBg = QColor(0xD9, 0xD2, 0xC2);
+        romaniaDay.buttonDisabledBg = QColor(0xE0, 0xDA, 0xCA); romaniaDay.buttonDisabledBorder = QColor(0xCE, 0xC6, 0xB4); romaniaDay.buttonDisabledFg = QColor(0x9A, 0x93, 0x8A);
         romaniaDay.toolCheckedBg = QColor(0xDB, 0xE2, 0xDF); romaniaDay.toolCheckedBorder = QColor(0x3E, 0x78, 0xBA);
         romaniaDay.listBg = QColor(0xEB, 0xE6, 0xDA); romaniaDay.listAltBg = QColor(0xE3, 0xDD, 0xD0); romaniaDay.listBorder = QColor(0xD9, 0xD2, 0xC2);
         romaniaDay.listHoverBg = QColor(0xE0, 0xDA, 0xCA); romaniaDay.listSelectedBg = QColor(0xDB, 0xE2, 0xDF); romaniaDay.listSelectedFg = QColor(0x32, 0x3A, 0x3E);
@@ -1301,6 +1335,7 @@ QList<ThemeDefinition> createThemes()
         aubergine.buttonBg = QColor(0x2E, 0x18, 0x56); aubergine.buttonBorder = QColor(0x45, 0x28, 0x6E);
         aubergine.buttonHoverBg = QColor(0x3B, 0x21, 0x59); aubergine.buttonHoverBorder = QColor(0x55, 0x33, 0x7C);
         aubergine.buttonPressedBg = QColor(0x28, 0x10, 0x48);
+        aubergine.buttonDisabledBg = QColor(0x24, 0x0E, 0x40); aubergine.buttonDisabledBorder = QColor(0x34, 0x1C, 0x55); aubergine.buttonDisabledFg = QColor(0x6E, 0x5C, 0x92);
         aubergine.toolCheckedBg = QColor(0x45, 0x28, 0x6E); aubergine.toolCheckedBorder = QColor(0xB8, 0x7C, 0xE6);
         aubergine.listBg = QColor(0x28, 0x10, 0x48); aubergine.listAltBg = QColor(0x2E, 0x18, 0x56); aubergine.listBorder = QColor(0x3B, 0x21, 0x59);
         aubergine.listHoverBg = QColor(0x3B, 0x21, 0x59); aubergine.listSelectedBg = QColor(0x45, 0x28, 0x6E); aubergine.listSelectedFg = QColor(0xE8, 0xE0, 0xF6);
@@ -1338,6 +1373,7 @@ QList<ThemeDefinition> createThemes()
         peachFresh.buttonBg = QColor(0xF5, 0xC9, 0x9E); peachFresh.buttonBorder = QColor(0xD2, 0xA2, 0x6E);
         peachFresh.buttonHoverBg = QColor(0xEE, 0xBF, 0x90); peachFresh.buttonHoverBorder = QColor(0xB8, 0x8A, 0x5A);
         peachFresh.buttonPressedBg = QColor(0xE8, 0xB7, 0x8A);
+        peachFresh.buttonDisabledBg = QColor(0xEE, 0xBF, 0x90); peachFresh.buttonDisabledBorder = QColor(0xD9, 0xAC, 0x7E); peachFresh.buttonDisabledFg = QColor(0xB2, 0x8F, 0x6E);
         peachFresh.toolCheckedBg = QColor(0xF3, 0xBE, 0x8C); peachFresh.toolCheckedBorder = QColor(0xE0, 0x5E, 0x2E);
         peachFresh.listBg = QColor(0xFA, 0xD0, 0xA8); peachFresh.listAltBg = QColor(0xF0, 0xC3, 0x98); peachFresh.listBorder = QColor(0xE8, 0xB7, 0x8A);
         peachFresh.listHoverBg = QColor(0xEE, 0xBF, 0x90); peachFresh.listSelectedBg = QColor(0xF3, 0xBE, 0x8C); peachFresh.listSelectedFg = QColor(0x4E, 0x32, 0x18);
@@ -1375,6 +1411,7 @@ QList<ThemeDefinition> createThemes()
         o1984Dark.buttonBg = QColor(0x1B, 0x22, 0x2E); o1984Dark.buttonBorder = QColor(0x31, 0x3C, 0x4C);
         o1984Dark.buttonHoverBg = QColor(0x25, 0x2E, 0x3C); o1984Dark.buttonHoverBorder = QColor(0x3F, 0x4C, 0x5E);
         o1984Dark.buttonPressedBg = QColor(0x14, 0x19, 0x22);
+        o1984Dark.buttonDisabledBg = QColor(0x14, 0x19, 0x22); o1984Dark.buttonDisabledBorder = QColor(0x1D, 0x25, 0x30); o1984Dark.buttonDisabledFg = QColor(0x4E, 0x58, 0x66);
         o1984Dark.toolCheckedBg = QColor(0x2B, 0x32, 0x44); o1984Dark.toolCheckedBorder = QColor(0xFB, 0xED, 0x6E);
         o1984Dark.listBg = QColor(0x14, 0x19, 0x22); o1984Dark.listAltBg = QColor(0x1B, 0x22, 0x2E); o1984Dark.listBorder = QColor(0x25, 0x2D, 0x3A);
         o1984Dark.listHoverBg = QColor(0x25, 0x2E, 0x3C); o1984Dark.listSelectedBg = QColor(0x2B, 0x32, 0x44); o1984Dark.listSelectedFg = QColor(0xF2, 0xEF, 0xE4);
@@ -1412,6 +1449,7 @@ QList<ThemeDefinition> createThemes()
         o1984Light.buttonBg = QColor(0xF0, 0xF0, 0xEA); o1984Light.buttonBorder = QColor(0xCB, 0xCB, 0xBE);
         o1984Light.buttonHoverBg = QColor(0xE6, 0xE6, 0xDC); o1984Light.buttonHoverBorder = QColor(0xAA, 0xAA, 0x9C);
         o1984Light.buttonPressedBg = QColor(0xDF, 0xDF, 0xD5);
+        o1984Light.buttonDisabledBg = QColor(0xE6, 0xE6, 0xDC); o1984Light.buttonDisabledBorder = QColor(0xD8, 0xD8, 0xCB); o1984Light.buttonDisabledFg = QColor(0x92, 0x97, 0x9E);
         o1984Light.toolCheckedBg = QColor(0xE5, 0xE5, 0xD8); o1984Light.toolCheckedBorder = QColor(0xC2, 0xA6, 0x28);
         o1984Light.listBg = QColor(0xF0, 0xF0, 0xEA); o1984Light.listAltBg = QColor(0xE8, 0xE8, 0xE0); o1984Light.listBorder = QColor(0xDF, 0xDF, 0xD5);
         o1984Light.listHoverBg = QColor(0xE6, 0xE6, 0xDC); o1984Light.listSelectedBg = QColor(0xE5, 0xE5, 0xD8); o1984Light.listSelectedFg = QColor(0x1D, 0x1F, 0x24);
@@ -1449,6 +1487,7 @@ QList<ThemeDefinition> createThemes()
         winterNight.buttonBg = QColor(0x1D, 0x28, 0x36); winterNight.buttonBorder = QColor(0x33, 0x46, 0x5A);
         winterNight.buttonHoverBg = QColor(0x27, 0x37, 0x48); winterNight.buttonHoverBorder = QColor(0x43, 0x5A, 0x72);
         winterNight.buttonPressedBg = QColor(0x16, 0x1F, 0x2A);
+        winterNight.buttonDisabledBg = QColor(0x16, 0x1F, 0x2A); winterNight.buttonDisabledBorder = QColor(0x1F, 0x2D, 0x3C); winterNight.buttonDisabledFg = QColor(0x4E, 0x62, 0x74);
         winterNight.toolCheckedBg = QColor(0x25, 0x3A, 0x4E); winterNight.toolCheckedBorder = QColor(0x4C, 0xC2, 0xDA);
         winterNight.listBg = QColor(0x16, 0x1F, 0x2A); winterNight.listAltBg = QColor(0x1D, 0x28, 0x36); winterNight.listBorder = QColor(0x27, 0x37, 0x48);
         winterNight.listHoverBg = QColor(0x27, 0x37, 0x48); winterNight.listSelectedBg = QColor(0x25, 0x3A, 0x4E); winterNight.listSelectedFg = QColor(0xE6, 0xEF, 0xF5);
@@ -1636,21 +1675,30 @@ void ThemeManager::applyNow()
         "QWidget QPushButton { background-color: %14; border: 1px solid %15; }\n"
         "QPushButton:hover { background-color: %16; border-color: %17; }\n"
         "QPushButton:pressed { background-color: %18; }\n"
+        // 按钮禁用态随主题（用户反馈：SFTP 面板钮未选中时整排禁用仍是旧灰黑）。
+        // connectBtn 的语义绿禁用态特异性（#id）更高不受影响
+        "QPushButton:disabled { color: %38; background-color: %36; border-color: %37; }\n"
         "QToolButton#settingsBtn, QToolButton#pwToggleBtn { background-color: %14; border: 1px solid %15; }\n"
         "QToolButton#settingsBtn:hover, QToolButton#pwToggleBtn:hover { background-color: %16; border-color: %17; }\n"
         "QToolButton#settingsBtn:pressed, QToolButton#pwToggleBtn:pressed { background-color: %18; }\n"
+        "QToolButton#settingsBtn:disabled, QToolButton#pwToggleBtn:disabled { color: %38; background-color: %36; border-color: %37; }\n"
         "QToolButton#paneTool { background-color: %14; border: 1px solid %15; }\n"
         "QToolButton#paneTool:hover { background-color: %16; border-color: %17; }\n"
         "QToolButton#paneTool:pressed { background-color: %18; }\n"
+        "QToolButton#paneTool:disabled { color: %38; background-color: %36; border-color: %37; }\n"
         "QToolButton#modeBtn, QToolButton#mcpBtn, QToolButton#keyBrowseBtn { background-color: %14; border: 1px solid %15; }\n"
         "QToolButton#modeBtn:hover, QToolButton#mcpBtn:hover, QToolButton#keyBrowseBtn:hover { background-color: %16; border-color: %17; }\n"
         "QToolButton#modeBtn:pressed, QToolButton#mcpBtn:pressed, QToolButton#keyBrowseBtn:pressed { background-color: %18; }\n"
+        "QToolButton#modeBtn:disabled, QToolButton#mcpBtn:disabled, QToolButton#keyBrowseBtn:disabled { color: %38; background-color: %36; border-color: %37; }\n"
         "QToolButton { background-color: transparent; border: 1px solid transparent; }\n"
         "QWidget QToolButton { background-color: transparent; border: 1px solid transparent; }\n"
         "QToolButton:hover { background-color: %16; border-color: %17; }\n"
         "QToolButton:pressed { background-color: %18; }\n"
         "QToolButton:checked { background-color: %19; border-color: %20; }\n"
         "QToolButton#modeBtn:checked, QToolButton#mcpBtn:checked { background-color: %19; border-color: %20; }\n"
+        // 通用工具钮禁用文字色（基础 QSS 只有 dark/light 两套灰）也随主题，
+        // #id 专属规则的特异性更高不受影响
+        "QToolButton:disabled { color: %38; }\n"
         "* { selection-background-color: %9; selection-color: %26; }\n"
         // arg 位置守卫：QString::arg 多参等价链式替换「最小编号 marker」，
         // 模板中若删除某个 %n 的使用而参数列表未同步缩短，之后所有参数全部错位。
@@ -1690,7 +1738,10 @@ void ThemeManager::applyNow()
          trackCss,
          theme.terminalBg.name(),
          overlayCss,
-         cbTabBgCss);
+         cbTabBgCss,
+         theme.buttonDisabledBg.name(),
+         theme.buttonDisabledBorder.name(),
+         theme.buttonDisabledFg.name());
 
     qApp->setStyleSheet(qss + overrideQss);
     FramelessDialog::setThemeHint(theme.isDark);
