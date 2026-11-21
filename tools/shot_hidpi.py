@@ -20,6 +20,8 @@ OUT_DIR = r"D:\Qt\QtProject\Xterm\docs\screenshots"
 
 u = ctypes.windll.user32
 VK = {"F5": 0x74, "F9": 0x78, "F10": 0x79}
+WM_KEYDOWN = 0x0100
+WM_KEYUP = 0x0101
 WM_CLOSE = 0x0010
 
 
@@ -37,9 +39,12 @@ class BITMAPINFOHEADER(ctypes.Structure):
                 ("biClrImportant", ctypes.c_uint32)]
 
 
-def key(vk):
-    u.keybd_event(vk, 0, 0, 0)
-    u.keybd_event(vk, 0, 2, 0)
+def key(hwnd, vk):
+    # PostMessage 直投窗口消息（keybd_event 依赖系统前台，SetForegroundWindow
+    # 被前台锁拒绝时按键会落到别的进程；消息直投不依赖前台，Qt 照常匹配 QAction 快捷键）
+    u.PostMessageW(hwnd, WM_KEYDOWN, vk, 0x00000001)
+    time.sleep(0.05)
+    u.PostMessageW(hwnd, WM_KEYUP, vk, 0xC0000001)
 
 
 def windows_of_pid(pid):
@@ -150,24 +155,24 @@ def main():
 
         foreground(hwnd)
         if "串口" not in title_of(hwnd):     # start on the serial page
-            key(VK["F9"])
+            key(hwnd, VK["F9"])
             time.sleep(1.0)
         ensure_fit(hwnd)
         foreground(hwnd)
         capture_window(hwnd).save(OUT_DIR + r"\main.png")
         print("saved main.png")
 
-        key(VK["F9"]); time.sleep(1.0)       # SSH parameter page
+        key(hwnd, VK["F9"]); time.sleep(1.0)       # SSH parameter page
         capture_window(hwnd).save(OUT_DIR + r"\ssh.png")
         print("saved ssh.png")
 
         # F5 connect -> wait -> F10 SFTP; retry a couple of times
-        key(VK["F5"])
+        key(hwnd, VK["F5"])
         sftp = None
         for attempt in range(3):
             time.sleep(5.0 if attempt == 0 else 4.0)
             foreground(hwnd)
-            key(VK["F10"]); time.sleep(2.0)
+            key(hwnd, VK["F10"]); time.sleep(2.0)
             sftp = find_window(proc.pid, "文件管理")
             if sftp:
                 break

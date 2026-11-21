@@ -2,6 +2,7 @@
 // 不 new MainWindow——只验证协作类自身的窄职责与信号契约。
 #include <QAction>
 #include <QKeySequence>
+#include <QMainWindow>
 #include <QSignalSpy>
 #include <QTest>
 
@@ -17,6 +18,7 @@ private slots:
     void switchModeTriggerEmitsSignal();
     void sftpTriggerEmitsSignal();
     void textSettersUpdateActions();
+    void shortcutFiresOnlyWhenAttachedToWindow();
 };
 
 void TestHotkeyManager::actionsCreatedWithShortcuts()
@@ -69,6 +71,26 @@ void TestHotkeyManager::textSettersUpdateActions()
 
     // 其他 action 文案不受影响
     QCOMPARE(hk.sftpAction()->text(), QStringLiteral("SFTP"));
+}
+
+void TestHotkeyManager::shortcutFiresOnlyWhenAttachedToWindow()
+{
+    // Qt::WindowShortcut 只有 action 挂在活动窗口的 action 列表里才会被按键匹配。
+    // 工具菜单移除后三个 action 曾失去挂载点，F5/F9/F10 静默失效（截图脚本暴露）。
+    QMainWindow window;
+    HotkeyManager hk;
+    QSignalSpy spy(&hk, &HotkeyManager::switchModeRequested);
+
+    // 未挂载：按键不触发
+    window.show();
+    QVERIFY(QTest::qWaitForWindowActive(&window)); // WindowShortcut 只在活动窗口匹配
+    QTest::keyClick(&window, Qt::Key_F9);
+    QCOMPARE(spy.count(), 0);
+
+    // 挂载到窗口：按键触发
+    window.addAction(hk.switchModeAction());
+    QTest::keyClick(&window, Qt::Key_F9);
+    QCOMPARE(spy.count(), 1);
 }
 
 QTEST_MAIN(TestHotkeyManager) // QAction 需 QApplication（guiless 下构造会崩）

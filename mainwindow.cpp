@@ -50,6 +50,11 @@ MainWindow::MainWindow(QWidget *parent)
     m_mcp = new McpMainHook(ui->statusbar, this);
     // 全局快捷键协作类（F5 连接 / F9 切模式 / F10 文件管理，行为源归 HotkeyManager）
     m_hotkey = new HotkeyManager(this);
+    // 原工具菜单移除后 action 不再经菜单挂入窗口；Qt::WindowShortcut 必须
+    // 挂在活动窗口上才会被按键匹配，否则 F5/F9/F10 静默失效（2026-11-21 截图脚本暴露）
+    for (QAction *action : { m_hotkey->connectAction(), m_hotkey->switchModeAction(),
+                             m_hotkey->sftpAction() })
+        addAction(action);
 
     m_uiBuilder = new UiBuilder(this, ui, m_store, m_theme, m_hotkey, m_mcp, this);
 
