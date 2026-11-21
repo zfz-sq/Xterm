@@ -1,12 +1,12 @@
 # Xterm
 
-[![Release](https://img.shields.io/badge/release-v0.2.0-blue)](https://github.com/yyp-U/Xterm/releases) [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)](https://github.com/yyp-U/Xterm/releases)
+[![Release](https://img.shields.io/badge/release-v1.1.0-blue)](https://github.com/yyp-U/Xterm/releases) [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)](https://github.com/yyp-U/Xterm/releases)
 
 面向嵌入式开发的**串口 + SSH 双模终端**（Windows / Qt 6 / C++17）。
 
 一条串口链路 + 一条 SSH 链路同时存活、一键切换；SFTP 双栏文件管理复用 SSH 同一条连接；命令栏、关键词高亮、滚动历史查找，并内置 MCP 桥——本机 AI（Claude 等）可直接读屏、发命令。Win11 原生体验：无边框窗口四边四角自由缩放、多主题、圆角弹窗。
 
-> **下载**：[Xterm-0.2.0-win64-portable.zip](https://github.com/yyp-U/Xterm/releases/download/v0.2.0/Xterm-0.2.0-win64-portable.zip)（免安装，解压后直接运行 `bin\Xterm.exe`，无需安装 Qt 或其他运行库；历史版本见 [Releases](https://github.com/yyp-U/Xterm/releases)）
+> **下载**：[Xterm-1.1.0-win64-portable.zip](https://github.com/yyp-U/Xterm/releases/download/v1.1.0/Xterm-1.1.0-win64-portable.zip)（免安装，解压后直接运行 `bin\Xterm.exe`，无需安装 Qt 或其他运行库；历史版本见 [Releases](https://github.com/yyp-U/Xterm/releases)）
 
 ## 界面预览
 
@@ -26,7 +26,8 @@
 
 - **自绘格子终端**：VT 转义全解析（光标定位、滚动区、备用屏、16/256/真彩色），`vim` / `htop` 等全屏程序正常渲染与退出还原
 - **双链路独立存活**：串口与 SSH 互不干扰，F9 切换不断线，两边可同时在线
-- **SFTP 文件管理**（WinSCP 风格）：左本地右远程，各自工具栏与右键菜单；上传支持整文件夹递归，传输进度实时显示
+- **断线自动检测**：设备断电 / 网线拔出等“半开”死链约 15 秒内自动恢复未连接状态（内核 TCP keepalive 探活），避免对死链误操作
+- **SFTP 文件管理**（WinSCP 风格）：左本地右远程，各自工具栏与右键菜单；上传支持整文件夹递归，任意层级目录递归删除，传输 / 删除进度实时显示，底栏一键取消全部任务
 - **命令栏**：常用命令做成按钮一点即发；整栏可收起，状态持久化
 - **关键词高亮**：可配置规则 + 内置日志惯例默认（错误红/成功绿…），选中词右键一键添加
 - **客户端 Tab 补全**：内置 Linux 常用命令 + 命令栏命令自动成为候选
@@ -125,8 +126,7 @@ powershell -File scripts/package.ps1 -BuildDir build
 ├── commandstore.*        配置持久化（profile / 关键词 / 命令）
 ├── filebrowserdialog.*   SFTP 双栏文件管理（UI 编排）
 ├── filebrowsermodel.*    文件管理数据层（条目/命令/持久化/上传收集）
-├── transferqueue.*       传输队列网关（入队/编辑回传/批次跟踪）
-├── transferdialog.*      传输队列窗口
+├── transferqueue.*       传输任务网关（串行泵 / 一键取消 / 编辑回传 / 批次跟踪）
 ├── agentbridge.*         MCP 桥（命名管道 + 令牌）
 ├── resources/            图标 / QSS 主题 / qrc
 ├── scripts/              依赖引导（bootstrap）与打包（package）
