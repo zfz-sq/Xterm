@@ -23,6 +23,7 @@ SshWorker::SshWorker(LibsshApi &api, KnownHostsStore &knownHosts,
     }();
     Q_UNUSED(registered);
 
+    m_clock.start();
     m_timer = new QTimer(this);
     m_timer->setSingleShot(true);
     connect(m_timer, &QTimer::timeout, this, &SshWorker::advance);
@@ -58,6 +59,10 @@ void SshWorker::connectToHost(quint64 generation, const SshTarget &target,
     m_initialRows = qMax(1, rows);
     m_closeNotified = false;
     m_notifyOnClose = false;
+    m_statsStreamed = false;
+    m_statsDegrading = false;
+    m_lastProbeMs = m_clock.elapsed();
+    m_lastInboundMs = m_lastProbeMs;
     resetBackoff();
     m_state = State::Connecting;
     m_connection =
@@ -280,6 +285,8 @@ void SshWorker::startStats(quint64 generation)
         m_stats = std::make_unique<StatsChannel>(
             m_api, m_connection->sessionForWorker());
     }
+    m_statsStreamed = false;   // 静默判定重新武装：等下一帧真正到来
+    m_statsDegrading = false;
     m_stats->start();
     schedule();
 }
@@ -302,6 +309,12 @@ void SshWorker::stopStats(quint64 generation)
 void SshWorker::advance()
 {
     assertOwnerThread();
+    if (m_state == State::Ready) {
+        probeLink();
+        if (m_state != State::Ready) {
+            return;   // 探测判死：failAndClose 已收尾连接与定时器
+        }
+    }
     if (m_state == State::Connecting) {
         if (m_connection != nullptr) {
             m_connection->advance();
@@ -333,6 +346,9 @@ void SshWorker::advance()
     for (const QByteArray &bytes : output) {
         emit shellData(m_generation, bytes);
     }
+    if (!output.isEmpty()) {
+        markInboundProgress();
+    }
 
     bool sftpActive = false;
     bool statsProgress = false;
@@ -355,8 +371,9 @@ void SshWorker::advance()
         return;
     case ShellChannel::Result::Progress:
         resetBackoff();
-        if (backgroundActive)
-            resetReadyIdlePoll();
+        // 任何推进（含 shell 数据）都算活动：空闲轮询从 5ms 重新爬坡，
+        // 否则回显数据落地后下一次 Again 又立即回到 25ms 慢轮询。
+        resetReadyIdlePoll();
         if (m_state == State::Closing) {
             schedule();
             return;
@@ -437,6 +454,50 @@ int SshWorker::nextReadyPollDelayMs()
     return delay;
 }
 
+void SshWorker::setDeadLinkTimingForTest(int probeIntervalMs,
+                                         int quietTimeoutMs)
+{
+    m_probeIntervalMs = probeIntervalMs;
+    m_quietTimeoutMs = quietTimeoutMs;
+}
+
+void SshWorker::markInboundProgress()
+{
+    m_lastInboundMs = m_clock.elapsed();
+}
+
+void SshWorker::probeLink()
+{
+    const qint64 nowMs = m_clock.elapsed();
+    if (nowMs - m_lastProbeMs >= m_probeIntervalMs) {
+        m_lastProbeMs = nowMs;
+        // 纯查询裁决：TCP keepalive（内核层）引爆后的 socket 错误由
+        // ssh_get_status 报出（SSH_CLOSED(_ERROR)）。这里不做任何主动
+        // 写——曾用 ssh_send_ignore 做探测，0.12.2 里它对 data 无 NULL
+        // 防护（strlen(NULL) 直接闪退）、返回值也不可信（socket 已关
+        // 仍返回“成功”），已彻底移除。
+        const int status = m_api.getStatus(m_connection->sessionForWorker());
+        if ((status & (SSH_CLOSED | SSH_CLOSED_ERROR)) != 0) {
+            failAndClose({SshError::Domain::Network, SSH_ERROR,
+                          QStringLiteral("SSH session closed unexpectedly"),
+                          true});
+            return;
+        }
+    }
+    // 静默判定只对 stats 流产过帧且未在降级重试的会话生效：这类会话
+    // 正常每 3s 必有入站帧，静默超过窗口即链路死亡（路由级静默丢包时
+    // 内核 keepalive 也可能长时间报不出错）。stats 自身降级（exec 被拒、
+    // 远端断流）不是链路死，排除以免误杀；空闲会话本来就没有入站流量，
+    // 同样不武装。
+    const bool statsStreaming = m_stats != nullptr && m_stats->isActive()
+        && m_statsStreamed && !m_statsDegrading;
+    if (statsStreaming && nowMs - m_lastInboundMs >= m_quietTimeoutMs) {
+        failAndClose({SshError::Domain::Network, SSH_ERROR,
+                      QStringLiteral("SSH connection is not responding"),
+                      true});
+    }
+}
+
 void SshWorker::handleConnectionFinished(quint64 generation,
                                          const SshError &error)
 {
@@ -454,6 +515,9 @@ void SshWorker::handleConnectionFinished(quint64 generation,
     m_shell = std::make_unique<ShellChannel>(
         m_api, m_connection->sessionForWorker(), m_initialCols,
         m_initialRows);
+    // 内核层 TCP keepalive：断电后半开链路的引爆器，探测失败由内核
+    // 直接置 socket 错误；失败（拿不到 fd 等）不影响会话，静默兜底仍在。
+    m_api.enableShortTcpKeepalive(m_connection->sessionForWorker());
     m_state = State::OpeningShell;
     resetBackoff();
     schedule();
@@ -533,6 +597,9 @@ bool SshWorker::serviceSftp()
     }
     QList<SftpResult> results;
     const SftpChannel::Result result = m_sftp->advance(&results);
+    if (!results.isEmpty()) {
+        markInboundProgress();
+    }
     emitSftpResults(results);
     return result != SftpChannel::Result::Idle;
 }
@@ -555,7 +622,13 @@ bool SshWorker::serviceStats()
     const StatsChannel::Result result =
         m_stats->advance(&samples, &degraded, &recovered);
     if (degraded) {
+        m_statsDegrading = true;
         emit statsDegraded(m_generation);
+    }
+    if (!samples.isEmpty()) {
+        m_statsStreamed = true;
+        m_statsDegrading = false;
+        markInboundProgress();
     }
     for (const QString &sample : samples) {
         emit statsSample(m_generation, sample);

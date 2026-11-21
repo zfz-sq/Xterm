@@ -247,10 +247,11 @@ SftpChannel::Result SftpChannel::advanceActive(QList<SftpResult> *results)
     case SftpOp::Stat:
         return advanceStat(results);
     case SftpOp::Mkdir:
-    case SftpOp::Delete:
     case SftpOp::Rename:
     case SftpOp::Chmod:
         return advanceSimple(results);
+    case SftpOp::Delete:
+        return advanceDelete(results);
     case SftpOp::Create:
         return advanceCreate(results);
     case SftpOp::Upload:
@@ -270,9 +271,10 @@ SftpChannel::Result SftpChannel::advanceList(QList<SftpResult> *results)
     const ScopedSyncSftp sync(m_api, m_session);
     if (m_phase == Phase::None) {
         m_phase = Phase::ListOpen;
+        m_listTarget = m_active.path;
     }
     if (m_phase == Phase::ListOpen) {
-        m_dir = m_api.sftpOpendir(m_sftp, m_active.path.toUtf8());
+        m_dir = m_api.sftpOpendir(m_sftp, m_listTarget.toUtf8());
         if (m_dir == nullptr) {
             if (isAgain()) {
                 return Result::Again;
@@ -311,6 +313,14 @@ SftpChannel::Result SftpChannel::advanceList(QList<SftpResult> *results)
         }
         if (closed != SSH_OK) {
             return failActive(results, QStringLiteral("关闭目录失败"));
+        }
+        if (m_active.op == SftpOp::Delete) {
+            // 递归删除的枚举完成：条目交给栈顶帧，继续逐个删。
+            m_total += m_entries.size();   // 进度总量：顶层自身 + 全部条目
+            m_deleteStack.last().pending = m_entries;
+            m_entries.clear();
+            m_phase = Phase::DeleteChild;
+            return advanceDelete(results);
         }
         std::sort(m_entries.begin(), m_entries.end(),
                   [](const SftpEntry &left, const SftpEntry &right) {
@@ -371,10 +381,6 @@ SftpChannel::Result SftpChannel::advanceSimple(QList<SftpResult> *results)
     case SftpOp::Mkdir:
         rc = m_api.sftpMkdir(m_sftp, path, 0755);
         break;
-    case SftpOp::Delete:
-        rc = m_active.isDir ? m_api.sftpRmdir(m_sftp, path)
-                            : m_api.sftpUnlink(m_sftp, path);
-        break;
     case SftpOp::Rename:
         rc = m_api.sftpRename(m_sftp, path, m_active.dest.toUtf8());
         break;
@@ -392,6 +398,94 @@ SftpChannel::Result SftpChannel::advanceSimple(QList<SftpResult> *results)
     }
     completeOp(results, sftpOpName(m_active.op), arg, true);
     return m_queue.isEmpty() ? Result::Idle : Result::Progress;
+}
+
+SftpChannel::Result SftpChannel::advanceDelete(QList<SftpResult> *results)
+{
+    const ScopedSyncSftp sync(m_api, m_session);
+    if (m_phase == Phase::None) {
+        if (!m_active.isDir) {
+            // 文件：单发 unlink。
+            const int rc = m_api.sftpUnlink(m_sftp, m_active.path.toUtf8());
+            if (rc == SSH_AGAIN) {
+                return Result::Again;
+            }
+            if (rc != SSH_OK) {
+                return failActive(results, QStringLiteral("SFTP 操作失败"));
+            }
+            completeOp(results, sftpOpName(m_active.op), m_active.path, true);
+            return m_queue.isEmpty() ? Result::Idle : Result::Progress;
+        }
+        // 目录：SFTP 的 rmdir 只能删空目录，非空目录直接返回 SSH_FX_FAILURE。
+        // 深度优先清空：复用 List 三阶段枚举条目 → 文件 unlink、子目录入栈
+        // → 空目录 rmdir 弹栈，全部弹空才算删干净。进度口径：总数 = 顶层
+        // 目录自身(1) + 枚举到的全部条目；每完成一个 unlink/rmdir 计 1。
+        m_deleteStack.clear();
+        DeleteFrame frame;
+        frame.dirPath = m_active.path;
+        m_deleteStack.append(frame);
+        m_listTarget = m_active.path;
+        m_entries.clear();
+        m_done = 0;
+        m_total = 1;
+        m_phase = Phase::ListOpen;
+    }
+    if (m_phase == Phase::ListOpen || m_phase == Phase::ListRead
+        || m_phase == Phase::ListClose) {
+        return advanceList(results);
+    }
+    if (m_phase == Phase::DeleteChild) {
+        DeleteFrame &top = m_deleteStack.last();
+        if (!top.pending.isEmpty()) {
+            const SftpEntry entry = top.pending.takeFirst();
+            const QString child =
+                top.dirPath + QLatin1Char('/') + entry.name;
+            if (entry.isDir) {
+                DeleteFrame frame;
+                frame.dirPath = child;
+                m_deleteStack.append(frame);
+                m_listTarget = child;
+                m_entries.clear();
+                m_phase = Phase::ListOpen;
+                return advanceList(results);
+            }
+            const int rc = m_api.sftpUnlink(m_sftp, child.toUtf8());
+            if (rc == SSH_AGAIN) {
+                top.pending.prepend(entry);
+                return Result::Again;
+            }
+            if (rc != SSH_OK) {
+                return failActive(results, QStringLiteral("SFTP 操作失败"));
+            }
+            ++m_done;
+            results->append({SftpResult::Kind::Progress, m_active.requestId,
+                             {}, {}, {}, {}, m_done, m_total, true, {}});
+            return Result::Progress;   // 下一 tick 继续余下条目
+        }
+        // 本层已清空：rmdir 后弹栈；栈空即整棵目录树删除完成。
+        const QString dir = top.dirPath;
+        m_deleteStack.removeLast();
+        const int rc = m_api.sftpRmdir(m_sftp, dir.toUtf8());
+        if (rc == SSH_AGAIN) {
+            DeleteFrame frame;
+            frame.dirPath = dir;
+            m_deleteStack.append(frame);
+            return Result::Again;
+        }
+        if (rc != SSH_OK) {
+            return failActive(results, QStringLiteral("SFTP 操作失败"));
+        }
+        ++m_done;
+        results->append({SftpResult::Kind::Progress, m_active.requestId,
+                         {}, {}, {}, {}, m_done, m_total, true, {}});
+        if (m_deleteStack.isEmpty()) {
+            completeOp(results, sftpOpName(m_active.op), m_active.path, true);
+            return m_queue.isEmpty() ? Result::Idle : Result::Progress;
+        }
+        m_phase = Phase::DeleteChild;
+        return Result::Progress;
+    }
+    return failActive(results, QStringLiteral("SFTP 操作失败"));
 }
 
 SftpChannel::Result SftpChannel::advanceCreate(QList<SftpResult> *results)
@@ -1077,6 +1171,8 @@ void SftpChannel::resetActive()
     m_cancelled = false;
     m_phase = Phase::None;
     m_entries.clear();
+    m_deleteStack.clear();
+    m_listTarget.clear();
     m_pending.clear();
     m_execOutput.clear();
     m_done = 0;

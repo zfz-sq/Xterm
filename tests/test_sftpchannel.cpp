@@ -100,6 +100,7 @@ private slots:
     void syncSftpGuardsNestIntoOneBlockingWindow();
     void listsDirectoryAndResolvesRealPath();
     void mkdirCreateDeleteRenameAndChmod();
+    void deleteDirectoryRecursively();
     void recursiveCopyUsesExecWithoutNewSshSession();
     void fileCopyUsesAio();
     void copyRetriesSourceCloseOnAgain();
@@ -343,6 +344,56 @@ void TestSftpChannel::mkdirCreateDeleteRenameAndChmod()
     QCOMPARE(api.renames.first().second, QStringLiteral("/m"));
     QCOMPARE(api.chmodPaths, QStringList({QStringLiteral("/m")}));
     QCOMPARE(api.chmodModes, QList<quint32>({0700}));
+}
+
+void TestSftpChannel::deleteDirectoryRecursively()
+{
+    // SFTP 的 rmdir 只能删空目录：目录里还有内容时直接失败
+    // （sftp error 4: Failure）。删除必须深度优先：枚举 → 文件 unlink、
+    // 子目录入栈 → 空目录 rmdir 弹栈。两层嵌套就是曾经的必败场景。
+    FakeLibsshApi api;
+    api.directoryEntries[QStringLiteral("/d")] = {
+        {QStringLiteral("f1"), 1, 0, 0644, false, false},
+        {QStringLiteral("sub"), 0, 0, 0755, true, false}
+    };
+    api.directoryEntries[QStringLiteral("/d/sub")] = {
+        {QStringLiteral("f2"), 2, 0, 0644, false, false},
+        {QStringLiteral("inner"), 0, 0, 0755, true, false}
+    };
+    api.directoryEntries[QStringLiteral("/d/sub/inner")] = {
+        {QStringLiteral("f3"), 3, 0, 0644, false, false}
+    };
+    SftpChannel channel(api, api.newSession());
+
+    SftpRequest removed =
+        makeRequest(15, SftpOp::Delete, QStringLiteral("/d"));
+    removed.isDir = true;
+    channel.enqueue(removed);
+    const QList<SftpResult> results = pump(channel);
+
+    const QList<SftpResult> ops =
+        ofKind(results, SftpResult::Kind::OpFinished);
+    QCOMPARE(ops.size(), 1);
+    QCOMPARE(ops.first().requestId, SshRequestId(15));
+    QCOMPARE(ops.first().op, QStringLiteral("remove"));
+    QCOMPARE(ops.first().arg, QStringLiteral("/d"));
+    QVERIFY(ops.first().ok);
+    // 每删一项（文件/目录）发一次进度：最终 done == total == 6
+    // （f1/f2/f3 三个文件 + inner/sub/d 三个目录）。
+    const QList<SftpResult> progress =
+        ofKind(results, SftpResult::Kind::Progress);
+    QCOMPARE(progress.isEmpty(), false);
+    QCOMPARE(progress.first().requestId, SshRequestId(15));
+    QCOMPARE(progress.last().done, qint64(6));
+    QCOMPARE(progress.last().total, qint64(6));
+    QVERIFY(api.unlinkedPaths.contains(QStringLiteral("/d/f1")));
+    QVERIFY(api.unlinkedPaths.contains(QStringLiteral("/d/sub/f2")));
+    QVERIFY(api.unlinkedPaths.contains(QStringLiteral("/d/sub/inner/f3")));
+    // rmdir 从最深层开始：先删清空的叶子，最后才删顶层目录。
+    QCOMPARE(api.rmdirPaths,
+             QStringList({QStringLiteral("/d/sub/inner"),
+                          QStringLiteral("/d/sub"),
+                          QStringLiteral("/d")}));
 }
 
 void TestSftpChannel::recursiveCopyUsesExecWithoutNewSshSession()

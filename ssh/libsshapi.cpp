@@ -1,5 +1,11 @@
 #include "libsshapi.h"
 
+#ifdef _WIN32
+#include <mstcpip.h>
+#else
+#include <netinet/tcp.h>
+#endif
+
 #include <QByteArray>
 #include <QFileInfo>
 #include <QtGlobal>
@@ -337,9 +343,56 @@ int LibsshApi::closeChannel(ssh_channel channel)
     return ssh_channel_close(channel);
 }
 
-int LibsshApi::sendKeepalive(ssh_session session)
+int LibsshApi::getStatus(ssh_session session)
 {
-    return ssh_send_ignore(session, nullptr);
+    return ssh_get_status(session);
+}
+
+socket_t LibsshApi::getFd(ssh_session session)
+{
+    return ssh_get_fd(session);
+}
+
+bool LibsshApi::enableShortTcpKeepalive(ssh_session session)
+{
+    // 内核层 TCP keepalive 是 Windows 断电场景的主引爆器：设备掉电后
+    // 应用层写包只会“成功”入队（ARP 静默重试很久才报错），而 keepalive
+    // 探测失败由内核直接置 socket 错误，ssh_get_status 随即能裁决。
+    // 全程不经过 libssh 状态机。
+    const socket_t fd = ssh_get_fd(session);
+    if (fd == SSH_INVALID_SOCKET) {
+        return false;
+    }
+    int enabled = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE,
+                   reinterpret_cast<const char *>(&enabled),
+                   sizeof(enabled)) != 0) {
+        return false;
+    }
+#ifdef _WIN32
+    // Windows：per-socket 参数走 SIO_KEEPALIVE_VALS（选项号无歧义）。
+    // 5s 空闲后每 3s 探测一次；探测次数系统默认，最迟 ~20-35s 报错。
+    struct tcp_keepalive keepalive;
+    keepalive.onoff = 1;
+    keepalive.keepalivetime = 5000;
+    keepalive.keepaliveinterval = 3000;
+    DWORD returned = 0;
+    return WSAIoctl(fd, SIO_KEEPALIVE_VALS, &keepalive, sizeof(keepalive),
+                    nullptr, 0, &returned, nullptr, nullptr) == 0;
+#else
+    // POSIX：次数可控，最迟 5 + 3*3 = 14s 报错。
+    int idle = 5;
+    int interval = 3;
+    int count = 3;
+    return setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,
+                      reinterpret_cast<const char *>(&idle), sizeof(idle)) == 0
+        && setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL,
+                      reinterpret_cast<const char *>(&interval),
+                      sizeof(interval)) == 0
+        && setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,
+                      reinterpret_cast<const char *>(&count), sizeof(count))
+               == 0;
+#endif
 }
 
 void LibsshApi::disconnect(ssh_session session)

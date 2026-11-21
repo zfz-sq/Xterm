@@ -354,10 +354,19 @@ public:
         return take(closeChannelResults, SSH_OK);
     }
 
-    int sendKeepalive(ssh_session) override
+    int getStatus(ssh_session) override
     {
-        calls.append(QStringLiteral("keepalive"));
-        return keepaliveResult;
+        calls.append(QStringLiteral("getStatus"));
+        return getStatusResult;
+    }
+
+    socket_t getFd(ssh_session) override { return fdValue; }
+
+    bool enableShortTcpKeepalive(ssh_session) override
+    {
+        calls.append(QStringLiteral("enableKeepalive"));
+        ++enableKeepaliveCalls;
+        return enableKeepaliveResult;
     }
 
     void disconnect(ssh_session) override
@@ -737,7 +746,10 @@ public:
     int channelEofCount = 0;
     int channelCloseCount = 0;
     int channelFreeCount = 0;
-    int keepaliveResult = SSH_OK;
+    int getStatusResult = 0;
+    socket_t fdValue = SSH_INVALID_SOCKET;
+    int enableKeepaliveCalls = 0;
+    bool enableKeepaliveResult = true;
     QString errorText = QStringLiteral("scripted libssh failure");
     QString explicitKeyErrorText;
     int errorNumber = SSH_ERROR;

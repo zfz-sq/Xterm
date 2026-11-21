@@ -61,6 +61,7 @@ private slots:
     void forwardsDirectStatWithoutDirectoryRead();
     void forwardsOperationsWithOpNames();
     void uploadMapsIntIdProgressAndFinish();
+    void trackedRemoveMapsProgressAndFinish();
     void cancelTransferCancelsActiveDownload();
     void destructionCancelsOwnRequestsAndKeepsSession();
     void ignoresResultsFromOtherAdapters();
@@ -237,6 +238,30 @@ void TestSftpClient::uploadMapsIntIdProgressAndFinish()
         QCOMPARE(event.at(0).toInt(), 7);
     QCOMPARE(progress.last().at(1).toLongLong(), qint64(payload.size()));
     QCOMPARE(m_api->remoteContents.value(QStringLiteral("/up.bin")), payload);
+}
+
+void TestSftpClient::trackedRemoveMapsProgressAndFinish()
+{
+    // 队列删除：递归删除的进度/终态映射回 transferId（队列收尾接力），
+    // 且不再走 opFinished 弹窗（结果在任务行展示）。
+    connectSession();
+    m_api->directoryEntries[QStringLiteral("/d")] = {
+        {QStringLiteral("f"), 1, 0, 0644, false, false}
+    };
+    QSignalSpy progress(m_client, &SftpClient::transferProgress);
+    QSignalSpy finished(m_client, &SftpClient::transferFinished);
+    QSignalSpy ops(m_client, &SftpClient::opFinished);
+
+    m_client->removeEntryTracked(9, QStringLiteral("/d"), true);
+    QTRY_COMPARE(finished.count(), 1);
+    QCOMPARE(finished.first().at(0).toInt(), 9);
+    QVERIFY(finished.first().at(1).toBool());
+    QVERIFY(progress.count() >= 1);   // 每删一项（文件/目录）都有进度
+    for (const QList<QVariant> &event : progress)
+        QCOMPARE(event.at(0).toInt(), 9);
+    QCOMPARE(progress.last().at(1).toLongLong(), qint64(2));   // f + /d
+    QCOMPARE(progress.last().at(2).toLongLong(), qint64(2));
+    QCOMPARE(ops.count(), 0);
 }
 
 void TestSftpClient::cancelTransferCancelsActiveDownload()

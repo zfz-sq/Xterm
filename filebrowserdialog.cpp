@@ -5,7 +5,6 @@
 #include "icons.h"
 #include "scrollflash.h"
 #include "sshsession.h"
-#include "transferdialog.h"
 #include "transferqueue.h"
 
 #include <QAction>
@@ -88,7 +87,7 @@ FileBrowserDialog::FileBrowserDialog(SshSession *session, QWidget *parent)
 
     m_client = new SftpClient(m_session, this);
     // 传输队列网关：入队/批次跟踪/编辑回传都在里面，语义事件转到这里刷 UI
-    m_queue = new TransferQueue(m_client, sessionKey(), this, this);
+    m_queue = new TransferQueue(m_client, sessionKey(), this);
     connect(m_queue, &TransferQueue::folderBatchFinished, this, &FileBrowserDialog::refreshRemote);
     connect(m_queue, &TransferQueue::fetchFinished, this, &FileBrowserDialog::onFetchFinished);
     connect(m_queue, &TransferQueue::editUploadStarted, this, [this](const QString &fileName) {
@@ -102,8 +101,12 @@ FileBrowserDialog::FileBrowserDialog(SshSession *session, QWidget *parent)
         }
         FramelessDialog::message(this, tr("回传失败"), tr("%1\n%2").arg(remote, error));
     });
-    connect(m_queue->dialog(), &TransferDialog::progressChanged,
+    // 底栏进度快照与取消按钮的状态同步
+    connect(m_queue, &TransferQueue::progressChanged,
             this, &FileBrowserDialog::onTransferProgressInfo);
+    // 队列删除整批收尾：刷新一次远程列表（结果在任务行展示）
+    connect(m_queue, &TransferQueue::removeFinished,
+            this, [this] { refreshRemote(); });
     m_localProc = new QProcess(this);
 
     m_localUpload = makePaneButton(QStringLiteral("upload.png"), tr("上传"));
@@ -241,22 +244,24 @@ FileBrowserDialog::FileBrowserDialog(SshSession *session, QWidget *parent)
     splitter->setStretchFactor(1, 1);
 
     m_status = new QLabel(tr("正在打开主目录..."), this);
-    // 底栏传输进度：文案 + 细进度条，详情/取消仍走「传输队列」窗口（不再自动弹出）
+    // 底栏传输进度：文案 + 细进度条 + 取消（一键取消当前与排队的全部任务）
     m_transferText = new QLabel(this);
     m_transferBar = new QProgressBar(this);
     m_transferBar->setFixedWidth(140);
     m_transferBar->setTextVisible(false);
     m_transferBar->setRange(0, 100);
     m_transferBar->hide();
-    auto *queueBtn = new QPushButton(tr("传输队列..."), this);
-    queueBtn->setAutoDefault(false);
-    queueBtn->setDefault(false);
-    connect(queueBtn, &QPushButton::clicked, this, &FileBrowserDialog::showTransferQueue);
+    m_cancelJobsBtn = new QPushButton(tr("取消"), this);
+    m_cancelJobsBtn->setAutoDefault(false);
+    m_cancelJobsBtn->setDefault(false);
+    m_cancelJobsBtn->setEnabled(false);
+    connect(m_cancelJobsBtn, &QPushButton::clicked, this,
+            [this] { m_queue->cancelAll(); });
     auto *statusRow = new QHBoxLayout;
     statusRow->addWidget(m_status, 1);
     statusRow->addWidget(m_transferText);
     statusRow->addWidget(m_transferBar);
-    statusRow->addWidget(queueBtn);
+    statusRow->addWidget(m_cancelJobsBtn);
 
     auto *root = new QVBoxLayout;
     root->addWidget(splitter, 1);
@@ -404,7 +409,7 @@ void FileBrowserDialog::onListed(const QString &path, const QVector<SftpEntry> &
     m_remoteRestorePending = false;
     m_persistedRemote = path;
     if (restoring)
-        m_status->setText(tr("已连接，已恢复上次目录"));
+        m_status->setText(tr("已恢复上次目录"));
     m_remoteTree->clear();
     for (const SftpEntry &entry : entries) {
         auto *item = new QTreeWidgetItem(m_remoteTree);
@@ -447,9 +452,6 @@ void FileBrowserDialog::onListedFailed(const QString &path, const QString &error
 
 void FileBrowserDialog::onOpFinished(const QString &op, const QString &arg, bool ok, const QString &error)
 {
-    // 文件夹上传的建目录结果由传输队列行展示（远程已存在等），这里静默放行
-    if (op == QLatin1String("mkdir") && m_queue->consumeFolderMkdir(arg))
-        return;
     if (op == QLatin1String("exec")) {
         handleExecFinished(ok, arg, error);
         return;
@@ -503,13 +505,7 @@ void FileBrowserDialog::onTransferProgressInfo(const QString &text, int percent,
     m_transferText->setText(text);
     m_transferBar->setVisible(active);
     m_transferBar->setValue(percent);
-}
-
-void FileBrowserDialog::showTransferQueue()
-{
-    m_queue->dialog()->show();
-    m_queue->dialog()->raise();
-    m_queue->dialog()->activateWindow();
+    m_cancelJobsBtn->setEnabled(active);
 }
 
 void FileBrowserDialog::onLocalActivated(const QModelIndex &index)
@@ -722,10 +718,8 @@ void FileBrowserDialog::uploadSelected()
 
     // 建目录任务在前、文件在后入队；队列串行执行，保证目录先于其中的文件就位。
     // 批次 id 全部记下，收尾时（folderBatchFinished）刷新一次远程列表。
-    for (const UploadDirTask &task : batch.dirs) {
-        m_queue->noteFolderMkdir(task.remote);
+    for (const UploadDirTask &task : batch.dirs)
         m_queue->trackFolderJob(m_queue->uploadDir(task.local, task.remote));
-    }
     for (const UploadTask &task : batch.files)
         m_queue->trackFolderJob(m_queue->upload(task.local, task.remote, task.size));
 }
@@ -790,7 +784,7 @@ void FileBrowserDialog::deleteRemote()
             this, tr("删除确认"), tr("删除远程的 %n 个条目？", "", int(items.size()))))
         return;
     for (const RemoteItem &item : items)
-        m_client->removeEntry(remoteJoin(m_remotePath, item.name), item.isDir);
+        m_queue->removeEntry(remoteJoin(m_remotePath, item.name), item.isDir);
 }
 
 void FileBrowserDialog::renameLocal()

@@ -46,6 +46,13 @@ private:
         bool reading = false;
     };
 
+    // 递归删除的栈帧：深度优先清空目录树（SFTP 的 rmdir 只能删空目录）。
+    // pending 是当前层枚举出来待处理的条目；子目录入栈后先清空再回父层。
+    struct DeleteFrame {
+        QString dirPath;
+        QList<SftpEntry> pending;
+    };
+
     enum class ChannelStep {
         Open,
         Subsystem,
@@ -65,6 +72,7 @@ private:
         CreateOpen,
         CreateClose,
         Delete,
+        DeleteChild,
         Rename,
         Chmod,
         TransferPrepare,
@@ -87,6 +95,7 @@ private:
     Result advanceRealPath(QList<SftpResult> *results);
     Result advanceStat(QList<SftpResult> *results);
     Result advanceSimple(QList<SftpResult> *results);
+    Result advanceDelete(QList<SftpResult> *results);
     Result advanceCreate(QList<SftpResult> *results);
     Result advanceUpload(QList<SftpResult> *results);
     Result advanceDownload(QList<SftpResult> *results);
@@ -134,6 +143,8 @@ private:
     sftp_file m_destFile = nullptr;
     ssh_channel m_exec = nullptr;
     QVector<SftpEntry> m_entries;
+    QVector<DeleteFrame> m_deleteStack;
+    QString m_listTarget;
     QFile m_local;
     QString m_tempPath;
     QByteArray m_pending;

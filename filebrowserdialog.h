@@ -11,6 +11,7 @@
 class PathBar;
 class QFileSystemModel;
 class QLabel;
+class QPushButton;
 class QMenu;
 class QModelIndex;
 class QSortFilterProxyModel;
@@ -57,7 +58,6 @@ private slots:
     void onOpFinished(const QString &op, const QString &arg, bool ok, const QString &error);
     void onTransferProgressInfo(const QString &text, int percent, bool active); // 底栏进度
 
-    void showTransferQueue();
     void onLocalActivated(const QModelIndex &index);
     void onLocalPathChosen();
     void onLocalUp();
@@ -127,7 +127,7 @@ private:
     SshSession *m_session = nullptr;   // 共享的终端会话，不拥有
     SshTarget m_target;                // 会话目标的副本，仅用于标题/路径键/URL
     SftpClient *m_client = nullptr;    // 会话之上的 GUI 适配器（parent=this）
-    TransferQueue *m_queue = nullptr;  // 传输队列网关（parent=this，内部持有队列窗口）
+    TransferQueue *m_queue = nullptr;  // 传输任务网关（headless，parent=this）
 
     QFileSystemModel *m_fsModel = nullptr;
     QSortFilterProxyModel *m_fsProxy = nullptr; // 本地列表排序：目录置顶 + 字母序
@@ -149,6 +149,7 @@ private:
     QLabel *m_status = nullptr;
     QLabel *m_transferText = nullptr;    // 底栏传输进度文案（队列空时为空）
     QProgressBar *m_transferBar = nullptr; // 底栏传输进度条，仅活动传输时可见
+    QPushButton *m_cancelJobsBtn = nullptr; // 底栏取消：一键取消当前与排队的全部任务
 
     bool m_connected = false;
     bool m_remoteRestorePending = false;

@@ -99,6 +99,14 @@ void SftpClient::makeDir(const QString &path)
     submit(request);
 }
 
+void SftpClient::makeDirTracked(int id, const QString &path)
+{
+    SftpRequest request;
+    request.op = SftpOp::Mkdir;
+    request.path = path;
+    submit(request, id);
+}
+
 void SftpClient::createFile(const QString &path)
 {
     SftpRequest request;
@@ -114,6 +122,15 @@ void SftpClient::removeEntry(const QString &path, bool isDir)
     request.path = path;
     request.isDir = isDir;
     submit(request);
+}
+
+void SftpClient::removeEntryTracked(int id, const QString &path, bool isDir)
+{
+    SftpRequest request;
+    request.op = SftpOp::Delete;
+    request.path = path;
+    request.isDir = isDir;
+    submit(request, id);
 }
 
 void SftpClient::renameEntry(const QString &from, const QString &to)
@@ -158,13 +175,13 @@ void SftpClient::submit(SftpRequest request, int transferId)
     if (!m_session->isOpen()) {
         // 同步失败，界面拿到和旧 ensureSession 一样的“未连接”回音。
         const QString error = QStringLiteral("SSH 会话未连接");
+        if (transferId != 0) {
+            emit transferFinished(transferId, false, error);
+            return;
+        }
         switch (request.op) {
         case SftpOp::List:
             emit listedFailed(request.path, error);
-            break;
-        case SftpOp::Upload:
-        case SftpOp::Download:
-            emit transferFinished(transferId, false, error);
             break;
         default:
             emit opFinished(sftpOpName(request.op),
@@ -288,8 +305,15 @@ void SftpClient::onSessionOpFinished(SshRequestId requestId, const QString &op,
                                      const QString &arg, bool ok,
                                      const QString &error)
 {
-    if (!trackedTake(requestId, nullptr))
+    int transferId = 0;
+    if (!trackedTake(requestId, &transferId))
         return;
+    if (transferId != 0) {
+        // 跟踪型任务（队列删除）：终态映射回 transferFinished，
+        // 让队列收尾接力；结果在任务行展示，不再走 opFinished 弹窗。
+        emit transferFinished(transferId, ok, error);
+        return;
+    }
     emit opFinished(op, arg, ok, error);
 }
 

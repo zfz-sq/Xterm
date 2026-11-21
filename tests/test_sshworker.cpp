@@ -57,6 +57,9 @@ private slots:
     void pendingWriteDoesNotStarveOutputWithinTwoTicks();
     void streamsStatsSamplesOnDedicatedChannel();
     void statsFailureDegradesButShellStaysReady();
+    void enableTcpKeepaliveArmedOnReady();
+    void closedErrorStatusClosesReadyConnection();
+    void quietStatsStreamClosesConnection();
 };
 
 void TestSshWorker::requestsXtermPtyWithInitialSize()
@@ -489,6 +492,88 @@ void TestSshWorker::statsFailureDegradesButShellStaysReady()
              QByteArrayLiteral("shell-alive"));
     QCOMPARE(connected.count(), 1);         // 连接没有被 stats 拖垮
     QCOMPARE(failed.count(), 0);
+}
+
+void TestSshWorker::enableTcpKeepaliveArmedOnReady()
+{
+    // 断电后的半开 TCP 上应用层写只会“成功”入队（Windows ARP 静默重试
+    // 很久才报错），引爆只能靠内核层 keepalive：Ready 后必须立即启用。
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    FakeLibsshApi api;
+    prepareSuccessfulConnection(api);
+    KnownHostsStore store(api, directory.path());
+    SshWorker worker(api, store);
+    QSignalSpy connected(&worker, &SshWorker::connected);
+
+    worker.connectToHost(41, target(), 80, 24);
+    QTRY_COMPARE(connected.count(), 1);
+    QCOMPARE(api.enableKeepaliveCalls, 1);
+}
+
+void TestSshWorker::closedErrorStatusClosesReadyConnection()
+{
+    // 设备掉电后的半开链路上应用层读永远“无数据”，状态会永远卡在
+    // Ready（界面亮着 SFTP 按钮，点开就在死会话上开通道闪退）。内核
+    // TCP keepalive 把 socket 错误引爆后，ssh_get_status 报
+    // CLOSED(_ERROR)，探测周期必须立即收尾：
+    // connectionFailed + connectionClosed 各一次。
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    FakeLibsshApi api;
+    prepareSuccessfulConnection(api);
+    KnownHostsStore store(api, directory.path());
+    SshWorker worker(api, store);
+    worker.setDeadLinkTimingForTest(5, 500000);
+    QSignalSpy connected(&worker, &SshWorker::connected);
+    QSignalSpy closed(&worker, &SshWorker::connectionClosed);
+
+    worker.connectToHost(45, target(), 80, 24);
+    QTRY_COMPARE(connected.count(), 1);
+    api.getStatusResult = SSH_CLOSED_ERROR;
+
+    QTRY_COMPARE(closed.count(), 1);
+    QTest::qWait(20);
+    QCOMPARE(closed.count(), 1);
+}
+
+void TestSshWorker::quietStatsStreamClosesConnection()
+{
+    // stats 流正常时每 3s 必有一帧；帧彻底静默超过窗口 = 路由级静默
+    // 丢包（keepalive 写包“成功”进内核缓冲，探测失败检测不到）。
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    FakeLibsshApi api;
+    prepareSuccessfulConnection(api);
+    KnownHostsStore store(api, directory.path());
+    SshWorker worker(api, store);
+    worker.setDeadLinkTimingForTest(500000, 40);   // 只测静默，关闭探测
+    QSignalSpy connected(&worker, &SshWorker::connected);
+    QSignalSpy closed(&worker, &SshWorker::connectionClosed);
+    QSignalSpy failed(&worker, &SshWorker::connectionFailed);
+    QSignalSpy samples(&worker, &SshWorker::statsSample);
+
+    worker.connectToHost(47, target(), 80, 24);
+    QTRY_COMPARE(connected.count(), 1);
+    // 与 streamsStatsSamplesOnDedicatedChannel 相同的时序：先把 open
+    // 钉在 SSH_AGAIN，挂好脚本再放行，避免 exec 先于脚本落地被 EOF 杀。
+    api.openChannelFallback = SSH_AGAIN;
+    worker.startStats(47);
+    QTRY_VERIFY(api.createdChannels.size() >= 2);
+    api.streamByChannel[api.createdChannels.at(1)] = {
+        StatsChannel::kFrameBegin
+            + QByteArrayLiteral("\ncpu  1 0 0 9 0\nMemTotal: 8 kB\n")
+            + StatsChannel::kFrameEnd,
+    };
+    api.openChannelFallback = SSH_OK;
+
+    QTRY_COMPARE(samples.count(), 1);   // 帧到过 → 静默判定武装
+    // 脚本耗尽后 fake 返回 SSH_AGAIN：链路从此完全静默。
+
+    QTRY_COMPARE(closed.count(), 1);
+    QCOMPARE(failed.count(), 1);
+    QTest::qWait(20);
+    QCOMPARE(closed.count(), 1);
 }
 
 QTEST_MAIN(TestSshWorker)

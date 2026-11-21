@@ -281,20 +281,6 @@ void LibsshConnection::submitAuthAnswers(SshRequestId requestId,
     m_step = Step::AuthKeyboardInteractive;
 }
 
-SshError LibsshConnection::sendKeepalive()
-{
-    if (m_session == nullptr || m_step != Step::Complete) {
-        return {SshError::Domain::Network, SSH_ERROR,
-                QStringLiteral("SSH session is not connected"), true};
-    }
-
-    const int result = m_api.sendKeepalive(m_session);
-    if (result == SSH_OK || result == SSH_AGAIN) {
-        return {};
-    }
-    return apiError(SshError::Domain::Network, true);
-}
-
 void LibsshConnection::close()
 {
     beginOperation();

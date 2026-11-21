@@ -92,7 +92,6 @@ private slots:
     void synchronousCloseDefersBeginFromPhaseSignal();
     void failurePhaseReentryStartsAfterAdvanceReturns();
     void successPhaseReentryStartsAfterAdvanceReturns();
-    void keepaliveFailureBecomesRetryableNetworkError();
 };
 
 void TestLibsshConnection::explicitUiOptionsOverrideParsedConfig()
@@ -965,27 +964,6 @@ void TestLibsshConnection::successPhaseReentryStartsAfterAdvanceReturns()
     QCOMPARE(api.calls.count(QStringLiteral("freeSession")), 1);
     QCOMPARE(api.stringOptions.value(SSH_OPTIONS_HOST),
              QStringLiteral("after-success.test"));
-}
-
-void TestLibsshConnection::keepaliveFailureBecomesRetryableNetworkError()
-{
-    QTemporaryDir directory;
-    FakeLibsshApi api;
-    KnownHostsStore store(api, directory.path());
-    api.agentResults = {SSH_AUTH_SUCCESS};
-    api.keepaliveResult = SSH_ERROR;
-    LibsshConnection connection(api, store);
-    QSignalSpy finished(&connection, &LibsshConnection::finished);
-    connection.begin(target());
-    advanceUntilFinished(connection, finished);
-    QCOMPARE(finished.count(), 1);
-
-    const SshError error = connection.sendKeepalive();
-
-    QCOMPARE(error.domain, SshError::Domain::Network);
-    QVERIFY(error.retryable);
-    QCOMPARE(error.code, api.errorNumber);
-    QCOMPARE(error.message, api.errorText);
 }
 
 QTEST_MAIN(TestLibsshConnection)

@@ -76,7 +76,9 @@ public:
     virtual int sendChannelEof(ssh_channel channel);
     virtual int closeChannel(ssh_channel channel);
 
-    virtual int sendKeepalive(ssh_session session);
+    virtual int getStatus(ssh_session session);
+    virtual socket_t getFd(ssh_session session);
+    virtual bool enableShortTcpKeepalive(ssh_session session);
     virtual void disconnect(ssh_session session);
     virtual QString errorString(ssh_session session) const;
     virtual int errorCode(ssh_session session) const;

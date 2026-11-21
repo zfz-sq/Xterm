@@ -25,7 +25,6 @@ public:
     void submitHostKeyDecision(SshRequestId requestId, bool accept);
     void submitAuthAnswers(SshRequestId requestId,
                            const QStringList &answers);
-    SshError sendKeepalive();
     void close();
 
     SshPhase phase() const { return m_phase; }

@@ -49,8 +49,13 @@ public slots:
     void downloadFile(int id, const QString &remotePath, const QString &localPath);
     void cancelTransfer(int id);
     void makeDir(const QString &path);
+    // 走任务队列的建目录（id 对齐 transferFinished，与上传/删除同一套取消）
+    void makeDirTracked(int id, const QString &path);
     void createFile(const QString &path);
     void removeEntry(const QString &path, bool isDir);
+    // 走传输队列的删除（id 对齐 transferFinished/transferProgress）。
+    // 目录删除是长任务：SftpChannel 递归清空并逐项发进度。
+    void removeEntryTracked(int id, const QString &path, bool isDir);
     void renameEntry(const QString &from, const QString &to);
     void copyRemote(const QString &from, const QString &to, bool isDir);
     void setPermissions(const QString &path, quint32 mode);

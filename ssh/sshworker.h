@@ -5,6 +5,7 @@
 #include "sshtarget.h"
 
 #include <QByteArray>
+#include <QElapsedTimer>
 #include <QObject>
 #include <QStringList>
 #include <QTimer>
@@ -26,6 +27,9 @@ public:
     explicit SshWorker(LibsshApi &api, KnownHostsStore &knownHosts,
                        QObject *parent = nullptr);
     ~SshWorker() override;
+
+    // 仅测试用：收紧死链探测节奏，避免真实 10s/30s 的等待。
+    void setDeadLinkTimingForTest(int probeIntervalMs, int quietTimeoutMs);
 
 public slots:
     void connectToHost(quint64 generation, const SshTarget &target,
@@ -73,6 +77,12 @@ private:
     static constexpr int MaxReadyPollDelayMs = 25;
     static constexpr int MinAgainBackoffMs = 5;
     static constexpr int MaxAgainBackoffMs = 50;
+    // 死链检测：设备掉电后的半开 TCP 上应用层读永远“无数据”，状态会
+    // 永远卡在 Connected（此时点 SFTP 在死会话上开通道直接闪退）。
+    // 引爆靠内核层 TCP keepalive（Ready 时启用，见 enableShortTcpKeepalive），
+    // 裁决靠 ssh_get_status 纯查询；stats 入站帧停流（静默窗口）叠加兜底。
+    static constexpr int StatusProbeIntervalMs = 10000;
+    static constexpr int QuietLinkTimeoutMs = 15000;
 
     bool isOwnerThread() const;
     void assertOwnerThread() const;
@@ -81,6 +91,8 @@ private:
     void resetBackoff();
     void resetReadyIdlePoll();
     int nextReadyPollDelayMs();
+    void markInboundProgress();
+    void probeLink();
     void handleConnectionFinished(quint64 generation,
                                   const SshError &error);
     void failAndClose(const SshError &error);
@@ -103,6 +115,13 @@ private:
     int m_againBackoffMs = MinAgainBackoffMs;
     State m_state = State::Idle;
     int m_readyIdlePolls = 0;
+    QElapsedTimer m_clock;
+    int m_probeIntervalMs = StatusProbeIntervalMs;
+    int m_quietTimeoutMs = QuietLinkTimeoutMs;
+    qint64 m_lastProbeMs = 0;
+    qint64 m_lastInboundMs = 0;
+    bool m_statsStreamed = false;
+    bool m_statsDegrading = false;
     bool m_closeNotified = false;
     bool m_notifyOnClose = false;
 };
